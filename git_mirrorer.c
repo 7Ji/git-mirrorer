@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <errno.h>
+#include <time.h>
 
 #include <unistd.h>
 
@@ -255,6 +256,67 @@ int open_or_create_bare_repo_at(git_repository **repository, const char *const r
     }
 }
 
+struct progress_data {
+	git_indexer_progress fetch_progress;
+    // struct timespec timespec;   
+};
+
+static void print_progress(struct progress_data *const progress_data) {
+    // struct timespec timespec;
+    // clock_gettime(CLOCK_MONOTONIC, &timespec);
+    // if ((timespec.tv_sec - progress_data->timespec.tv_sec) * 1000000000 + 
+    //     timespec.tv_nsec - progress_data->timespec.tv_nsec
+    //          <= 500000000) {
+    //     return;
+    // }
+    // progress_data->timespec = timespec;
+
+	int network_percent = progress_data->fetch_progress.total_objects > 0 ?
+		(100*progress_data->fetch_progress.received_objects) / progress_data->fetch_progress.total_objects :
+		0;
+	int index_percent = progress_data->fetch_progress.total_objects > 0 ?
+		(100*progress_data->fetch_progress.indexed_objects) / progress_data->fetch_progress.total_objects :
+		0;
+
+	size_t kbytes = progress_data->fetch_progress.received_bytes / 1024;
+
+	if (progress_data->fetch_progress.total_objects &&
+		progress_data->fetch_progress.received_objects == progress_data->fetch_progress.total_objects) {
+		printf("Resolving deltas %u/%u\r",
+		       progress_data->fetch_progress.indexed_deltas,
+		       progress_data->fetch_progress.total_deltas);
+	} else {
+		printf("net %3d%% (%4zu  kb, %5u/%5u)  /  idx %3d%% (%5u/%5u)\n",
+		   network_percent, kbytes,
+		   progress_data->fetch_progress.received_objects, progress_data->fetch_progress.total_objects,
+		   index_percent, progress_data->fetch_progress.indexed_objects, progress_data->fetch_progress.total_objects);
+	}
+}
+
+static int sideband_progress(const char *str, int len, void *payload)
+{
+	(void)payload; /* unused */
+
+	fprintf(stderr, "remote: %.*s", len, str);
+	return 0;
+}
+
+static int fetch_progress(const git_indexer_progress *stats, void *payload)
+{
+	struct progress_data *progress_data = (struct progress_data*)payload;
+	progress_data->fetch_progress = *stats;
+	print_progress(progress_data);
+	return 0;
+}
+// static void checkout_progress(const char *path, size_t cur, size_t tot, void *payload)
+// {
+// 	progress_data *pd = (progress_data*)payload;
+// 	pd->completed_steps = cur;
+// 	pd->total_steps = tot;
+// 	pd->path = path;
+// 	print_progress(pd);
+// }
+
 int update_mirror_repo(git_repository *repository, char const *const repo_url) {
     git_remote *remote;
     int r = git_remote_lookup(&remote, repository, MIRROR_REMOTE) < 0;
@@ -285,13 +347,23 @@ int update_mirror_repo(git_repository *repository, char const *const repo_url) {
         r = -1;
         goto free_strarray;
     }
-    pr_warn("Fetching...\n");
-    // git_fetch_options fetch_options;
-    // git_fetch_options_init(&fetch_options, GIT_FETCH_OPTIONS_VERSION);
-    // git_remote_fetch(remote, NULL, &fetch_options, NULL);
-    git_remote_fetch(remote, NULL, NULL, NULL);
-
-
+    pr_warn("Begging fetching for '%s'\n", repo_url);
+    git_fetch_options fetch_options;
+    struct progress_data progress_data = {0};
+    // clock_gettime(CLOCK_MONOTONIC, &progress_data.timespec);
+    git_fetch_options_init(&fetch_options, GIT_FETCH_OPTIONS_VERSION);
+    // fetch_options.proxy_opts.url = "socks5://192.168.7.11:1080";
+    fetch_options.proxy_opts.type = GIT_PROXY_SPECIFIED;
+	fetch_options.callbacks.sideband_progress = sideband_progress;
+    fetch_options.callbacks.transfer_progress = fetch_progress;
+    fetch_options.callbacks.payload = &progress_data;
+    r = git_remote_fetch(remote, NULL, &fetch_options, NULL);
+    if (r) {
+        pr_error("Failed to fetch, libgit return %d\n", r);
+        r = -1;
+        goto free_strarray;
+    }
+    pr_warn("Ending fetching for '%s'\n", repo_url);
     r = 0;
 free_strarray:
     git_strarray_free(&strarray);
@@ -323,7 +395,34 @@ int get_expected_commit_or_head(git_commit **commit, git_repository *const repos
 
 int clone_or_update(char const *const restrict repo_url, bool const expect_commit, git_oid const *const expected_commit_id);
 
-int parse_submodule_blob(git_blob const *const blob) {
+int parse_submodule_in_tree(git_tree const *const tree, char const *const path, char const *const url) {
+    git_tree_entry *entry;
+    if (git_tree_entry_bypath(&entry, tree, path)) {
+        pr_error("Path '%s' of submodule does not exist in tree, bad .gitmodules file?\n", path);
+        return -1;
+    }
+    int r = -1;
+    if (git_tree_entry_type(entry) != GIT_OBJECT_COMMIT) {
+        pr_error("Object at path '%s' in tree is not a commit\n", path);
+        goto free_entry;
+    }
+    git_oid const *const oid = git_tree_entry_id(entry);
+    char oid_string[GIT_OID_MAX_HEXSIZE + 1];
+    git_oid_tostr(oid_string, GIT_OID_MAX_HEXSIZE + 1, oid);
+    pr_warn("Specific commit '%s' is needed for submodule at path '%s' with url '%s'\n", oid_string, path, url);
+    if (clone_or_update(url, true, oid)) {
+        pr_error("Failed to clone or update submodule at '%s' with url '%s'\n", path, url);
+        goto free_entry;
+    }
+    r = 0;
+
+free_entry:
+    git_tree_entry_free(entry);
+    return r;
+}
+
+
+int parse_gitmodules_blob(git_blob const *const blob, git_tree const *const tree) {
     char const *const blob_ro_handle = git_blob_rawcontent(blob);
     git_object_size_t blob_size = git_blob_rawsize(blob);
     // char const *submodule_name_ro = NULL;
@@ -394,7 +493,7 @@ int parse_submodule_blob(git_blob const *const blob) {
                     submodule_value[value_len] = '\0';
                     if (submodule_path[0] != '\0' && submodule_url[0] != '\0') {
                         pr_warn("Submodule '%s', path '%s', url '%s'\n", submodule_name, submodule_path, submodule_url);
-                        if (clone_or_update(submodule_url, false, NULL)) {
+                        if (parse_submodule_in_tree(tree, submodule_path, submodule_url)) {
                             pr_error("Failed to recursively clone or update submodule '%s' (url '%s')\n", submodule_name, submodule_url);
                             return -1;
                         }
@@ -438,8 +537,8 @@ int parse_commit_submodules(git_commit const *const commit, git_repository *cons
             goto free_object;
         }
         git_blob *blob = (git_blob *)object;
-        if (parse_submodule_blob(blob)) {
-            pr_error("Failed to parse the submodule blob\n");
+        if (parse_gitmodules_blob(blob, tree)) {
+            pr_error("Failed to parse the gitmodules blob\n");
             r = -1;
             goto free_object;
         }
