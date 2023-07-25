@@ -8,6 +8,7 @@
 #include <time.h>
 
 #include <unistd.h>
+#include <getopt.h>
 
 #include <sys/stat.h>
 #include <linux/limits.h>
@@ -44,9 +45,23 @@
 #define pr_debug(format, arg...)
 #endif
 
+
+struct wanted_objects {
+    // bool want_commit;
+    bool commit;
+    git_oid commit_id;
+    char commit_id_hex_string[GIT_OID_MAX_HEXSIZE + 1];
+    bool all_branches;
+    char branch[NAME_MAX];
+    bool all_tags;
+    char tag[NAME_MAX];
+};
+
 char const help_message[] = 
     "Usage:\n"
     "\t"BINARY" [repo url] [commit]";
+
+int clone_or_update(char const *const restrict repo_url, bool const expect_commit, git_oid const *const expected_commit_id);
 
 int repo_url_to_hashed_dir(char const *const restrict repo_url, char repo_dir[REPO_DIR_LEN]) {
     unsigned short repo_url_len = strlen(repo_url);
@@ -393,8 +408,6 @@ int get_expected_commit_or_head(git_commit **commit, git_repository *const repos
     return 0;
 }
 
-int clone_or_update(char const *const restrict repo_url, bool const expect_commit, git_oid const *const expected_commit_id);
-
 int parse_submodule_in_tree(git_tree const *const tree, char const *const path, char const *const url) {
     git_tree_entry *entry;
     if (git_tree_entry_bypath(&entry, tree, path)) {
@@ -616,25 +629,102 @@ free_commit:
     return r;
 }
 
-
-int main(int const argc, char const *const argv[]) {
-    git_oid commit_id;
-    switch (argc) {
-    case 3:
-        if (git_oid_fromstr(&commit_id, argv[2])) {
-            pr_error("Failed to convert '%s' to git commit id\n", argv[2]);
+int main(int const argc, char *const argv[]) {
+    struct option const long_options[] = {
+        {"commit",          required_argument,  NULL,   'c'},
+        {"branch",          required_argument,  NULL,   'b'},
+        {"all-branches",    no_argument,        NULL,   'B'},
+        {"tag",             required_argument,  NULL,   't'},
+        {"all-tags",        no_argument,        NULL,   'T'},
+        {"proxy",           required_argument,  NULL,   'p'},
+        {"proxy-after",     required_argument,  NULL,   'P'},
+        {"help",            no_argument,        NULL,   'h'},
+        {"version",         no_argument,        NULL,   'V'},
+        {0},
+    };
+    int c, option_index = 0;
+    struct wanted_objects wanted_objects = {0};
+    char proxy_url[PATH_MAX] = "\0";
+    unsigned short proxy_after = 0;
+    while ((c = getopt_long(argc, argv, "c:b:Bt:Tp:P:hV", long_options, &option_index)) != -1) {
+        switch (c) {
+        case 'c':
+            if (git_oid_fromstr(&wanted_objects.commit_id, optarg)) {
+                pr_error("Failed to convert '%s' to git commit id\n", optarg);
+                return -1;
+            }
+            strncpy(wanted_objects.commit_id_hex_string, optarg, GIT_OID_MAX_HEXSIZE + 1);
+            wanted_objects.commit = true;
+            break;
+        case 'b':
+            strncpy(wanted_objects.branch, optarg, NAME_MAX);
+            break;
+        case 'B':
+            wanted_objects.all_branches = true;
+            break;
+        case 't':
+            strncpy(wanted_objects.tag, optarg, NAME_MAX);
+            break;
+        case 'T':
+            wanted_objects.all_tags = true;
+            break;
+        case 'p':
+            strncpy(proxy_url, optarg, PATH_MAX);
+            break;
+        case 'P':
+            proxy_after = strtoul(optarg, NULL, 10);
+            break;
+        case 'h':
+            fputs(help_message, stderr);
+            return 0;
+        case 'V':
+            fputs("unknown", stderr);
+            return 0;
+        default:
+            pr_error("Impossible result from getopt: %d\n", c);
+            return -1;
         }
-        __attribute__((fallthrough));
-    case 2:
-        break;
-    default:
-        pr_error("Arguments count not right\n");
-        fputs(help_message, stderr);
-        return -1;
     }
+    if (optind >= argc) {
+        pr_error("Expected argument for repo url\n");
+    }
+    char const *const repo_url = argv[optind];
+    pr_warn("Repo url is '%s', wanting commit: %s%s%s, wanting branch: %s%s%s, wanting all branches: %s, wanting tag: %s%s%s, wanting all tags: %s, using proxy: %s%s%s, using proxy after %hu failures\n", 
+        repo_url,
+        wanted_objects.commit ? "yes ('" : "no",
+        wanted_objects.commit_id_hex_string,
+        wanted_objects.commit ? "')" : "",
+        wanted_objects.branch[0] ? "yes ('" : "no",
+        wanted_objects.branch,
+        wanted_objects.branch[0] ? "')" : "",
+        wanted_objects.all_branches ? "yes" : "no",
+        wanted_objects.tag[0] ? "yes ('" : "no",
+        wanted_objects.tag,
+        wanted_objects.tag[0] ? "')" : "",
+        wanted_objects.all_tags ? "yes" : "no",
+        proxy_url[0] ? "yes ('" : "no",
+        proxy_url,
+        proxy_url[0] ? "')" : "",
+        proxy_after
+    );
+    git_fetch_options fetch_options = { 
+        .version = GIT_FETCH_OPTIONS_VERSION, 
+        .callbacks = GIT_REMOTE_CALLBACKS_INIT,
+        .prune = GIT_FETCH_PRUNE_UNSPECIFIED, 
+        .update_fetchhead = 1,
+        .download_tags = GIT_REMOTE_DOWNLOAD_TAGS_UNSPECIFIED, 
+        .proxy_opts = GIT_PROXY_OPTIONS_INIT,
+        0,
+    };
+    if (proxy_url[0]) {
+        fetch_options.proxy_opts.url = proxy_url;
+        fetch_options.proxy_opts.type = GIT_PROXY_SPECIFIED;
+    }
+	fetch_options.callbacks.sideband_progress = sideband_progress;
+    fetch_options.callbacks.transfer_progress = fetch_progress;
     git_libgit2_init();
-    pr_warn("Mirroring repo '%s'\n", argv[1]);
-    clone_or_update(argv[1], argc == 3, &commit_id);
+
+    // clone_or_update(argv[1], argc == 3, &wanted_objects.commit_id);
     git_libgit2_shutdown();
     return 0;
 }
