@@ -297,7 +297,6 @@ int repo_add_wanted_branch_or_tag(
     return 0;
 }
 
-
 static inline int repo_add_wanted_branch(
     struct repo *const restrict repo,
     char const *const restrict branch_string
@@ -310,6 +309,58 @@ static inline int repo_add_wanted_tag(
     char const *const restrict branch_string
 ) { 
     return repo_add_wanted_branch_or_tag(repo, branch_string, true);
+}
+
+int config_add_repo_from_url(
+    struct config *const restrict config,
+    char const *const restrict url
+) {
+    if (config == NULL || url == NULL) {
+        pr_error("internal: invalid arguments\n");
+        return -1;
+    }
+    if (config->repos == NULL) {
+        if ((config->repos = malloc(
+            sizeof *config->repos * (
+                config->repos_allocated = ALLOC_BASE
+            ))) == NULL) {
+            pr_error("Failed to allocatae memory for repos\n");
+            return -1;
+        }
+    }
+    struct repo repo = REPO_INIT;
+    if (repo_init_from_url(&repo, url)) {
+        pr_error("Failed to init a repo from url '%s'\n", url);
+        return -1;
+    }
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        if (repo.url_hash == config->repos[i].url_hash) {
+            pr_error("Duplicated declaration for repo '%s'\n", url);
+            return -1;
+        }
+    }
+    if (++config->repos_count >= config->repos_allocated) {
+        while (config->repos_count >= (
+            config->repos_allocated *= ALLOC_MULTIPLY)) {
+            if (config->repos_allocated >=
+                ULONG_MAX / ALLOC_MULTIPLY) {
+                pr_error("Refuse to allocate more memory\n");
+                return -1;
+            }
+        }
+        struct repo *repos_new = realloc(
+            config->repos, 
+            sizeof *repos_new * config->repos_allocated
+        );
+        if (repos_new == NULL) {
+            pr_error(
+                "Failed to rellocate memory to store more repos\n");
+            return -1;
+        }
+        config->repos = repos_new;
+    }
+    config->repos[config->repos_count - 1] = repo;
+    return 0;
 }
 
 /*
@@ -888,9 +939,9 @@ int main(int const argc, char *const argv[]) {
     };
     int c, option_index = 0;
     struct config config = {
-        .repos = malloc(10 * sizeof *config.repos),
+        .repos = NULL,
         .repos_count = 0,
-        .repos_allocated = 10,
+        .repos_allocated = 0,
         .fetch_options = { 
             .version = GIT_FETCH_OPTIONS_VERSION, 
             .callbacks = {
@@ -908,58 +959,56 @@ int main(int const argc, char *const argv[]) {
         .proxy_url = "",
         .proxy_after = 0,
     };
-    if (config.repos == NULL) {
-        pr_error("Failed to allocate memory");
-        return -1;
-    }
     int r = -1;
     struct repo *repo = NULL;
-    while ((c = getopt_long(argc, argv, "r:c:b:Bt:Tp:P:hV", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "r:c:b:Bt:Tp:P:hV", 
+        long_options, &option_index)) != -1) {
         switch (c) {
         case 'r':
-
-            // repo = config.repos + config.repos_count++;
-            // if (config.repos_count == config.repos_allocated) {
-            //     struct repo *repos_new = realloc(
-            //         config.repos, 
-            //         sizeof *repos_new * (
-            //             config.repos_allocated *= 2
-            //         )
-            //     );
-            //     if (repos_new == NULL) {
-            //         pr_error("Failed to rellocate memory to store more repos\n");
-            //         goto free_repos;
-            //     }
-            //     config.repos = repos_new;
-            // }
-            // if (repo_init_from_url(repo, optarg)) {
-            //     pr_error("Failed to init repo\n");
-            //     goto free_repos;
-            // }
-            break;
-        case 'c':
-            if (repo == NULL) {
-                pr_error("Commit declaration before repo\n");
+            if (config_add_repo_from_url(&config, optarg)) {
+                pr_error("Failed to add repo from url '%s'\n", 
+                    optarg);
                 goto free_repos;
             }
-            if (git_oid_fromstr(&config.repos->wanted_objects.commit_id, optarg)) {
-                pr_error("Failed to convert '%s' to git commit id\n", optarg);
-                return -1;
-            }
-            strncpy(&config.repos->wanted_objects.commit_id_hex_string, optarg, GIT_OID_MAX_HEXSIZE + 1);
-            config.repos->wanted_objects.commit = true;
+            repo = config.repos + config.repos_count - 1;
             break;
+        case 'c':
         case 'b':
-            strncpy(config.repos->wanted_objects.branch, optarg, NAME_MAX);
-            break;
         case 'B':
-            config.repos->wanted_objects.all_branches = true;
-            break;
         case 't':
-            strncpy(config.repos->wanted_objects.tag, optarg, NAME_MAX);
-            break;
         case 'T':
-            config.repos->wanted_objects.all_tags = true;
+            if (repo == NULL) {
+                pr_error(
+                  "Argument '%s' comes before any repo declaration\n"
+                );
+                goto free_repos;
+            }
+            if (c != 'c') {
+                repo->wanted_objects.dynamic = true;
+            }
+            switch (c) {
+                case 'c':
+                    if (repo_add_wanted_commit(repo, optarg)) {
+                        pr_error("Failed to add wanted commit\n");
+                        goto free_repos;
+                    }
+                case 'b':
+                    if (repo_add_wanted_branch(repo, optarg)) {
+                        pr_error("Failed to add wanted branch\n");
+                        goto free_repos;
+                    }
+                case 'B':
+                    repo->wanted_objects.all_branches = true;
+                    break;
+                case 't':
+                    if (repo_add_wanted_tag(repo, optarg)) {
+                        pr_error("Failed to add wanted tag\n");
+                        goto free_repos;
+                    }
+                case 'T':
+                    repo->wanted_objects.all_tags = true;
+                    break;
+            }
             break;
         case 'p':
             strncpy(config.proxy_url, optarg, PATH_MAX);
@@ -968,24 +1017,15 @@ int main(int const argc, char *const argv[]) {
             config.proxy_after = strtoul(optarg, NULL, 10);
             break;
         case 'h':
-            fputs(help_message, stderr);
+            fputs("no help message available yet\n", stderr);
             return 0;
         case 'V':
-            fputs("unknown", stderr);
+            fputs("unknown\n", stderr);
             return 0;
         default:
             pr_error("Impossible result from getopt: %d\n", c);
             return -1;
         }
-    }
-    if (optind >= argc) {
-        pr_error("Expected argument for repo url\n");
-        return -1;
-    }
-    strncpy(config.repos->url, argv[optind], sizeof config.repos->url);
-    if (repo_url_to_hashed_dir(config.repos)) {
-        pr_error("Failed to convert url to hashed dir\n");
-        return -1;
     }
     // config.repos->added_from = REPO_ADDED_FROM_CONFIG;
     // config.repos->a
@@ -1021,6 +1061,8 @@ int main(int const argc, char *const argv[]) {
     git_libgit2_shutdown();
     r = 0;
 free_repos:
-    free(config.repos);
+    if (config.repos) {
+        free(config.repos);
+    }
     return r;
 }
