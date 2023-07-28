@@ -6,11 +6,13 @@
 #include <string.h>
 #include <errno.h>
 #include <time.h>
+#include <limits.h>
 
 #include <unistd.h>
 #include <getopt.h>
 
 #include <sys/stat.h>
+// #include <sys/l
 #include <linux/limits.h>
 
 #include <xxhash.h>
@@ -29,6 +31,9 @@
 #define MIRROR_FETCHSPEC "+refs/*:refs/*"
 #define MIRROR_CONFIG "remote."MIRROR_REMOTE".mirror"
 
+#define ALLOC_BASE 10
+#define ALLOC_MULTIPLY 2
+
 #define pr_error(format, arg...) \
     fprintf(stderr, "%s:%d(error): "format, __FUNCTION__, __LINE__, ##arg)
 
@@ -45,45 +50,348 @@
 #define pr_debug(format, arg...)
 #endif
 
+struct wanted_commit {
+    git_oid id;
+    char id_hex_string[GIT_OID_MAX_HEXSIZE + 1];
+};
 
 struct wanted_objects {
     // bool want_commit;
-    bool commit;
-    git_oid commit_id;
-    char commit_id_hex_string[GIT_OID_MAX_HEXSIZE + 1];
+    // git_oid *commits;
+    struct wanted_commit *commits;
+    unsigned long commits_count;
+    unsigned long commits_allocated;
     bool all_branches;
-    char branch[NAME_MAX];
+    char (*branches)[NAME_MAX +1];
+    unsigned long branches_count;
+    unsigned long branches_allocated;
+    // char branch[NAME_MAX];
     bool all_tags;
-    char tag[NAME_MAX];
+    char (*tags)[NAME_MAX+1];
+    unsigned long tags_count;
+    unsigned long tags_allocated;
+    bool dynamic;
 };
 
-char const help_message[] = 
-    "Usage:\n"
-    "\t"BINARY" [repo url] [commit]";
+enum repo_added_from {
+    REPO_ADDED_FROM_CONFIG,
+    RPEO_ADDED_FROM_SUBMODULES,
+};
 
-int clone_or_update(char const *const restrict repo_url, bool const expect_commit, git_oid const *const expected_commit_id);
+struct repo {
+    char url[PATH_MAX];
+    unsigned short url_len;
+    XXH64_hash_t url_hash;
+    char dir[REPO_DIR_LEN];
+    git_repository *repository;
+    struct wanted_objects wanted_objects;
+    enum repo_added_from added_from;
+};
 
-int repo_url_to_hashed_dir(char const *const restrict repo_url, char repo_dir[REPO_DIR_LEN]) {
-    unsigned short repo_url_len = strlen(repo_url);
-    if (repo_url_len == 0) {
-        pr_warn("Repo url is empty\n");
+static const struct repo REPO_INIT = {0};
+
+struct config {
+    struct repo *repos;
+    unsigned long repos_count;
+    unsigned long repos_allocated;
+    git_fetch_options fetch_options;
+    char proxy_url[PATH_MAX];
+    unsigned short proxy_after;
+};
+
+// char const help_message[] = 
+//     "Usage:\n"
+//     "\t"BINARY" [repo url] [commit]";
+
+// int clone_or_update(struct config *config, unsigned long repo_id);
+
+int repo_init_from_url(
+    struct repo *const restrict repo, 
+    char const *const restrict url
+){
+    if (repo == NULL || url == NULL) {
+        pr_error("internal: invalid argument\n");
+        return -1;
     }
-    XXH64_hash_t repo_url_hash = XXH3_64bits(repo_url, repo_url_len);
-    pr_warn("64-bit XXH3 hash of url '%s' is '%016lx'\n", repo_url, repo_url_hash);
-#ifdef REPO_DIR_HASH_SPLIT
-    if (snprintf(repo_dir, REPO_DIR_LEN, REPOS_DIR"/%02lx/%02lx", 
-        (repo_url_hash & 0xFF00000000000000) >> 56,
-        repo_url_hash & 0x00FFFFFFFFFFFFFF) < 0) {
-#else
-    if (snprintf(repo_dir, REPO_DIR_LEN, REPOS_DIR"/%02lx", repo_url_hash) < 0) {
-#endif
-            pr_error("Failed to generate repo_dir\n");
-            return -1;
-        }
-    pr_warn("repo_dir for repo url '%s' will be '%s'\n", repo_url, repo_dir);
+    *repo = REPO_INIT;
+    repo->url_len = strlen(url);
+    if (repo->url_len == 0) {
+        pr_error("URL length is 0\n");
+        return -1;
+    }
+    if (repo->url_len >= sizeof repo->url) {
+        pr_error("URL too long: '%s'\n", url);
+        return -1;
+    }
+    strncpy(repo->url, url, repo->url_len);
+    repo->url_hash = XXH3_64bits(repo->url, repo->url_len);
+    if (snprintf(repo->dir, REPO_DIR_LEN, REPOS_DIR"/%02lx", 
+        repo->url_hash) < 0) {
+        pr_error("Failed to generate repo_dir\n");
+        return -1;
+    }
+    pr_debug("repo_dir for repo url '%s' will be '%s'\n", 
+        repo->url, repo->dir);
     return 0;
 }
 
+int repo_add_wanted_commit(
+    struct repo *const restrict repo,
+    char const *const restrict commit_string
+) {
+    if (repo == NULL || commit_string == NULL) {
+        pr_error("internal: invalid argument\n");
+        return -1;
+    }
+    git_oid oid;
+    if (git_oid_fromstr(&oid, commit_string)) {
+        pr_error("Failed to convert '%s' to a git oid\n",
+            commit_string);
+        return -1;
+    }
+    if (repo->wanted_objects.commits == NULL) {
+        if ((repo->wanted_objects.commits = malloc(
+            sizeof *repo->wanted_objects.commits * (
+                repo->wanted_objects.commits_allocated = ALLOC_BASE
+            ))) == NULL){
+            pr_error("Failed to allocate memory for wanted commits\n");
+            return -1;
+        }
+    }
+    struct wanted_commit *commit = NULL;
+    for (unsigned long i = 0; 
+        i < repo->wanted_objects.commits_count; 
+        ++i) {
+        struct wanted_commit *commit_cmp = 
+            &repo->wanted_objects.commits[i];
+        if (!git_oid_cmp(&oid, &commit_cmp->id)) {
+            commit = commit_cmp;
+            break;
+        }
+    }
+    if (commit) {
+        pr_warn(
+            "Commit '%s' already added as wanted for repo '%s'\n", 
+            commit_string, repo->url);
+        return 0;
+    }
+    if (++repo->wanted_objects.commits_count >= 
+        repo->wanted_objects.commits_allocated) {
+        while (repo->wanted_objects.commits_count >= (
+            repo->wanted_objects.commits_allocated *= ALLOC_MULTIPLY)) {
+            if (repo->wanted_objects.commits_allocated >= 
+                ULONG_MAX / ALLOC_MULTIPLY) {
+                pr_error("Refuse to allocate more memory\n");
+                return -1;
+            }
+        }
+        struct wanted_commit *new_commits = realloc(
+            repo->wanted_objects.commits, 
+            sizeof *repo->wanted_objects.commits *
+                repo->wanted_objects.commits_allocated
+        );
+        if (new_commits == NULL) {
+            pr_error("Failed to allocate memory for more"
+                "commits\n");
+            return -1;
+        }
+        repo->wanted_objects.commits = new_commits;
+    }
+    commit = repo->wanted_objects.commits +
+        repo->wanted_objects.commits_count - 1;
+    commit->id = oid;
+    strncpy(commit->id_hex_string, commit_string, 
+        sizeof commit->id_hex_string - 1);
+    commit->id_hex_string[sizeof commit->id_hex_string - 1] = '\0';
+    pr_debug("Added commit '%s' as wanted for repo '%s'\n",
+        commit->id_hex_string, repo->url);
+    return 0;
+}
+
+int repo_add_wanted_branch_or_tag(
+    struct repo *const restrict repo,
+    char const *const restrict ref_string,
+    bool tag
+) {
+    if (repo == NULL || ref_string == NULL) {
+        pr_error("internal: invalid argument\n");
+        return -1;
+    }
+    if (ref_string[0] == '\0') {
+        pr_error("Refuse to add an empty wanted branch\n");
+        return -1;
+    }
+    char (**references)[sizeof *repo->wanted_objects.branches] = NULL;
+    unsigned long *references_count = NULL;
+    unsigned long *references_allocated = NULL;
+    char const *reference_type = NULL;
+    if (tag) {
+        references = &repo->wanted_objects.branches;
+        references_count = &repo->wanted_objects.branches_count;
+        references_allocated = 
+            &repo->wanted_objects.branches_allocated;
+        reference_type = "tag";
+    } else {
+        references = &repo->wanted_objects.tags;
+        references_count = &repo->wanted_objects.tags_count;
+        references_allocated = &repo->wanted_objects.tags_allocated;
+        reference_type = "branch";
+    }
+    if (*references == NULL) {
+        if ((*references = malloc(
+            sizeof **references * (
+                *references_allocated = ALLOC_BASE
+            ))) == NULL) {
+            pr_error(
+                "Failed to allocate memory for wanted %s\n",
+                reference_type);
+            return -1;
+        }
+    }
+    char *reference = NULL;
+    for (unsigned long i = 0; 
+        i < *references_count;
+        ++i) {
+        char *reference_cmp = (*references)[i];
+        if (!strncmp(reference_cmp, ref_string, 
+            sizeof **references)) {
+            reference = reference_cmp;
+            break;
+        }
+    }
+    if (reference) {
+        pr_warn("%s '%s' already added as wanted for repo '%s'\n",
+            reference_type, reference, repo->url);
+        return 0;
+    }
+    if (++(*references_count) >= *references_allocated) {
+        while (*references_count >= (
+            *references_allocated *= ALLOC_MULTIPLY
+        )) {
+            if (*references_allocated >= ULONG_MAX / ALLOC_MULTIPLY) {
+                pr_error("refuse to allocate more memory\n");
+                return -1;
+            }
+        }
+
+    }
+    if (++repo->wanted_objects.branches_count >= 
+        repo->wanted_objects.branches_allocated) {
+        while (repo->wanted_objects.branches_count >= (
+            repo->wanted_objects.branches_allocated *= ALLOC_MULTIPLY
+        )) {
+            if (repo->wanted_objects.branches_allocated >=
+                ULONG_MAX / ALLOC_MULTIPLY) {
+                pr_error("Refuse to allocate more memory\n");
+                return -1;
+            }
+        }
+        char (*new_references)
+            [sizeof *repo->wanted_objects.branches] = realloc(
+            *references,
+            sizeof **references * *references_allocated
+        );
+        if (new_references == NULL) {
+            pr_error("Failed to re-allocate memory for %s\n",
+                reference_type);
+            return -1;
+        }
+        *references = new_references;
+    }
+    reference = (*references)[*references_count - 1];
+    strncpy(reference, ref_string, 
+        sizeof **references);
+    reference[sizeof **references] = '\0';
+    pr_debug("Added %s '%s' as wanted for repo '%s'\n",
+        reference_type, reference, repo->url);
+    repo->wanted_objects.dynamic = true;
+    return 0;
+}
+
+
+static inline int repo_add_wanted_branch(
+    struct repo *const restrict repo,
+    char const *const restrict branch_string
+) { 
+    return repo_add_wanted_branch_or_tag(repo, branch_string, false);
+}
+
+static inline int repo_add_wanted_tag(
+    struct repo *const restrict repo,
+    char const *const restrict branch_string
+) { 
+    return repo_add_wanted_branch_or_tag(repo, branch_string, true);
+}
+// int repo_add_wanted_branch(
+//     struct repo *const restrict repo,
+//     char const *const restrict branch_string
+// ) {
+//     if (repo == NULL || branch_string == NULL) {
+//         pr_error("internal: invalid argument\n");
+//         return -1;
+//     }
+//     if (branch_string[0] == '\0') {
+//         pr_error("Refuse to add an empty wanted branch\n");
+//         return -1;
+//     }
+//     if (repo->wanted_objects.branches == NULL) {
+//         if ((repo->wanted_objects.branches = malloc(
+//             sizeof *repo->wanted_objects.branches * (
+//                 repo->wanted_objects.branches_allocated = ALLOC_BASE
+//             ))) == NULL) {
+//             pr_error(
+//                 "Failed to allocate memory for wanted branches\n");
+//             return -1;
+//         }
+//     }
+//     char *branch = NULL;
+//     for (unsigned long i = 0; 
+//         i < repo->wanted_objects.branches_count;
+//         ++i) {
+//         char *branch_cmp = repo->wanted_objects.branches + i;
+//         if (!strncmp(branch_cmp, branch_string, 
+//             sizeof *repo->wanted_objects.branches)) {
+//             branch = branch_cmp;
+//             break;
+//         }
+//     }
+//     if (branch) {
+//         pr_warn("Branch '%s' already added as wanted for repo '%s'\n",
+//             branch, repo->url);
+//         return 0;
+//     }
+//     if (++repo->wanted_objects.branches_count >= 
+//         repo->wanted_objects.branches_allocated) {
+//         while (repo->wanted_objects.branches_count >= (
+//             repo->wanted_objects.branches_allocated *= ALLOC_MULTIPLY
+//         )) {
+//             if (repo->wanted_objects.branches_allocated >=
+//                 ULONG_MAX / ALLOC_MULTIPLY) {
+//                 pr_error("Refuse to allocate more memory\n");
+//                 return -1;
+//             }
+//         }
+//         char (*new_branches)[NAME_MAX +1] = realloc(
+//             repo->wanted_objects.branches,
+//             sizeof *repo->wanted_objects.branches *
+//                 repo->wanted_objects.branches_allocated
+//         );
+//         if (new_branches == NULL) {
+//             pr_error("Failed to re-allocate memory for branches\n");
+//             return -1;
+//         }
+//         repo->wanted_objects.branches = new_branches;
+//     }
+//     branch = repo->wanted_objects.branches +
+//         repo->wanted_objects.branches_count - 1;
+//     strncpy(branch, branch_string, 
+//         sizeof *repo->wanted_objects.branches);
+//     branch[sizeof *repo->wanted_objects.branches] = '\0';
+//     pr_debug("Added branch '%s' as wanted for repo '%s'\n",
+//         branch, repo->url);
+//     repo->wanted_objects.dynamic = true;
+//     return 0;
+// }
 // int ensure_dir_sub
 
 /*
@@ -332,7 +640,7 @@ static int fetch_progress(const git_indexer_progress *stats, void *payload)
 // 	print_progress(pd);
 // }
 
-int update_mirror_repo(git_repository *repository, char const *const repo_url) {
+int update_mirror_repo(git_repository *repository, char const *const repo_url, git_fetch_options *fetch_options, unsigned short const proxy_after) {
     git_remote *remote;
     int r = git_remote_lookup(&remote, repository, MIRROR_REMOTE) < 0;
     if (r) {
@@ -363,18 +671,23 @@ int update_mirror_repo(git_repository *repository, char const *const repo_url) {
         goto free_strarray;
     }
     pr_warn("Begging fetching for '%s'\n", repo_url);
-    git_fetch_options fetch_options;
     struct progress_data progress_data = {0};
-    // clock_gettime(CLOCK_MONOTONIC, &progress_data.timespec);
-    git_fetch_options_init(&fetch_options, GIT_FETCH_OPTIONS_VERSION);
-    // fetch_options.proxy_opts.url = "socks5://192.168.7.11:1080";
-    fetch_options.proxy_opts.type = GIT_PROXY_SPECIFIED;
-	fetch_options.callbacks.sideband_progress = sideband_progress;
-    fetch_options.callbacks.transfer_progress = fetch_progress;
-    fetch_options.callbacks.payload = &progress_data;
-    r = git_remote_fetch(remote, NULL, &fetch_options, NULL);
+    fetch_options->callbacks.payload = &progress_data;
+    fetch_options->proxy_opts.type = GIT_PROXY_NONE;
+    for (unsigned short try = 0; try <= proxy_after; ++try) {
+        if (try == proxy_after) {
+            if (try) pr_warn("Failed for %hu times, use proxy\n", proxy_after);
+            fetch_options->proxy_opts.type = GIT_PROXY_SPECIFIED;
+        }
+        r = git_remote_fetch(remote, NULL, fetch_options, NULL);
+        if (r) {
+            pr_error("Failed to fetch, libgit return %d%s\n", r, try < proxy_after ? ", will retry" : "");
+        } else {
+            break;
+        }
+    }
     if (r) {
-        pr_error("Failed to fetch, libgit return %d\n", r);
+        pr_error("Failed to update repo, considered failure\n");
         r = -1;
         goto free_strarray;
     }
@@ -404,6 +717,18 @@ int get_expected_commit_or_head(git_commit **commit, git_repository *const repos
             *commit = NULL;
             return 1;
         }
+    }
+    return 0;
+}
+
+int get_expected_commit(git_commit **commit, git_repository *const repository, git_oid const *const expected_commit_id) {
+    if (git_commit_lookup(commit, repository, expected_commit_id)) {
+        char git_commit_id[GIT_OID_MAX_HEXSIZE + 1];
+        git_oid_fmt(git_commit_id, expected_commit_id);
+        git_commit_id[GIT_OID_MAX_HEXSIZE] = '\0';
+        pr_warn("Expected commit '%s' does not exist in repo\n", git_commit_id);
+        *commit = NULL;
+        return 1;
     }
     return 0;
 }
@@ -575,62 +900,63 @@ void print_command_mirror_clone(char const *const repo_dir) {
     );
 }
 
-int clone_or_update(char const *const restrict repo_url, bool const expect_commit, git_oid const *const expected_commit_id) {
+int clone_or_update(struct config *config, unsigned long repo_id) {
     char oid_string[GIT_OID_MAX_HEXSIZE + 1];
-    if (expect_commit) {
-        git_oid_tostr(oid_string, GIT_OID_MAX_HEXSIZE + 1, expected_commit_id);
-        pr_warn("Trying to clone/update '%s', expecting commit '%s'\n", repo_url, oid_string);
-    } else {
-        pr_warn("Trying to clone/update '%s', no expecting commit, will only look up HEAD\n", repo_url);
+    struct repo *repo = config->repos + repo_id;
+    if (repo->repository == NULL) {
+        int r = open_or_create_bare_repo_at(&repo->repository, repo->url, repo->dir);
+        if (r < 0) {
+            pr_error("Failed to open or create bare repo at '%s' for url '%s'\n", repo->dir, repo->url);
+            return -1;
+        }
     }
-    char repo_dir[REPO_DIR_LEN];
-    if (repo_url_to_hashed_dir(repo_url, repo_dir)) {
-        pr_error("Cannot decide repo_dir for url '%s', refuse to continute\n", repo_url);
-        return -1;
-    }
-    git_repository *repository;
-    int r = open_or_create_bare_repo_at(&repository, repo_url, repo_dir);
-    if (r < 0) {
-        pr_error("Failed to open or create bare repo at '%s' for url '%s'\n", repo_dir, repo_url);
-        return -1;
-    }
-    bool need_update = r > 0;
-    git_commit *commit = NULL;
-    if (!need_update) {
-        if (get_expected_commit_or_head(&commit, repository, expect_commit, expected_commit_id)) {
+    bool want_new_commit =  wanted_objects->all_branches ||
+                            wanted_objects->branch[0] ||
+                            wanted_objects->all_tags ||
+                            wanted_objects->tag[0];
+    bool want_head = !want_new_commit && !wanted_objects->commit;
+    want_new_commit = want_new_commit || want_head;
+    bool need_update =  r > 0 ||  want_new_commit; // new repo or want new commit
+    if (!need_update && wanted_objects->commit) {
+        git_commit *commit;
+        if (get_expected_commit(&commit, repository, &wanted_objects->commit_id)) {
             pr_warn("Failed to find expected oid or head, need to update\n");
             need_update = true;
+        } else {
+            git_commit_free(commit);
         }
     }
     if (need_update) {
-        if (update_mirror_repo(repository, repo_url)) {
+        if (update_mirror_repo(repository, repo_url, fetch_options, proxy_after)) {
             pr_error("Failed to update mirror repo");
             r = -1;
-            goto free_commit;
+            goto free_repository;
         }
     }
-    if (!commit) {
-        if (get_expected_commit_or_head(&commit, repository, expect_commit, expected_commit_id)) {
-            pr_warn("Failed to find expectet commit or head even after update, refuse to contonie\n");
-            r = -1;
-            goto free_commit;
-        }
-    }
-    if (parse_commit_submodules(commit, repository)) {
-        pr_error("Failed to parse submodules of commit\n");
-    }
+
+    // if (!commit) {
+    //     if (get_expected_commit_or_head(&commit, repository, expect_commit, expected_commit_id)) {
+    //         pr_warn("Failed to find expectet commit or head even after update, refuse to contonie\n");
+    //         r = -1;
+    //         goto free_commit;
+    //     }
+    // }
+    // if (parse_commit_submodules(commit, repository)) {
+    //     pr_error("Failed to parse submodules of commit\n");
+    // }
     r = 0;
 free_commit:
-    if (commit) {
-        git_commit_free(commit);
-    }
-// free_repository:
+    // if (commit) {
+    //     git_commit_free(commit);
+    // }
+free_repository:
     git_repository_free(repository);
     return r;
 }
 
 int main(int const argc, char *const argv[]) {
     struct option const long_options[] = {
+        {"repo",            required_argument,  NULL,   'r'},
         {"commit",          required_argument,  NULL,   'c'},
         {"branch",          required_argument,  NULL,   'b'},
         {"all-branches",    no_argument,        NULL,   'B'},
@@ -643,36 +969,85 @@ int main(int const argc, char *const argv[]) {
         {0},
     };
     int c, option_index = 0;
-    struct wanted_objects wanted_objects = {0};
-    char proxy_url[PATH_MAX] = "\0";
-    unsigned short proxy_after = 0;
-    while ((c = getopt_long(argc, argv, "c:b:Bt:Tp:P:hV", long_options, &option_index)) != -1) {
+    struct config config = {
+        .repos = malloc(10 * sizeof *config.repos),
+        .repos_count = 0,
+        .repos_allocated = 10,
+        .fetch_options = { 
+            .version = GIT_FETCH_OPTIONS_VERSION, 
+            .callbacks = {
+                .version = GIT_REMOTE_CALLBACKS_VERSION,
+                .sideband_progress = sideband_progress,
+                .transfer_progress = fetch_progress,
+                0,
+            },
+            .prune = GIT_FETCH_PRUNE_UNSPECIFIED, 
+            .update_fetchhead = 1,
+            .download_tags = GIT_REMOTE_DOWNLOAD_TAGS_UNSPECIFIED, 
+            .proxy_opts = GIT_PROXY_OPTIONS_INIT,
+            0,
+        },
+        .proxy_url = "",
+        .proxy_after = 0,
+    };
+    if (config.repos == NULL) {
+        pr_error("Failed to allocate memory");
+        return -1;
+    }
+    int r = -1;
+    struct repo *repo = NULL;
+    while ((c = getopt_long(argc, argv, "r:c:b:Bt:Tp:P:hV", long_options, &option_index)) != -1) {
         switch (c) {
+        case 'r':
+
+            // repo = config.repos + config.repos_count++;
+            // if (config.repos_count == config.repos_allocated) {
+            //     struct repo *repos_new = realloc(
+            //         config.repos, 
+            //         sizeof *repos_new * (
+            //             config.repos_allocated *= 2
+            //         )
+            //     );
+            //     if (repos_new == NULL) {
+            //         pr_error("Failed to rellocate memory to store more repos\n");
+            //         goto free_repos;
+            //     }
+            //     config.repos = repos_new;
+            // }
+            // if (repo_init_from_url(repo, optarg)) {
+            //     pr_error("Failed to init repo\n");
+            //     goto free_repos;
+            // }
+            break;
         case 'c':
-            if (git_oid_fromstr(&wanted_objects.commit_id, optarg)) {
+            if (repo == NULL) {
+                pr_error("Commit declaration before repo\n");
+                goto free_repos;
+            }
+            if (git_oid_fromstr(&config.repos->wanted_objects.commit_id, optarg)) {
                 pr_error("Failed to convert '%s' to git commit id\n", optarg);
                 return -1;
             }
-            strncpy(wanted_objects.commit_id_hex_string, optarg, GIT_OID_MAX_HEXSIZE + 1);
-            wanted_objects.commit = true;
+            strncpy(&config.repos->wanted_objects.commit_id_hex_string, optarg, GIT_OID_MAX_HEXSIZE + 1);
+            config.repos->wanted_objects.commit = true;
             break;
         case 'b':
-            strncpy(wanted_objects.branch, optarg, NAME_MAX);
+            strncpy(config.repos->wanted_objects.branch, optarg, NAME_MAX);
             break;
         case 'B':
-            wanted_objects.all_branches = true;
+            config.repos->wanted_objects.all_branches = true;
             break;
         case 't':
-            strncpy(wanted_objects.tag, optarg, NAME_MAX);
+            strncpy(config.repos->wanted_objects.tag, optarg, NAME_MAX);
             break;
         case 'T':
-            wanted_objects.all_tags = true;
+            config.repos->wanted_objects.all_tags = true;
             break;
         case 'p':
-            strncpy(proxy_url, optarg, PATH_MAX);
+            strncpy(config.proxy_url, optarg, PATH_MAX);
             break;
         case 'P':
-            proxy_after = strtoul(optarg, NULL, 10);
+            config.proxy_after = strtoul(optarg, NULL, 10);
             break;
         case 'h':
             fputs(help_message, stderr);
@@ -687,44 +1062,47 @@ int main(int const argc, char *const argv[]) {
     }
     if (optind >= argc) {
         pr_error("Expected argument for repo url\n");
+        return -1;
     }
-    char const *const repo_url = argv[optind];
-    pr_warn("Repo url is '%s', wanting commit: %s%s%s, wanting branch: %s%s%s, wanting all branches: %s, wanting tag: %s%s%s, wanting all tags: %s, using proxy: %s%s%s, using proxy after %hu failures\n", 
-        repo_url,
-        wanted_objects.commit ? "yes ('" : "no",
-        wanted_objects.commit_id_hex_string,
-        wanted_objects.commit ? "')" : "",
-        wanted_objects.branch[0] ? "yes ('" : "no",
-        wanted_objects.branch,
-        wanted_objects.branch[0] ? "')" : "",
-        wanted_objects.all_branches ? "yes" : "no",
-        wanted_objects.tag[0] ? "yes ('" : "no",
-        wanted_objects.tag,
-        wanted_objects.tag[0] ? "')" : "",
-        wanted_objects.all_tags ? "yes" : "no",
-        proxy_url[0] ? "yes ('" : "no",
-        proxy_url,
-        proxy_url[0] ? "')" : "",
-        proxy_after
-    );
-    git_fetch_options fetch_options = { 
-        .version = GIT_FETCH_OPTIONS_VERSION, 
-        .callbacks = GIT_REMOTE_CALLBACKS_INIT,
-        .prune = GIT_FETCH_PRUNE_UNSPECIFIED, 
-        .update_fetchhead = 1,
-        .download_tags = GIT_REMOTE_DOWNLOAD_TAGS_UNSPECIFIED, 
-        .proxy_opts = GIT_PROXY_OPTIONS_INIT,
-        0,
-    };
-    if (proxy_url[0]) {
-        fetch_options.proxy_opts.url = proxy_url;
-        fetch_options.proxy_opts.type = GIT_PROXY_SPECIFIED;
+    strncpy(config.repos->url, argv[optind], sizeof config.repos->url);
+    if (repo_url_to_hashed_dir(config.repos)) {
+        pr_error("Failed to convert url to hashed dir\n");
+        return -1;
     }
-	fetch_options.callbacks.sideband_progress = sideband_progress;
-    fetch_options.callbacks.transfer_progress = fetch_progress;
+    // config.repos->added_from = REPO_ADDED_FROM_CONFIG;
+    // config.repos->a
+    // char const *const repo_url = argv[optind];
+    // pr_warn("Repo url is '%s', hashed dir is '%s', wanting commit: %s%s%s, wanting branch: %s%s%s, wanting all branches: %s, wanting tag: %s%s%s, wanting all tags: %s, using proxy: %s%s%s, using proxy after %hu failures\n", 
+    //     config.repos->url,
+    //     config.repos->dir,
+    //     config.repos->wanted_objects.commit ? "yes ('" : "no",
+    //     config.repos->wanted_objects.commit_id_hex_string,
+    //     config.repos->wanted_objects.commit ? "')" : "",
+    //     config.repos->wanted_objects.branch[0] ? "yes ('" : "no",
+    //     config.repos->wanted_objects.branch,
+    //     config.repos->wanted_objects.branch[0] ? "')" : "",
+    //     config.repos->wanted_objects.all_branches ? "yes" : "no",
+    //     config.repos->wanted_objects.tag[0] ? "yes ('" : "no",
+    //     config.repos->wanted_objects.tag,
+    //     config.repos->wanted_objects.tag[0] ? "')" : "",
+    //     config.repos->wanted_objects.all_tags ? "yes" : "no",
+    //     config.proxy_url[0] ? "yes ('" : "no",
+    //     config.proxy_url,
+    //     config.proxy_url[0] ? "')" : "",
+    //     config.proxy_after
+    // );
+    if (config.proxy_url[0]) {
+        config.fetch_options.proxy_opts.url = config.proxy_url;
+        config.fetch_options.proxy_opts.type = GIT_PROXY_NONE;
+    }
     git_libgit2_init();
-
-    // clone_or_update(argv[1], argc == 3, &wanted_objects.commit_id);
+    if (clone_or_update(&config, 0)) {
+        pr_error("Failed to clone or update\n");
+        return -1;
+    }
     git_libgit2_shutdown();
-    return 0;
+    r = 0;
+free_repos:
+    free(config.repos);
+    return r;
 }
