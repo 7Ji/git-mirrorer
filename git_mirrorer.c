@@ -12,7 +12,6 @@
 #include <getopt.h>
 
 #include <sys/stat.h>
-// #include <sys/l
 #include <linux/limits.h>
 
 #include <xxhash.h>
@@ -56,8 +55,6 @@ struct wanted_commit {
 };
 
 struct wanted_objects {
-    // bool want_commit;
-    // git_oid *commits;
     struct wanted_commit *commits;
     unsigned long commits_count;
     unsigned long commits_allocated;
@@ -65,7 +62,6 @@ struct wanted_objects {
     char (*branches)[NAME_MAX +1];
     unsigned long branches_count;
     unsigned long branches_allocated;
-    // char branch[NAME_MAX];
     bool all_tags;
     char (*tags)[NAME_MAX+1];
     unsigned long tags_count;
@@ -98,12 +94,6 @@ struct config {
     char proxy_url[PATH_MAX];
     unsigned short proxy_after;
 };
-
-// char const help_message[] = 
-//     "Usage:\n"
-//     "\t"BINARY" [repo url] [commit]";
-
-// int clone_or_update(struct config *config, unsigned long repo_id);
 
 int repo_init_from_url(
     struct repo *const restrict repo, 
@@ -273,7 +263,6 @@ int repo_add_wanted_branch_or_tag(
                 return -1;
             }
         }
-
     }
     if (++repo->wanted_objects.branches_count >= 
         repo->wanted_objects.branches_allocated) {
@@ -322,77 +311,6 @@ static inline int repo_add_wanted_tag(
 ) { 
     return repo_add_wanted_branch_or_tag(repo, branch_string, true);
 }
-// int repo_add_wanted_branch(
-//     struct repo *const restrict repo,
-//     char const *const restrict branch_string
-// ) {
-//     if (repo == NULL || branch_string == NULL) {
-//         pr_error("internal: invalid argument\n");
-//         return -1;
-//     }
-//     if (branch_string[0] == '\0') {
-//         pr_error("Refuse to add an empty wanted branch\n");
-//         return -1;
-//     }
-//     if (repo->wanted_objects.branches == NULL) {
-//         if ((repo->wanted_objects.branches = malloc(
-//             sizeof *repo->wanted_objects.branches * (
-//                 repo->wanted_objects.branches_allocated = ALLOC_BASE
-//             ))) == NULL) {
-//             pr_error(
-//                 "Failed to allocate memory for wanted branches\n");
-//             return -1;
-//         }
-//     }
-//     char *branch = NULL;
-//     for (unsigned long i = 0; 
-//         i < repo->wanted_objects.branches_count;
-//         ++i) {
-//         char *branch_cmp = repo->wanted_objects.branches + i;
-//         if (!strncmp(branch_cmp, branch_string, 
-//             sizeof *repo->wanted_objects.branches)) {
-//             branch = branch_cmp;
-//             break;
-//         }
-//     }
-//     if (branch) {
-//         pr_warn("Branch '%s' already added as wanted for repo '%s'\n",
-//             branch, repo->url);
-//         return 0;
-//     }
-//     if (++repo->wanted_objects.branches_count >= 
-//         repo->wanted_objects.branches_allocated) {
-//         while (repo->wanted_objects.branches_count >= (
-//             repo->wanted_objects.branches_allocated *= ALLOC_MULTIPLY
-//         )) {
-//             if (repo->wanted_objects.branches_allocated >=
-//                 ULONG_MAX / ALLOC_MULTIPLY) {
-//                 pr_error("Refuse to allocate more memory\n");
-//                 return -1;
-//             }
-//         }
-//         char (*new_branches)[NAME_MAX +1] = realloc(
-//             repo->wanted_objects.branches,
-//             sizeof *repo->wanted_objects.branches *
-//                 repo->wanted_objects.branches_allocated
-//         );
-//         if (new_branches == NULL) {
-//             pr_error("Failed to re-allocate memory for branches\n");
-//             return -1;
-//         }
-//         repo->wanted_objects.branches = new_branches;
-//     }
-//     branch = repo->wanted_objects.branches +
-//         repo->wanted_objects.branches_count - 1;
-//     strncpy(branch, branch_string, 
-//         sizeof *repo->wanted_objects.branches);
-//     branch[sizeof *repo->wanted_objects.branches] = '\0';
-//     pr_debug("Added branch '%s' as wanted for repo '%s'\n",
-//         branch, repo->url);
-//     repo->wanted_objects.dynamic = true;
-//     return 0;
-// }
-// int ensure_dir_sub
 
 /*
 int ensure_dir(char *dir_path, unsigned short dir_path_len) {
