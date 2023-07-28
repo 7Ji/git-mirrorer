@@ -992,11 +992,13 @@ int main(int const argc, char *const argv[]) {
                         pr_error("Failed to add wanted commit\n");
                         goto free_repos;
                     }
+                    break;
                 case 'b':
                     if (repo_add_wanted_branch(repo, optarg)) {
                         pr_error("Failed to add wanted branch\n");
                         goto free_repos;
                     }
+                    break;
                 case 'B':
                     repo->wanted_objects.all_branches = true;
                     break;
@@ -1005,6 +1007,7 @@ int main(int const argc, char *const argv[]) {
                         pr_error("Failed to add wanted tag\n");
                         goto free_repos;
                     }
+                    break;
                 case 'T':
                     repo->wanted_objects.all_tags = true;
                     break;
