@@ -103,15 +103,65 @@ struct config {
     unsigned short proxy_after;
 };
 
-#define INDENT "  "
-#define STRVAL(x) ((x) ? (char*)(x) : "")
+int sideband_progress(char const *string, int len, void *payload);
+int fetch_progress(git_indexer_progress const *stats, void *payload);
 
-void indent(int level)
-{
-    int i;
-    for (i = 0; i < level; i++) {
-        printf("%s", INDENT);
-    }
+struct config const CONFIG_INIT = {
+    .repos = NULL,
+    .repos_count = 0,
+    .repos_allocated = 0,
+    .fetch_options = { 
+        .version = GIT_FETCH_OPTIONS_VERSION, 
+        .callbacks = {
+            .version = GIT_REMOTE_CALLBACKS_VERSION,
+            .sideband_progress = sideband_progress,
+            .transfer_progress = fetch_progress,
+            0,
+        },
+        .prune = GIT_FETCH_PRUNE_UNSPECIFIED, 
+        .update_fetchhead = 1,
+        .download_tags = GIT_REMOTE_DOWNLOAD_TAGS_UNSPECIFIED, 
+        .proxy_opts = GIT_PROXY_OPTIONS_INIT,
+        0,
+    },
+    .proxy_url = "",
+    .proxy_after = 0,
+};
+
+int sideband_progress(char const *string, int len, void *payload) {
+	(void)payload; /* unused */
+    pr_warn("remote: %.*s", len, string);
+	return 0;
+}
+
+static inline void print_progress(git_indexer_progress const *const restrict stats) {
+
+	int network_percent = stats->total_objects > 0 ?
+		(100*stats->received_objects) / stats->total_objects :
+		0;
+	int index_percent = stats->total_objects > 0 ?
+		(100*stats->indexed_objects) / stats->total_objects :
+		0;
+
+	size_t kbytes = stats->received_bytes / 1024;
+
+	if (stats->total_objects &&
+		stats->received_objects == stats->total_objects) {
+		printf("Resolving deltas %u/%u\r",
+		       stats->indexed_deltas,
+		       stats->total_deltas);
+	} else {
+		printf("net %3d%% (%4zu  kb, %5u/%5u)  /  idx %3d%% (%5u/%5u)\n",
+		   network_percent, kbytes,
+		   stats->received_objects, stats->total_objects,
+		   index_percent, stats->indexed_objects, stats->total_objects);
+	}
+}
+
+int fetch_progress(git_indexer_progress const *stats, void *payload) {
+	(void)payload; /* unused */
+	print_progress(stats);
+	return 0;
 }
 
 // Dumb help message
@@ -185,62 +235,186 @@ free_buffer:
     return size_total;
 }
 
+enum YAML_CONFIG_PARSING_STATUS {
+    YAML_CONFIG_PARSING_NONE,
+    YAML_CONFIG_PARSING_TOP,
+    YAML_CONFIG_PARSING_GLOBAL,
+    YAML_CONFIG_PARSING_REPOS,
+};
 
-void print_event(yaml_event_t *event) {
-    static int level = 0;
+struct config_yaml_parse_state {
+    int level;
+    unsigned short 
+        stream_start,
+        stream_end,
+        document_start,
+        document_end,
+        global,
+        repos;
+    enum YAML_CONFIG_PARSING_STATUS status;
+};
 
+int config_update_from_yaml_event(
+    struct config *const restrict config,
+    yaml_event_t const *const restrict event,
+    struct config_yaml_parse_state *const restrict state
+) {
     switch (event->type) {
     case YAML_NO_EVENT:
-        indent(level);
-        printf("no-event\n");
         break;
     case YAML_STREAM_START_EVENT:
-        indent(level++);
-        printf("stream-start-event\n");
+        if (++state->stream_start > 1) {
+            pr_error("Could not accept yaml config with multiple stream starts\n");
+            return -1;
+        }
         break;
     case YAML_STREAM_END_EVENT:
-        indent(--level);
-        printf("stream-end-event\n");
+        if (++state->stream_end > 1) {
+            pr_error("Could not accept yaml config with multiple stream ends\n");
+            return -1;
+        }
         break;
     case YAML_DOCUMENT_START_EVENT:
-        indent(level++);
-        printf("document-start-event\n");
+        if (++state->document_start > 1) {
+            pr_error("Could not accept yaml config with multiple document starts\n");
+            return -1;
+        }
         break;
     case YAML_DOCUMENT_END_EVENT:
-        indent(--level);
-        printf("document-end-event\n");
+        if (++state->document_end > 1) {
+            pr_error("Could not accept yaml config with multiple document ends\n");
+            return -1;
+        }
         break;
     case YAML_ALIAS_EVENT:
-        indent(level);
-        printf("alias-event\n");
+        pr_error("Alias is currently not supported in yaml config\n");
+        return -1;
         break;
     case YAML_SCALAR_EVENT:
-        indent(level);
-        printf("scalar-event={value=\"%s\", length=%d}\n",
-                STRVAL(event->data.scalar.value),
-                (int)event->data.scalar.length);
+        switch (state->level) {
+        case 0:
+            pr_error("Unexpected scalar event in the top level in yaml config\n");
+            return -1;
+        case 1:
+            switch (state->status) {
+            case YAML_CONFIG_PARSING_TOP:
+                if (!strcmp((char const *)event->data.scalar.value, "global")) {
+                    if (++state->global > 1) {
+                        pr_error("Multiple global session in the yaml config\n");
+                        return -1;
+                    }
+                    state->status = YAML_CONFIG_PARSING_GLOBAL;
+                } else if (!strcmp((char const *)event->data.scalar.value, "repos")) {
+                    if (++state->repos > 1) {
+                        pr_error("Multiple repos session in the yaml config\n'");
+                        return -1;
+                    }
+                    state->status = YAML_CONFIG_PARSING_REPOS;
+                } else {
+                    pr_error("Unexpected top-level key in yaml: %s\n", (char const *) event->data.scalar.value);
+                    return -1;
+                }
+                break;
+            default:
+                pr_error("Unexpected state %d\n", state->status);
+                return -1;
+            }
+        
+        default:
+            break;
+        }
         break;
     case YAML_SEQUENCE_START_EVENT:
-        indent(level++);
-        printf("sequence-start-event\n");
+        switch (++state->level) {
+        case 1:
+            pr_error("Unexpected sequence event in the top level in yaml config\n");
+            return -1;
+        case 2:
+            switch (state->status) {
+            case YAML_CONFIG_PARSING_REPOS:
+                break;
+            default:
+                pr_error("Unexpected state\n");
+                return -1;
+            }
+        default:
+            break;
+        }
         break;
     case YAML_SEQUENCE_END_EVENT:
-        indent(--level);
-        printf("sequence-end-event\n");
+        switch (--state->level) {
+        case 1:
+            switch (state->status) {
+            case YAML_CONFIG_PARSING_REPOS:
+                state->status = YAML_CONFIG_PARSING_TOP;
+                break;
+            default:
+                pr_error("Unexpected state\n");
+                return -1;
+            }
+        default:
+            break;
+        }
         break;
     case YAML_MAPPING_START_EVENT:
-        indent(level++);
-        printf("mapping-start-event\n");
+        switch (++state->level) {
+        case 1:
+            switch (state->status) {
+            case YAML_CONFIG_PARSING_NONE:
+                state->status = YAML_CONFIG_PARSING_TOP;
+                break;
+            default:
+                pr_error("YAML config map starts at unexpected status %d\n", state->status);
+                return -1;
+            }
+        default:
+            break;
+        }
         break;
     case YAML_MAPPING_END_EVENT:
-        indent(--level);
-        printf("mapping-end-event\n");
+        switch (--state->level) {
+        case 0:
+            switch (state->status) {
+            case YAML_CONFIG_PARSING_TOP:
+                state->status = YAML_CONFIG_PARSING_NONE;
+                break;
+            default:
+                pr_error("Mapping ends at level 1 with unexpected status %d\n", state->status);
+                return -1;
+            }
+            break;
+        case 1:
+            switch (state->status) {
+            case YAML_CONFIG_PARSING_GLOBAL:
+                state->status = YAML_CONFIG_PARSING_TOP;
+                break;
+            default:
+                pr_error("Mapping ends at level 2 with unexpected status %d\n", state->status);
+                return -1;
+            }
+            break;
+        default:
+            break;
+        }
+        // if (--state->level == 0) {
+        //     switch (state->status) {
+        //     case YAML_CONFIG_PARSING_GLOBAL:
+        //     case YAML_CONFIG_PARSING_REPOS:
+        //         pr_warn("Ending parsing a session\n");
+        //         state->status = YAML_CONFIG_PARSING_TOP;
+        //         break;
+        //     default:
+        //         pr_error("YAML config returns to top level from unexpected status %d\n", state->status);
+        //         return -1;
+        //     }
+        // }
         break;
     }
-    if (level < 0) {
-        fprintf(stderr, "indentation underflow!\n");
-        level = 0;
+    if (state->level < 0) {
+        pr_error("YAML level underflow!\n");
+        return -1;
     }
+    return 0;
 }
 
 int config_from_yaml(
@@ -252,13 +426,20 @@ int config_from_yaml(
     yaml_event_t event;
     yaml_event_type_t event_type;
 
+    *config = CONFIG_INIT;
+    struct config_yaml_parse_state state = {0};
     yaml_parser_initialize(&parser);
     yaml_parser_set_input_string(&parser, yaml_buffer, yaml_size);
 
     do {
-        if (!yaml_parser_parse(&parser, &event))
+        if (!yaml_parser_parse(&parser, &event)) {
+            pr_error("Failed to parse: %s\n", parser.problem);
             goto error;
-        print_event(&event);
+        }
+        if (config_update_from_yaml_event(&config, &event, &state)) {
+            pr_error("Failed to update config from yaml event\n");
+            goto error;
+        }
         event_type = event.type;
         yaml_event_delete(&event);
     } while (event_type != YAML_STREAM_END_EVENT);
@@ -267,9 +448,8 @@ int config_from_yaml(
     return 0;
 
 error:
-    pr_error("Failed to parse: %s\n", parser.problem);
     yaml_parser_delete(&parser);
-    return 1;
+    return -1;
 }
 
 int main(int const argc, char *argv[]) {

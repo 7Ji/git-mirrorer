@@ -1,9 +1,9 @@
-config:
+global:
   proxy: yes
 repos:
   - https://github.com
   - badboy
-  - https://baidu.com:
+  - https://baidu.com: &baidu_def
       proxy: yes
       wanted:
         - all_tags
@@ -15,4 +15,5 @@ repos:
             type: branch
         - v1.0.3:
             type: tag
+  - git://github.com/A/B.git
   # what:
