@@ -1,7 +1,9 @@
 BINARY = git-mirrorer
+CFLAGS = -g -Wall -Wextra 
+LDFLAGS = -lxxhash -lgit2 -lyaml
 
 ${BINARY}: ${BINARY}.c
-	${CC} -o $@ -g -Wall -Wextra -lxxhash -lgit2 -lyaml $^
+	${CC} -o $@ -DVERSION=\"$(shell ./version.sh)\" ${CFLAGS} ${LDFLAGS} $^
 
 .PHONY: clean
 

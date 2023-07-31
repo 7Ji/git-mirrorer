@@ -41,6 +41,10 @@
 #define pr_debug(format, arg...)
 #endif
 
+#ifndef VERSION
+#define VERSION "unknown"
+#endif
+
 enum wanted_type {
     WANTED_TYPE_COMMIT,
     WANTED_TYPE_BRANCH,
@@ -110,16 +114,22 @@ void indent(int level)
     }
 }
 
+// Dumb help message
 static inline void help() {
     fputs(
         "git-mirrorer\n"
-        "  --config/-c [path to .yaml config file] or a single - for reading from stdin\n"
-        "  --help/-h\n"
-        "  --version/-v\n",
+        "  --config/-c\t[path to .yaml config file] or a single - for reading from stdin; if not set, read from stdin\n"
+        "  --help/-h\tprint this message\n"
+        "  --version/-v\tprint the version\n",
         stderr
     );
 }
 
+static inline void version() {
+    fputs("git-mirrorer version "VERSION" by 7Ji, licensed under GPLv3 or later\n", stderr);
+}
+
+// Read from fd until EOF, return the size being read, or -1 if failed, the pointer should be free'd by caller
 ssize_t buffer_read_from_fd(unsigned char **buffer, int fd) {
     if (buffer == NULL || fd < 0) {
         pr_error("Internal: invalid arguments\n");
@@ -307,11 +317,15 @@ int main(int const argc, char *argv[]) {
                 config_path[len_config_path] = '\0';
             }
             break;
+        case 'v':
+            version();
+            r = 0;
+            goto free_config_path;
         case 'h':
+            version();
+            fputc('\n', stderr);
             help();
             return 0;
-        case 'v':
-            pr_warn("unknown\n");
             r = 0;
             goto free_config_path;
         default:
