@@ -9,6 +9,7 @@
 #include <limits.h>
 
 #include <unistd.h>
+#include <fcntl.h>
 #include <getopt.h>
 
 #include <sys/stat.h>
@@ -49,23 +50,39 @@
 #define pr_debug(format, arg...)
 #endif
 
+// #define WANTED_BASE \
+//     enum wanted_type type; \
+//     struct wanted_commit *previous, *next;
+
+enum wanted_type {
+    WANTED_TYPE_COMMIT,
+    WANTED_TYPE_BRANCH,
+    WANTED_TYPE_TAG,
+    WANTED_TYPE_HEAD,
+};
+
+struct wanted_base {
+    enum wanted_type type;
+    struct wanted_commit *previous, *next;
+};
+
 struct wanted_commit {
+    struct wanted_base base;
     git_oid id;
     char id_hex_string[GIT_OID_MAX_HEXSIZE + 1];
 };
 
+struct wanted_reference {
+    struct wanted_commit commit;
+    bool commit_resolved;
+    char reference[NAME_MAX + 1];
+    unsigned short reference_len;
+};
+
 struct wanted_objects {
-    struct wanted_commit *commits;
-    unsigned long commits_count;
-    unsigned long commits_allocated;
+    struct wanted_base *objects_head;
     bool all_branches;
-    char (*branches)[NAME_MAX +1];
-    unsigned long branches_count;
-    unsigned long branches_allocated;
     bool all_tags;
-    char (*tags)[NAME_MAX+1];
-    unsigned long tags_count;
-    unsigned long tags_allocated;
     bool dynamic;
 };
 
@@ -211,7 +228,7 @@ int repo_add_wanted_branch_or_tag(
         pr_error("Refuse to add an empty wanted branch\n");
         return -1;
     }
-    char (**references)[sizeof *repo->wanted_objects.branches] = NULL;
+    struct wanted_reference **references = NULL;
     unsigned long *references_count = NULL;
     unsigned long *references_allocated = NULL;
     char const *reference_type = NULL;
@@ -238,23 +255,29 @@ int repo_add_wanted_branch_or_tag(
             return -1;
         }
     }
-    char *reference = NULL;
+    struct wanted_reference *reference = NULL;
+    unsigned short ref_len = strlen(ref_string);
+    if (ref_len > NAME_MAX) {
+        pr_error("Reference '%s' too long\n", ref_string);
+        return -1;
+    }
     for (unsigned long i = 0; 
         i < *references_count;
         ++i) {
-        char *reference_cmp = (*references)[i];
-        if (!strncmp(reference_cmp, ref_string, 
-            sizeof **references)) {
+        struct wanted_reference *reference_cmp = *references + i;
+        if (!strncmp(reference_cmp->reference, ref_string, 
+            ref_len > reference_cmp->reference_len ?
+                reference_cmp->reference_len : ref_len)) {
             reference = reference_cmp;
             break;
         }
     }
     if (reference) {
         pr_warn("%s '%s' already added as wanted for repo '%s'\n",
-            reference_type, reference, repo->url);
+            reference_type, reference->reference, repo->url);
         return 0;
     }
-    if (++(*references_count) >= *references_allocated) {
+    if (++*references_count >= *references_allocated) {
         while (*references_count >= (
             *references_allocated *= ALLOC_MULTIPLY
         )) {
@@ -263,20 +286,7 @@ int repo_add_wanted_branch_or_tag(
                 return -1;
             }
         }
-    }
-    if (++repo->wanted_objects.branches_count >= 
-        repo->wanted_objects.branches_allocated) {
-        while (repo->wanted_objects.branches_count >= (
-            repo->wanted_objects.branches_allocated *= ALLOC_MULTIPLY
-        )) {
-            if (repo->wanted_objects.branches_allocated >=
-                ULONG_MAX / ALLOC_MULTIPLY) {
-                pr_error("Refuse to allocate more memory\n");
-                return -1;
-            }
-        }
-        char (*new_references)
-            [sizeof *repo->wanted_objects.branches] = realloc(
+        struct wanted_reference *new_references = realloc(
             *references,
             sizeof **references * *references_allocated
         );
@@ -287,10 +297,11 @@ int repo_add_wanted_branch_or_tag(
         }
         *references = new_references;
     }
-    reference = (*references)[*references_count - 1];
+    reference = references + *references_count - 1;
     strncpy(reference, ref_string, 
         sizeof **references);
-    reference[sizeof **references] = '\0';
+    reference->reference[reference->reference_len
+        = ref_len] = '\0';
     pr_debug("Added %s '%s' as wanted for repo '%s'\n",
         reference_type, reference, repo->url);
     repo->wanted_objects.dynamic = true;
@@ -502,40 +513,56 @@ int ensure_mirrors_symbol_link(const char *const repo_url, const char *const rep
 */
 
 
-int open_or_create_bare_repo_at(git_repository **repository, const char *const repo_url, const char *const repo_dir) {
-    int r = git_repository_open_bare(repository, repo_dir);
+int repo_open_or_create_bare(struct repo *const restrict repo) {
+    if (repo == NULL) {
+        pr_error("internal: invalid argument\n");
+        return -1;
+    }
+    if (repo->repository != NULL) {
+        pr_error("repository already opened\n");
+        return -1;
+    }
+    if (repo->url[0] == '\0') {
+        pr_error("repo url is empty\n");
+        return -1;
+    }
+    if (repo->dir[0] == '\0') {
+        pr_error("repo dir is empty\n");
+        return -1;
+    }
+    int r = git_repository_open_bare(&repo->repository, repo->dir);
     switch (r) {
     case GIT_OK:
         return 0;
     case GIT_ENOTFOUND:
-        pr_warn("repo dir '%s' does not exist, trying to create it\n", repo_dir);
-        r = git_repository_init(repository, repo_dir, 1);
+        pr_warn("repo dir '%s' does not exist, trying to create it\n", repo->dir);
+        r = git_repository_init(&repo->repository, repo->dir, 1);
         if (r < 0) {
-            pr_error("Failed to initialize a bare repostitory at '%s', libgit return %d\n", repo_dir, r);
+            pr_error("Failed to initialize a bare repostitory at '%s', libgit return %d\n", repo->dir, r);
             return -1;
         } else {
             git_remote *remote;
-            r = git_remote_create_with_fetchspec(&remote, *repository, MIRROR_REMOTE, repo_url, MIRROR_FETCHSPEC);
+            r = git_remote_create_with_fetchspec(&remote, repo->repository, MIRROR_REMOTE, repo->url, MIRROR_FETCHSPEC);
             if (r < 0) {
                 pr_error("Failed to create remote '"MIRROR_REMOTE"' with fetch spec '"MIRROR_FETCHSPEC"' for url '%s', libgit returns %d\n",
-                    repo_url, r);
-                git_repository_free(*repository);
+                    repo->url, r);
+                git_repository_free(repo->repository);
                 return -1;
             }
             git_config *config;
-            r = git_repository_config(&config, *repository);
+            r = git_repository_config(&config, repo->repository);
             if (r < 0) {
-                pr_error("Failed to get config for repo for url '%s', libgit return %d\n", repo_url, r);
+                pr_error("Failed to get config for repo for url '%s', libgit return %d\n", repo->url, r);
                 git_remote_free(remote);
-                git_repository_free(*repository);
+                git_repository_free(repo->repository);
                 return -1;
             }
             r = git_config_set_bool(config, MIRROR_CONFIG, true);
             if (r < 0) {
-                pr_error("Failed to set config '"MIRROR_CONFIG"' to true for repo for url '%s, libgit return %d\n", repo_url, r);
+                pr_error("Failed to set config '"MIRROR_CONFIG"' to true for repo for url '%s, libgit return %d\n", repo->url, r);
                 git_config_free(config);
                 git_remote_free(remote);
-                git_repository_free(*repository);
+                git_repository_free(repo->repository);
                 return -1;
             }
             git_config_free(config);
@@ -543,7 +570,7 @@ int open_or_create_bare_repo_at(git_repository **repository, const char *const r
             return 1;
         }
     default:
-        pr_error("Failed to open bare repository at '%s' and cannot fix libgit return %d\n", repo_dir, r);
+        pr_error("Failed to open bare repository at '%s' and cannot fix libgit return %d\n", repo->dir, r);
         return -1;
     }
 }
@@ -585,15 +612,14 @@ static void print_progress(struct progress_data *const progress_data) {
 	}
 }
 
-static int sideband_progress(const char *str, int len, void *payload)
+int sideband_progress(char const *const restrict string, int len, void *payload)
 {
 	(void)payload; /* unused */
-
-	fprintf(stderr, "remote: %.*s", len, str);
+    pr_warn("remote: %.*s", len, string);
 	return 0;
 }
 
-static int fetch_progress(const git_indexer_progress *stats, void *payload)
+int fetch_progress(const git_indexer_progress *stats, void *payload)
 {
 	struct progress_data *progress_data = (struct progress_data*)payload;
 	progress_data->fetch_progress = *stats;
@@ -979,7 +1005,8 @@ int main(int const argc, char *const argv[]) {
         case 'T':
             if (repo == NULL) {
                 pr_error(
-                  "Argument '%s' comes before any repo declaration\n"
+                  "Argument '%s' comes before any repo declaration\n",
+                  argv[optind]
                 );
                 goto free_repos;
             }

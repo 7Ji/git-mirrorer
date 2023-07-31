@@ -1,0 +1,18 @@
+config:
+  proxy: yes
+repos:
+  - https://github.com
+  - badboy
+  - https://baidu.com:
+      proxy: yes
+      wanted:
+        - all_tags
+        - HEAD:
+            archive: yes
+        - fcd1b77155e2bb06d4b6ae8ceb83a694d958f6c2:
+            archive: yes
+        - master:
+            type: branch
+        - v1.0.3:
+            type: tag
+  # what:

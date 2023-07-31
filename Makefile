@@ -1,7 +1,7 @@
-BINARY = git_mirrorer
+BINARY = git-mirrorer
 
 ${BINARY}: ${BINARY}.c
-	${CC} -o $@ -g -Wall -Wextra -lxxhash -lgit2 $^
+	${CC} -o $@ -g -Wall -Wextra -lxxhash -lgit2 -lyaml $^
 
 .PHONY: clean
 
