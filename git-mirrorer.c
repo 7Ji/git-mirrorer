@@ -56,6 +56,8 @@ enum wanted_type {
     WANTED_TYPE_HEAD,
 };
 
+#define WANTED_TYPE_MAX WANTED_TYPE_HEAD
+
 char const *WANTED_TYPE_STRINGS[] = {
     "unknown",
     "all_branches",
@@ -154,6 +156,7 @@ enum YAML_CONFIG_PARSING_STATUS {
     YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT,
     YAML_CONFIG_PARSING_STATUS_REPO_WANTED_AFTER_OBJECT,
     YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION,
+    YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_TYPE,
     YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_ARCHIVE,
     YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_CHECKOUT,
     // YAML_CONFIG_PARSING_STATUS_REPOS_URL_VALUES,
@@ -413,6 +416,30 @@ enum wanted_type wanted_object_guess_type(
     return WANTED_TYPE_UNKNOWN;
 }
 
+int wanted_object_guess_type_self_optional(struct wanted_base *wanted_object) {
+    if (wanted_object->type != WANTED_TYPE_UNKNOWN) return 0;
+    if ((wanted_object->type = wanted_object_guess_type(
+        wanted_object->name, wanted_object->name_len
+    )) == WANTED_TYPE_UNKNOWN) {
+        pr_error("Failed to guess type\n");
+        return -1;
+    }
+    return 0;
+}
+
+int wanted_object_fill_type_from_string(
+    struct wanted_base *wanted_object,
+    char const *const restrict type
+) {
+    for (enum wanted_type i = 1; i <= WANTED_TYPE_MAX; ++i) {
+        if (!strcmp(type, WANTED_TYPE_STRINGS[i])) {
+            wanted_object->type = i;
+            return 0;
+        }
+    }
+    return -1;
+}
+
 int wanted_object_complete_commit_from_base(
     struct wanted_base **wanted_object
 ) {
@@ -438,6 +465,8 @@ int wanted_object_complete_commit_from_base(
     }
     wanted_commit->base = **wanted_object;
     wanted_commit->id = oid;
+    if ((*wanted_object)->previous) (*wanted_object)->previous->next = (struct wanted_base *)wanted_commit;
+    if ((*wanted_object)->next) (*wanted_object)->next->previous = (struct wanted_base *)wanted_commit;
     free(*wanted_object);
     *wanted_object = (struct wanted_base *)wanted_commit;
     return 0;
@@ -453,6 +482,8 @@ int wanted_object_complete_reference_from_base(
     }
     *wanted_reference = WANTED_REFERENCE_INIT;
     wanted_reference->commit.base = **wanted_object;
+    if ((*wanted_object)->previous) (*wanted_object)->previous->next = (struct wanted_base *)wanted_reference;
+    if ((*wanted_object)->next) (*wanted_object)->next->previous = (struct wanted_base *)wanted_reference;
     free(*wanted_object);
     *wanted_object = (struct wanted_base *)wanted_reference;
     return 0;
@@ -492,7 +523,6 @@ int config_repo_add_wanted_object (
         pr_error("Internal: invalida argument\n");
         return -1;
     }
-    pr_warn("Adding wanted object '%s'\n", object);
     enum wanted_type wanted_type = WANTED_TYPE_UNKNOWN;
     if (guess_type) {
         if ((wanted_type = wanted_object_guess_type(object, len_object)) 
@@ -514,6 +544,7 @@ int config_repo_add_wanted_object (
     }
     memcpy(wanted_object->name, object, len_object);
     wanted_object->name[len_object] = '\0';
+    wanted_object->name_len = len_object;
     if (guess_type) {
         wanted_object->type = wanted_type;
         if (wanted_object_complete_from_base(&wanted_object)) {
@@ -774,7 +805,6 @@ int config_update_from_yaml_event(
             break;
         }
         case YAML_MAPPING_END_EVENT:
-            pr_warn("Jumping back\n");
             state->status = YAML_CONFIG_PARSING_STATUS_REPO_URL;
             state->repo_id = -1;
             break;
@@ -824,9 +854,18 @@ int config_update_from_yaml_event(
             }
             state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_AFTER_OBJECT;
             break;
-        case YAML_MAPPING_END_EVENT:
+        case YAML_MAPPING_END_EVENT: {
+            if (wanted_object_guess_type_self_optional(
+                (config->repos + state->repo_id)-> wanted_objects.objects_tail) ||
+                wanted_object_complete_from_base(
+                    &((config->repos + state->repo_id)-> wanted_objects.objects_tail)
+                )) {
+                pr_error("Failed to finish wanted object\n");
+                return -1;
+            }
             state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_LIST;
             break;
+        }
         default:
             goto unexpected_event_type;
         }
@@ -845,13 +884,20 @@ int config_update_from_yaml_event(
         case YAML_SCALAR_EVENT:{
             char const *const key = (char const *)event->data.scalar.value;
             switch (event->data.scalar.length) {
+            case 4:
+                if (!strncmp(key, "type", 4))
+                    state->status = 
+                    YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_TYPE;
+                break;
             case 7:
                 if (!strncmp(key, "archive", 7))
-                    state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_ARCHIVE;
+                    state->status = 
+                    YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_ARCHIVE;
                 break;
             case 8:
                 if (!strncmp(key, "checkout", 8))
-                    state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_CHECKOUT;
+                    state->status = 
+                    YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_CHECKOUT;
             }
             if (state->status == YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION) {
                 pr_error("Unrecognized config key '%s'\n", key);
@@ -861,6 +907,22 @@ int config_update_from_yaml_event(
         }
         case YAML_MAPPING_END_EVENT:
             state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT;
+            break;
+        default:
+            goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_TYPE:
+        switch (event->type) {
+        case YAML_SCALAR_EVENT: 
+            if (wanted_object_fill_type_from_string(
+                (config->repos + state->repo_id)->wanted_objects.objects_tail,
+                (char const *)event->data.scalar.value
+            )) {
+                pr_error("Invalid object type '%s'\n", (char const *)event->data.scalar.value);
+                return -1;
+            }
+            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION;
             break;
         default:
             goto unexpected_event_type;
