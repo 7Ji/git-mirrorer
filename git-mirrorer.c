@@ -16,9 +16,10 @@
 #include <git2.h>
 #include <yaml.h>
 
-#define REPOS_DIR "repos"
-#define REPO_DIR_LEN 23 // repos 5 + xxh3 64-bit 16 + / 1 + null 1
-#define MIRRORS_DIR "mirrors"
+#define DIR_REPOS   "repos"
+#define DIR_ARCHIVES    "archives"
+#define DIR_CHECKOUTS   "checkouts"
+
 #define MIRROR_REMOTE "origin"
 #define MIRROR_FETCHSPEC "+refs/*:refs/*"
 #define MIRROR_CONFIG "remote."MIRROR_REMOTE".mirror"
@@ -1033,8 +1034,13 @@ int config_from_yaml(
             goto error;
         }
         if (config_update_from_yaml_event(config, &event, &state)) {
-            pr_error("Failed to update config from yaml event, current read config:\n");
+            pr_error("Failed to update config from yaml event"
+#ifdef DEBUGGING
+            ", current read config:\n");
             print_config(config);
+#else
+            );
+#endif
             goto error;
         }
         event_type = event.type;
@@ -1043,13 +1049,47 @@ int config_from_yaml(
 
     yaml_parser_delete(&parser);
 
+#ifdef DEBUGGING
     pr_warn("Config is as follows:\n");
     print_config(config);
+#endif
     return 0;
 
 error:
     yaml_parser_delete(&parser);
     return -1;
+}
+
+int config_finish(
+    struct config *const restrict config
+) {
+    if (config->dir_repos == NULL) {
+        if ((config->dir_repos = malloc(sizeof(DIR_REPOS))) == NULL) {
+            return -1;
+        }
+        memcpy(config->dir_repos, DIR_REPOS, sizeof(DIR_REPOS));
+    }
+    if (config->dir_archives == NULL) {
+        if ((config->dir_archives = malloc(sizeof(DIR_ARCHIVES))) == NULL) {
+            return -1;
+        }
+        memcpy(config->dir_archives, DIR_ARCHIVES, sizeof(DIR_ARCHIVES));
+    }
+    if (config->dir_checkouts == NULL) {
+        if ((config->dir_checkouts = malloc(sizeof(DIR_CHECKOUTS))) == NULL) {
+            return -1;
+        }
+        memcpy(config->dir_checkouts, DIR_CHECKOUTS, sizeof(DIR_CHECKOUTS));
+    }
+    if (config->proxy_url && config->proxy_url[0] != '\0') {
+        config->fetch_options.proxy_opts.url = config->proxy_url;
+    } else if (config->proxy_after) {
+        pr_warn("You've set proxy_after but not set proxy, fixing proxy_after to 0\n");
+        config->proxy_after = 0;
+    }
+    pr_warn("Finished config, config is as follows:\n");
+    print_config(config);
+    return 0;
 }
 
 int config_read(
@@ -1082,6 +1122,10 @@ int config_read(
         return -1;
     }
     free(config_buffer);
+    if (config_finish(config)) {
+        pr_error("Failed to finish config\n");
+        return -1;
+    }
     return 0;
 }
 
