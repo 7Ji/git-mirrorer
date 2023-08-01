@@ -1023,7 +1023,6 @@ int config_from_yaml(
     yaml_event_t event;
     yaml_event_type_t event_type;
 
-    *config = CONFIG_INIT;
     struct config_yaml_parse_state state = {0};
     yaml_parser_initialize(&parser);
     yaml_parser_set_input_string(&parser, yaml_buffer, yaml_size);
@@ -1053,76 +1052,19 @@ error:
     return -1;
 }
 
-int main(int const argc, char *argv[]) {
-    char *config_path = NULL;
-    unsigned short len_config_path = 0;
-    struct option const long_options[] = {
-        {"config",          required_argument,  NULL,   'c'},
-        {"help",            no_argument,        NULL,   'h'},
-        {"version",         no_argument,        NULL,   'v'},
-        {0},
-    };
-    int c, option_index = 0;
-    int r = -1;
-    while ((c = getopt_long(argc, argv, "c:hv", 
-        long_options, &option_index)) != -1) {
-        switch (c) {
-        case 'c':
-            if (optarg[0] == '-' && optarg[1] == '\0') { // config from stdin
-                pr_warn("Config set to read from stdin\n");
-                if (config_path) free(config_path);
-                config_path = NULL;
-                len_config_path = 0;
-            } else {
-                pr_warn("Config set to file '%s'\n", optarg);
-                unsigned char len_config_path_new = strlen(optarg);
-                if (len_config_path_new == 0) {
-                    pr_error("Config file path empty\n");
-                    goto free_config_path;
-                }
-                if (len_config_path_new > len_config_path) {
-                    char *config_path_new = NULL;
-                    if (config_path == NULL) {
-                        config_path_new = malloc(len_config_path_new + 1);
-                    } else {
-                        config_path_new = realloc(config_path, len_config_path_new + 1);
-                    }
-                    if (config_path_new == NULL) {
-                        pr_error("Failed to allocate memory for config path\n");
-                        r = -1;
-                        goto free_config_path;
-                    }
-                    config_path = config_path_new;
-                }
-                strncpy(config_path, optarg, len_config_path = len_config_path_new);
-                config_path[len_config_path] = '\0';
-            }
-            break;
-        case 'v':
-            version();
-            r = 0;
-            goto free_config_path;
-        case 'h':
-            version();
-            fputc('\n', stderr);
-            help();
-            return 0;
-            r = 0;
-            goto free_config_path;
-        default:
-            pr_error("Unexpected argument, %d (-%c) '%s'\n", c, c, argv[optind - 1]);
-            r = -1;
-            goto free_config_path;
-        }
-    }
+int config_read(
+    struct config *const restrict config,
+    char const *const restrict config_path
+) {
     int config_fd = STDIN_FILENO;
-    if (config_path) {
+    if (config_path && strcmp(config_path, "-")) {
+        pr_warn("Using '%s' as config file\n", config_path);
         if ((config_fd = open(config_path, O_RDONLY)) < 0) {
             pr_error_with_errno("Failed to open config file '%s'", config_path);
-            r = -1;
-            goto free_config_path;
+            return -1;
         }
     } else {
+        pr_warn("Reading config from stdin\n");
         if (isatty(STDIN_FILENO)) {
             pr_warn("Standard input (stdin) is connected to a terminal, but you've configured to read config from stdin, this might not be what you want and may lead to your terminal being jammed\n");
         }
@@ -1131,17 +1073,51 @@ int main(int const argc, char *argv[]) {
     ssize_t config_size = buffer_read_from_fd(&config_buffer, config_fd);
     if (config_size < 0) {
         pr_error("Failed to read config into buffer\n");
-        goto free_config_path;
+        return -1;
     }
-    free(config_path);
-    config_path = NULL;
+    *config = CONFIG_INIT;
+    if (config_from_yaml(config, config_buffer, config_size)) {
+        pr_error("Failed to read config from YAML\n");
+        free(config_buffer);
+        return -1;
+    }
+    free(config_buffer);
+    return 0;
+}
 
+int main(int const argc, char *argv[]) {
+    char *config_path = NULL;
+    struct option const long_options[] = {
+        {"config",          required_argument,  NULL,   'c'},
+        {"help",            no_argument,        NULL,   'h'},
+        {"version",         no_argument,        NULL,   'v'},
+        {0},
+    };
+    int c, option_index = 0;
+    while ((c = getopt_long(argc, argv, "c:hv", 
+        long_options, &option_index)) != -1) {
+        switch (c) {
+        case 'c':
+            config_path = optarg;
+            break;
+        case 'v':
+            version();
+            return 0;
+        case 'h':
+            version();
+            fputc('\n', stderr);
+            help();
+            return 0;
+        default:
+            pr_error("Unexpected argument, %d (-%c) '%s'\n", c, c, argv[optind - 1]);
+            return -1;
+        }
+    }
     struct config config;
-    config_from_yaml(&config, config_buffer, config_size);
-    // yaml_parse(config_buffer, config_size);
-
-    r = 0;
-free_config_path:
-    if (config_path) free(config_path);
-    return r;
+    if (config_read(&config, config_path)) {
+        pr_error("Failed to read config\n");
+        return -1;
+    }
+    pr_warn("Shutting down\n");
+    return 0;
 }
