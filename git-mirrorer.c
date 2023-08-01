@@ -299,6 +299,13 @@ int config_add_repo_and_init_with_url(
             return -1;
         }
     }
+    XXH64_hash_t url_hash = XXH3_64bits(url, len_url);
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        if (config->repos[i].url_hash == url_hash) {
+            pr_error("Repo '%s' was already defined, duplication not allowed\n", url);
+            return -1;
+        }
+    }
     if (++config->repos_count >= config->repos_allocated) {
         while (config->repos_count >= (config->repos_allocated *= ALLOC_MULTIPLY)) {
             if (config->repos_allocated == ULONG_MAX) {
@@ -318,6 +325,11 @@ int config_add_repo_and_init_with_url(
     }
     struct repo *repo = config->repos + config->repos_count - 1;
     *repo = REPO_INIT;
+    if (snprintf(repo->dir_name, sizeof repo->dir_name, "%016lx", url_hash) < 0) {
+        pr_error_with_errno("Failed to generate hashed dir name");
+        --config->repos_count;
+        return -1;
+    }
     if ((repo->url = malloc(len_url + 1)) == NULL) {
         pr_error("Failed to allocate memory for url\n");
         --config->repos_count;
@@ -326,13 +338,7 @@ int config_add_repo_and_init_with_url(
     memcpy(repo->url, url, len_url);
     repo->url[len_url] = '\0';
     repo->url_len = len_url;
-    repo->url_hash = XXH3_64bits(url, len_url);
-    if (snprintf(repo->dir_name, sizeof repo->dir_name, "%016lx", repo->url_hash) < 0) {
-        pr_error_with_errno("Failed to generate hashed dir name");
-        free(repo->url);
-        --config->repos_count;
-        return -1;
-    }
+    repo->url_hash = url_hash;
     return 0;
 }
 
