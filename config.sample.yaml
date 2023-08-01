@@ -1,0 +1,28 @@
+# proxy: http://xray.lan:1080
+proxy_after: 3
+dir_repos: repos
+dir_archives: archives
+dir_checkouts: checkouts
+repos:
+  - git://git.lan/ampart.git
+  - git://git.lan/amlogic-s9xxx-archlinuxarm.git
+  - git://git.lan/orangepi5-archlinuxarm.git:
+      wanted:
+        - all_branches
+        - all_tags:
+            archive: yes
+            checkout: no
+        - fcd1b77155e2bb06d4b6ae8ceb83a694d958f6c2
+        - master:
+            archive: yes
+            checkout: no
+            type: branch
+        - HEAD:
+            archive: yes
+        # - fcd1b77155e2bb06d4b6ae8ceb83a694d958f6c2
+        # - master
+            # archive: yes
+        # - v1.0.3:
+        #     type: tag
+#   - git://git.lan/YAopenvfD.git
+  # what:
