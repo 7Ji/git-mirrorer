@@ -56,6 +56,16 @@ enum wanted_type {
     WANTED_TYPE_HEAD,
 };
 
+char const *WANTED_TYPE_STRINGS[] = {
+    "unknown",
+    "all_branches",
+    "all_tags",
+    "commit",
+    "branch",
+    "tag",
+    "head"
+};
+
 struct wanted_base {
     enum wanted_type type;
     char *name;
@@ -307,6 +317,7 @@ int config_add_repo_and_init_with_url(
     char const *const restrict url,
     unsigned short const len_url
 ) {
+    // pr_warn("Adding\n");
     if (config == NULL || url == NULL || len_url == 0) {
         pr_error("Internal: invalid argument\n");
         return -1;
@@ -481,6 +492,7 @@ int config_repo_add_wanted_object (
         pr_error("Internal: invalida argument\n");
         return -1;
     }
+    pr_warn("Adding wanted object '%s'\n", object);
     enum wanted_type wanted_type = WANTED_TYPE_UNKNOWN;
     if (guess_type) {
         if ((wanted_type = wanted_object_guess_type(object, len_object)) 
@@ -500,6 +512,8 @@ int config_repo_add_wanted_object (
         pr_error("Failed to allocate memory\n");
         goto free_wanted_object;
     }
+    memcpy(wanted_object->name, object, len_object);
+    wanted_object->name[len_object] = '\0';
     if (guess_type) {
         wanted_object->type = wanted_type;
         if (wanted_object_complete_from_base(&wanted_object)) {
@@ -595,6 +609,10 @@ int config_update_from_yaml_event(
                 if (!strncmp(key, "dir_repos", 9))
                     state->status = YAML_CONFIG_PARSING_STATUS_DIR_REPOS;
                 break;
+            case 11:
+                if (!strncmp(key, "proxy_after", 11))
+                    state->status = YAML_CONFIG_PARSING_STATUS_PROXY_AFTER;
+                break;
             case 12:
                 if (!strncmp(key, "dir_archives", 12))
                     state->status = YAML_CONFIG_PARSING_STATUS_DIR_ARCHIVES;
@@ -656,7 +674,7 @@ int config_update_from_yaml_event(
                 return -1;
             }
             memcpy(*value, event->data.scalar.value, event->data.scalar.length);
-            *value[event->data.scalar.length] = '\0';
+            (*value)[event->data.scalar.length] = '\0';
             *len = event->data.scalar.length;
             state->status = YAML_CONFIG_PARSING_STATUS_SECTION;
             break;
@@ -723,9 +741,9 @@ int config_update_from_yaml_event(
             state->repo_id = config->repos_count - 1;
             state->status = YAML_CONFIG_PARSING_STATUS_REPO_AFTER_URL;
             break;
-        // case YAML_MAPPING_END_EVENT:
-        //     state->status = YAML_CONFIG_PARSING_STATUS_REPOS_LIST;
-        //     break;
+        case YAML_MAPPING_END_EVENT:
+            state->status = YAML_CONFIG_PARSING_STATUS_REPOS_LIST;
+            break;
         default:
             goto unexpected_event_type;
         }
@@ -756,7 +774,8 @@ int config_update_from_yaml_event(
             break;
         }
         case YAML_MAPPING_END_EVENT:
-            state->status = YAML_CONFIG_PARSING_STATUS_REPOS_LIST;
+            pr_warn("Jumping back\n");
+            state->status = YAML_CONFIG_PARSING_STATUS_REPO_URL;
             state->repo_id = -1;
             break;
         default:
@@ -805,6 +824,9 @@ int config_update_from_yaml_event(
             }
             state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_AFTER_OBJECT;
             break;
+        case YAML_MAPPING_END_EVENT:
+            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_LIST;
+            break;
         default:
             goto unexpected_event_type;
         }
@@ -838,7 +860,7 @@ int config_update_from_yaml_event(
             break;
         }
         case YAML_MAPPING_END_EVENT:
-            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_LIST;
+            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT;
             break;
         default:
             goto unexpected_event_type;
@@ -861,6 +883,7 @@ int config_update_from_yaml_event(
                 config->repos[state->repo_id].wanted_objects.objects_tail->checkout
                     = bool_value;
             }
+            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION;
             break;
         }
         default:
@@ -871,9 +894,62 @@ int config_update_from_yaml_event(
     return 0;
 unexpected_event_type:
     pr_error(
-        "Unexpected event type %d for current status %d\n", 
+        "Unexpected YAML event type %d for current status %d\n", 
         event->type, state->status);
     return -1;
+}
+
+void print_config_repo_wanted(struct wanted_objects const *const restrict wanted_objects) {
+    for (struct wanted_base *wanted_object = wanted_objects->objects_head;
+        wanted_object; wanted_object = wanted_object->next) {
+        fprintf(stderr,
+            "       - %s:\n"
+            "           type: %d (%s)\n"
+            "           archive: %s\n"
+            "           checkout: %s\n",
+            wanted_object->name,
+            wanted_object->type,
+            WANTED_TYPE_STRINGS[wanted_object->type],
+            wanted_object->archive ? "yes" : "no",
+            wanted_object->checkout ? "yes" : "no"
+        );
+    }
+
+}
+
+void print_config_repo(struct repo const *const restrict repo) {
+    fprintf(stderr,
+        " - %s:\n"
+        "     hash: %016lx\n",
+        repo->url,
+        repo->url_hash);
+    if (repo->wanted_objects.objects_count) {
+        fprintf(stderr,
+        "     wanted (%lu):\n", repo->wanted_objects.objects_count);
+        print_config_repo_wanted(&repo->wanted_objects);
+    }
+
+}
+
+void print_config(struct config const *const restrict config) {
+    fprintf(stderr,
+        "\n"
+        "proxy: %s\n"
+        "proxy_after: %hu\n"
+        "dir_repos: %s\n"
+        "dir_archives: %s\n"
+        "dir_checkouts: %s\n",
+        config->proxy_url,
+        config->proxy_after,
+        config->dir_repos,
+        config->dir_archives,
+        config->dir_checkouts);
+    if (config->repos_count) {
+        fprintf(stderr, "repos (%lu): \n", config->repos_count);
+        for (unsigned long i = 0; i < config->repos_count; ++i) {
+            print_config_repo(config->repos + i);
+        }
+    }
 }
 
 int config_from_yaml(
@@ -896,7 +972,8 @@ int config_from_yaml(
             goto error;
         }
         if (config_update_from_yaml_event(config, &event, &state)) {
-            pr_error("Failed to update config from yaml event\n");
+            pr_error("Failed to update config from yaml event, current read config:\n");
+            print_config(config);
             goto error;
         }
         event_type = event.type;
@@ -904,6 +981,9 @@ int config_from_yaml(
     } while (event_type != YAML_STREAM_END_EVENT);
 
     yaml_parser_delete(&parser);
+
+    pr_warn("Config is as follows:\n");
+    print_config(config);
     return 0;
 
 error:
