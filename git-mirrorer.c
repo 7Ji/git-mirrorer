@@ -47,6 +47,9 @@
 #endif
 
 enum wanted_type {
+    WANTED_TYPE_UNKNOWN,
+    WANTED_TYPE_ALL_BRANCHES,
+    WANTED_TYPE_ALL_TAGS,
     WANTED_TYPE_COMMIT,
     WANTED_TYPE_BRANCH,
     WANTED_TYPE_TAG,
@@ -55,8 +58,14 @@ enum wanted_type {
 
 struct wanted_base {
     enum wanted_type type;
-    struct wanted_commit *previous, *next;
+    char *name;
+    unsigned short name_len;
+    bool archive;
+    bool checkout;
+    struct wanted_base *previous, *next;
 };
+
+struct wanted_base const WANTED_BASE_INIT = {0};
 
 struct wanted_commit {
     struct wanted_base base;
@@ -64,17 +73,21 @@ struct wanted_commit {
     char id_hex_string[GIT_OID_MAX_HEXSIZE + 1];
 };
 
+struct wanted_commit const WANTED_COMMIT_INIT = {0};
+
 struct wanted_reference {
     struct wanted_commit commit;
     bool commit_resolved;
-    char *reference;
-    unsigned short reference_len;
+    // char *reference;
+    // unsigned short reference_len;
 };
+
+struct wanted_reference const WANTED_REFERENCE_INIT = {0};
 
 struct wanted_objects {
     struct wanted_base *objects_head;
-    bool all_branches;
-    bool all_tags;
+    struct wanted_base *objects_tail;
+    unsigned long objects_count;
     bool dynamic;
 };
 
@@ -95,8 +108,6 @@ struct repo {
     enum repo_added_from added_from;
 };
 
-static const struct repo REPO_INIT = {0};
-
 struct config {
     struct repo *repos;
     unsigned long   repos_count,
@@ -112,6 +123,46 @@ struct config {
                     len_dir_archives,
                     len_dir_checkouts;
 };
+
+enum YAML_CONFIG_PARSING_STATUS {
+    YAML_CONFIG_PARSING_STATUS_NONE,
+    YAML_CONFIG_PARSING_STATUS_STREAM,
+    YAML_CONFIG_PARSING_STATUS_DOCUMENT,
+    YAML_CONFIG_PARSING_STATUS_SECTION,
+    YAML_CONFIG_PARSING_STATUS_PROXY,
+    YAML_CONFIG_PARSING_STATUS_PROXY_AFTER,
+    YAML_CONFIG_PARSING_STATUS_DIR_REPOS,
+    YAML_CONFIG_PARSING_STATUS_DIR_ARCHIVES,
+    YAML_CONFIG_PARSING_STATUS_DIR_CHECKOUTS,
+    YAML_CONFIG_PARSING_STATUS_REPOS,
+    YAML_CONFIG_PARSING_STATUS_REPOS_LIST,
+    YAML_CONFIG_PARSING_STATUS_REPO_URL,
+    YAML_CONFIG_PARSING_STATUS_REPO_AFTER_URL,
+    YAML_CONFIG_PARSING_STATUS_REPO_SECTION,
+    YAML_CONFIG_PARSING_STATUS_REPO_WANTED,
+    YAML_CONFIG_PARSING_STATUS_REPO_WANTED_LIST,
+    YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT,
+    YAML_CONFIG_PARSING_STATUS_REPO_WANTED_AFTER_OBJECT,
+    YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION,
+    YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_ARCHIVE,
+    YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_CHECKOUT,
+    // YAML_CONFIG_PARSING_STATUS_REPOS_URL_VALUES,
+};
+
+struct config_yaml_parse_state {
+    int level;
+    unsigned short 
+        stream_start,
+        stream_end,
+        document_start,
+        document_end,
+        global,
+        repos;
+    long repo_id;
+    enum YAML_CONFIG_PARSING_STATUS status;
+};
+
+static const struct repo REPO_INIT = {0};
 
 int sideband_progress(char const *string, int len, void *payload);
 int fetch_progress(git_indexer_progress const *stats, void *payload);
@@ -137,6 +188,7 @@ struct config const CONFIG_INIT = {
     .proxy_url = NULL,
     .proxy_after = 0,
 };
+
 
 int sideband_progress(char const *string, int len, void *payload) {
 	(void)payload; /* unused */
@@ -250,39 +302,6 @@ free_buffer:
     return size_total;
 }
 
-
-enum YAML_CONFIG_PARSING_STATUS {
-    YAML_CONFIG_PARSING_STATUS_NONE,
-    YAML_CONFIG_PARSING_STATUS_STREAM,
-    YAML_CONFIG_PARSING_STATUS_DOCUMENT,
-    YAML_CONFIG_PARSING_STATUS_SECTION,
-    YAML_CONFIG_PARSING_STATUS_PROXY,
-    YAML_CONFIG_PARSING_STATUS_PROXY_AFTER,
-    YAML_CONFIG_PARSING_STATUS_DIR_REPOS,
-    YAML_CONFIG_PARSING_STATUS_DIR_ARCHIVES,
-    YAML_CONFIG_PARSING_STATUS_DIR_CHECKOUTS,
-    YAML_CONFIG_PARSING_STATUS_REPOS,
-    YAML_CONFIG_PARSING_STATUS_REPOS_LIST,
-    YAML_CONFIG_PARSING_STATUS_REPO_URL,
-    YAML_CONFIG_PARSING_STATUS_REPO_AFTER_URL,
-    YAML_CONFIG_PARSING_STATUS_REPO_SECTION,
-    YAML_CONFIG_PARSING_STATUS_REPO_WANTED,
-    // YAML_CONFIG_PARSING_STATUS_REPOS_URL_VALUES,
-};
-
-struct config_yaml_parse_state {
-    int level;
-    unsigned short 
-        stream_start,
-        stream_end,
-        document_start,
-        document_end,
-        global,
-        repos;
-    unsigned short repo_id;
-    enum YAML_CONFIG_PARSING_STATUS status;
-};
-
 int config_add_repo_and_init_with_url(
     struct config *const restrict config,
     char const *const restrict url,
@@ -340,6 +359,186 @@ int config_add_repo_and_init_with_url(
     repo->url_len = len_url;
     repo->url_hash = url_hash;
     return 0;
+}
+
+static inline bool object_name_is_sha1(
+    char const *const restrict object
+) {
+    for (unsigned short i = 0; i < 40; ++i) {
+        switch (object[i]) {
+        case '0'...'9':
+        case 'a'...'f':
+        case 'A'...'F':
+            break;
+        default:
+            return false;
+        }
+    }
+    return true;
+}
+
+enum wanted_type wanted_object_guess_type(
+    char const *const restrict object,
+    unsigned short len_object
+) {
+    switch (len_object) {
+    case 4:
+        if (!strncmp(object, "HEAD", 4)) return WANTED_TYPE_HEAD;
+        break;
+    case 8:
+        if (!strncmp(object, "all_tags", 8)) return WANTED_TYPE_ALL_TAGS;
+        break;
+    case 12:
+        if (!strncmp(object, "all_branches", 12)) return WANTED_TYPE_ALL_BRANCHES;
+        break;
+    case 40:
+        if (object_name_is_sha1(object)) return WANTED_TYPE_COMMIT;
+        break;
+    default:
+        break;
+    }
+    pr_error("Failed to figure out the type of wanted object '%s', "
+        "try to set it explicitly e.g. type: branch\n", object);
+    return WANTED_TYPE_UNKNOWN;
+}
+
+int wanted_object_complete_commit_from_base(
+    struct wanted_base **wanted_object
+) {
+    git_oid oid;
+    if (git_oid_fromstr(&oid, (*wanted_object)->name)) {
+        pr_error("Failed to resolve '%s' to a git object id\n", (*wanted_object)->name);
+        return -1;
+    }
+    struct wanted_commit *wanted_commit = malloc(sizeof *wanted_commit);
+    if (wanted_commit == NULL) {
+        pr_error("Failed to allocate memory\n");
+        return -1;
+    }
+    *wanted_commit = WANTED_COMMIT_INIT;
+    if (git_oid_tostr(
+            wanted_commit->id_hex_string,
+            sizeof wanted_commit->id_hex_string, 
+            &oid
+        )[0] == '\0') {
+        pr_error("Failed to format git oid hex string\n");
+        free(wanted_commit);
+        return -1;
+    }
+    wanted_commit->base = **wanted_object;
+    wanted_commit->id = oid;
+    free(*wanted_object);
+    *wanted_object = (struct wanted_base *)wanted_commit;
+    return 0;
+}
+
+int wanted_object_complete_reference_from_base(
+    struct wanted_base **wanted_object
+) {
+    struct wanted_reference *wanted_reference = malloc(sizeof *wanted_reference);
+    if (wanted_reference == NULL) {
+        pr_error("Failed to allocate memory\n");
+        return -1;
+    }
+    *wanted_reference = WANTED_REFERENCE_INIT;
+    wanted_reference->commit.base = **wanted_object;
+    free(*wanted_object);
+    *wanted_object = (struct wanted_base *)wanted_reference;
+    return 0;
+}
+
+int wanted_object_complete_from_base(
+    struct wanted_base **wanted_object
+) {
+    switch ((*wanted_object)->type) {
+    case WANTED_TYPE_UNKNOWN:
+        pr_error("Impossible to complete an object with unknown type\n");
+        return -1;
+    case WANTED_TYPE_ALL_BRANCHES: // These two does not need to be upgraded
+    case WANTED_TYPE_ALL_TAGS:
+        return 0;
+    case WANTED_TYPE_COMMIT:
+        return wanted_object_complete_commit_from_base(wanted_object);
+    case WANTED_TYPE_BRANCH:
+    case WANTED_TYPE_TAG:
+    case WANTED_TYPE_HEAD:
+        return wanted_object_complete_reference_from_base(wanted_object);
+    default:
+        pr_error("Impossible routine\n");
+        return -1;
+    }
+    return 0;
+}
+
+int config_repo_add_wanted_object (
+    struct config *const restrict config,
+    long repo_id,
+    char const *const restrict object,
+    unsigned short len_object,
+    bool guess_type
+) {
+    if (config == NULL || repo_id < 0 || object == NULL || object[0] == '\0') {
+        pr_error("Internal: invalida argument\n");
+        return -1;
+    }
+    enum wanted_type wanted_type = WANTED_TYPE_UNKNOWN;
+    if (guess_type) {
+        if ((wanted_type = wanted_object_guess_type(object, len_object)) 
+            == WANTED_TYPE_UNKNOWN) {
+            pr_error("Failed to guess object type of '%s'\n", object);
+            return -1;
+        }
+    }
+    struct repo *const repo = config->repos + repo_id;
+    struct wanted_base *wanted_object = malloc(sizeof *wanted_object);
+    if (wanted_object == NULL) {
+        pr_error("Failed to allocate memory\n");
+        return -1;
+    }
+    *wanted_object = WANTED_BASE_INIT;
+    if ((wanted_object->name = malloc(len_object + 1)) == NULL) {
+        pr_error("Failed to allocate memory\n");
+        goto free_wanted_object;
+    }
+    if (guess_type) {
+        wanted_object->type = wanted_type;
+        if (wanted_object_complete_from_base(&wanted_object)) {
+            pr_error("Failed to complete object\n");
+            goto free_name;
+        }
+    }
+    if (repo->wanted_objects.objects_count == 0) {
+        repo->wanted_objects.objects_head = wanted_object;
+        repo->wanted_objects.objects_tail = wanted_object;
+    } else {
+        repo->wanted_objects.objects_tail->next = wanted_object;
+        wanted_object->previous = repo->wanted_objects.objects_tail;
+        repo->wanted_objects.objects_tail = wanted_object;
+    }
+    ++repo->wanted_objects.objects_count;
+    return 0;
+
+free_name:
+    free(wanted_object->name);
+free_wanted_object:
+    free(wanted_object);
+    return -1;
+}
+
+// 0 for false, 1 for true, -1 for error parsing
+int bool_from_string(
+    char const *const restrict string
+) {
+    if (string == NULL || string[0] == '\0') {
+        return -1;
+    }
+    if (!strcasecmp(string, "yes") || !strcmp(string, "true")) {
+        return 1;
+    }
+    if (!strcasecmp(string, "no") || !strcmp(string, "false")) {
+        return 0;
+    }
+    return -1;
 }
 
 int config_update_from_yaml_event(
@@ -556,13 +755,120 @@ int config_update_from_yaml_event(
             }
             break;
         }
+        case YAML_MAPPING_END_EVENT:
+            state->status = YAML_CONFIG_PARSING_STATUS_REPOS_LIST;
+            state->repo_id = -1;
+            break;
         default:
             goto unexpected_event_type;
         }
-    case YAML_CONFIG_PARSING_STATUS_REPO_WANTED:
         break;
-    return 0;
+    case YAML_CONFIG_PARSING_STATUS_REPO_WANTED:
+        switch (event->type) {
+        case YAML_SEQUENCE_START_EVENT:
+            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_LIST;
+            break;
+        default:
+            goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_REPO_WANTED_LIST:
+        switch (event->type) {
+        case YAML_SCALAR_EVENT: 
+            if (config_repo_add_wanted_object(
+                config, state->repo_id, (char const *)event->data.scalar.value,
+                event->data.scalar.length, true
+            )) {
+                pr_error("Failed to add wanted object\n");
+                return -1;
+            }
+            break;
+        case YAML_MAPPING_START_EVENT:
+            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT;
+            break;
+        case YAML_SEQUENCE_END_EVENT:
+            state->status = YAML_CONFIG_PARSING_STATUS_REPO_SECTION;
+            break;
+        default:
+            goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT:
+        switch (event->type) {
+        case YAML_SCALAR_EVENT:
+            if (config_repo_add_wanted_object(
+                config, state->repo_id, (char const *)event->data.scalar.value,
+                event->data.scalar.length, false
+            )) {
+                pr_error("Failed to add wanted object\n");
+                return -1;
+            }
+            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_AFTER_OBJECT;
+            break;
+        default:
+            goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_REPO_WANTED_AFTER_OBJECT:
+        switch (event->type) {
+        case YAML_MAPPING_START_EVENT:
+            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION;
+            break;
+        default:
+            goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION:
+        switch (event->type) {
+        case YAML_SCALAR_EVENT:{
+            char const *const key = (char const *)event->data.scalar.value;
+            switch (event->data.scalar.length) {
+            case 7:
+                if (!strncmp(key, "archive", 7))
+                    state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_ARCHIVE;
+                break;
+            case 8:
+                if (!strncmp(key, "checkout", 8))
+                    state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_CHECKOUT;
+            }
+            if (state->status == YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION) {
+                pr_error("Unrecognized config key '%s'\n", key);
+                return -1;
+            }
+            break;
+        }
+        case YAML_MAPPING_END_EVENT:
+            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_LIST;
+            break;
+        default:
+            goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_ARCHIVE:
+    case YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_CHECKOUT:
+        switch (event->type) {
+        case YAML_SCALAR_EVENT: {
+            int bool_value = bool_from_string((char const *)event->data.scalar.value);
+            if (bool_value < 0) {
+                pr_error("Failed to parse '%s' into a bool value\n", 
+                    (char const *)event->data.scalar.value);
+                return -1;
+            }
+            if (state->status == YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_ARCHIVE) {
+                config->repos[state->repo_id].wanted_objects.objects_tail->archive
+                    = bool_value;
+            } else {
+                config->repos[state->repo_id].wanted_objects.objects_tail->checkout
+                    = bool_value;
+            }
+            break;
+        }
+        default:
+            goto unexpected_event_type;
+        }
+        break;
     }
+    return 0;
 unexpected_event_type:
     pr_error(
         "Unexpected event type %d for current status %d\n", 
