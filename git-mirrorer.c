@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <errno.h>
+#include <assert.h>
 
 #include <unistd.h>
 
@@ -86,7 +87,9 @@ struct repo {
     char *url;
     unsigned short url_len;
     XXH64_hash_t url_hash;
-    char dir[REPO_DIR_LEN];
+    // char dir[REPO_DIR_LEN];
+    char *dir_path;
+    char dir_name[17];
     git_repository *repository;
     struct wanted_objects wanted_objects;
     enum repo_added_from added_from;
@@ -96,11 +99,18 @@ static const struct repo REPO_INIT = {0};
 
 struct config {
     struct repo *repos;
-    unsigned long repos_count;
-    unsigned long repos_allocated;
+    unsigned long   repos_count,
+                    repos_allocated;
     git_fetch_options fetch_options;
-    char proxy_url[PATH_MAX];
-    unsigned short proxy_after;
+    char    *proxy_url,
+            *dir_repos,
+            *dir_archives,
+            *dir_checkouts;
+    unsigned short  proxy_after,
+                    len_proxy_url,
+                    len_dir_repos,
+                    len_dir_archives,
+                    len_dir_checkouts;
 };
 
 int sideband_progress(char const *string, int len, void *payload);
@@ -124,7 +134,7 @@ struct config const CONFIG_INIT = {
         .proxy_opts = GIT_PROXY_OPTIONS_INIT,
         0,
     },
-    .proxy_url = "",
+    .proxy_url = NULL,
     .proxy_after = 0,
 };
 
@@ -168,7 +178,8 @@ int fetch_progress(git_indexer_progress const *stats, void *payload) {
 static inline void help() {
     fputs(
         "git-mirrorer\n"
-        "  --config/-c\t[path to .yaml config file] or a single - for reading from stdin; if not set, read from stdin\n"
+        "  --config/-c\t[path to .yaml config file]"
+            " or a single - for reading from stdin; if not set, read from stdin\n"
         "  --help/-h\tprint this message\n"
         "  --version/-v\tprint the version\n",
         stderr
@@ -176,7 +187,9 @@ static inline void help() {
 }
 
 static inline void version() {
-    fputs("git-mirrorer version "VERSION" by 7Ji, licensed under GPLv3 or later\n", stderr);
+    fputs(
+        "git-mirrorer version "VERSION" by 7Ji, licensed under GPLv3 or later\n", 
+        stderr);
 }
 
 // Read from fd until EOF, return the size being read, or -1 if failed, the pointer should be free'd by caller
@@ -195,7 +208,9 @@ ssize_t buffer_read_from_fd(unsigned char **buffer, int fd) {
         if (size_alloc - size_total < 0x10000) {
             while (size_alloc - size_total < 0x10000) {
                 if (size_alloc == SIZE_MAX) { // This shouldn't be possible
-                    pr_error("Couldn't allocate more memory, allocated size already at size max\n");
+                    pr_error(
+                        "Couldn't allocate more memory, "
+                        "allocated size already at size max\n");
                     size_total = -1;
                     goto free_buffer;
                 } else if (size_alloc >= SIZE_MAX / 2) {
@@ -235,11 +250,24 @@ free_buffer:
     return size_total;
 }
 
+
 enum YAML_CONFIG_PARSING_STATUS {
-    YAML_CONFIG_PARSING_NONE,
-    YAML_CONFIG_PARSING_TOP,
-    YAML_CONFIG_PARSING_GLOBAL,
-    YAML_CONFIG_PARSING_REPOS,
+    YAML_CONFIG_PARSING_STATUS_NONE,
+    YAML_CONFIG_PARSING_STATUS_STREAM,
+    YAML_CONFIG_PARSING_STATUS_DOCUMENT,
+    YAML_CONFIG_PARSING_STATUS_SECTION,
+    YAML_CONFIG_PARSING_STATUS_PROXY,
+    YAML_CONFIG_PARSING_STATUS_PROXY_AFTER,
+    YAML_CONFIG_PARSING_STATUS_DIR_REPOS,
+    YAML_CONFIG_PARSING_STATUS_DIR_ARCHIVES,
+    YAML_CONFIG_PARSING_STATUS_DIR_CHECKOUTS,
+    YAML_CONFIG_PARSING_STATUS_REPOS,
+    YAML_CONFIG_PARSING_STATUS_REPOS_LIST,
+    YAML_CONFIG_PARSING_STATUS_REPO_URL,
+    YAML_CONFIG_PARSING_STATUS_REPO_AFTER_URL,
+    YAML_CONFIG_PARSING_STATUS_REPO_SECTION,
+    YAML_CONFIG_PARSING_STATUS_REPO_WANTED,
+    // YAML_CONFIG_PARSING_STATUS_REPOS_URL_VALUES,
 };
 
 struct config_yaml_parse_state {
@@ -251,170 +279,289 @@ struct config_yaml_parse_state {
         document_end,
         global,
         repos;
+    unsigned short repo_id;
     enum YAML_CONFIG_PARSING_STATUS status;
 };
+
+int config_add_repo_and_init_with_url(
+    struct config *const restrict config,
+    char const *const restrict url,
+    unsigned short const len_url
+) {
+    if (config == NULL || url == NULL || len_url == 0) {
+        pr_error("Internal: invalid argument\n");
+        return -1;
+    }
+    if (config->repos == NULL) {
+        if ((config->repos = malloc(sizeof *config->repos *
+            (config->repos_allocated = ALLOC_BASE))) == NULL) {
+            pr_error("Failed to allocate memory for repos\n");
+            return -1;
+        }
+    }
+    if (++config->repos_count >= config->repos_allocated) {
+        while (config->repos_count >= (config->repos_allocated *= ALLOC_MULTIPLY)) {
+            if (config->repos_allocated == ULONG_MAX) {
+                pr_error("Impossible to allocate more memory\n");
+                return -1;
+            } else if (config->repos_allocated >= ULONG_MAX / ALLOC_MULTIPLY) {
+                config->repos_allocated = ULONG_MAX;
+            }
+        }
+        struct repo *repos_new = realloc(config->repos, 
+            sizeof *repos_new * config->repos_allocated);
+        if (repos_new == NULL) {
+            pr_error("Failed to re-allocate memory\n");
+            return -1;
+        }
+        config->repos = repos_new;
+    }
+    struct repo *repo = config->repos + config->repos_count - 1;
+    *repo = REPO_INIT;
+    if ((repo->url = malloc(len_url + 1)) == NULL) {
+        pr_error("Failed to allocate memory for url\n");
+        --config->repos_count;
+        return -1;
+    }
+    memcpy(repo->url, url, len_url);
+    repo->url[len_url] = '\0';
+    repo->url_len = len_url;
+    repo->url_hash = XXH3_64bits(url, len_url);
+    if (snprintf(repo->dir_name, sizeof repo->dir_name, "%016lx", repo->url_hash) < 0) {
+        pr_error_with_errno("Failed to generate hashed dir name");
+        free(repo->url);
+        --config->repos_count;
+        return -1;
+    }
+    return 0;
+}
 
 int config_update_from_yaml_event(
     struct config *const restrict config,
     yaml_event_t const *const restrict event,
     struct config_yaml_parse_state *const restrict state
 ) {
-    switch (event->type) {
-    case YAML_NO_EVENT:
-        break;
-    case YAML_STREAM_START_EVENT:
-        if (++state->stream_start > 1) {
-            pr_error("Could not accept yaml config with multiple stream starts\n");
-            return -1;
-        }
-        break;
-    case YAML_STREAM_END_EVENT:
-        if (++state->stream_end > 1) {
-            pr_error("Could not accept yaml config with multiple stream ends\n");
-            return -1;
-        }
-        break;
-    case YAML_DOCUMENT_START_EVENT:
-        if (++state->document_start > 1) {
-            pr_error("Could not accept yaml config with multiple document starts\n");
-            return -1;
-        }
-        break;
-    case YAML_DOCUMENT_END_EVENT:
-        if (++state->document_end > 1) {
-            pr_error("Could not accept yaml config with multiple document ends\n");
-            return -1;
-        }
-        break;
-    case YAML_ALIAS_EVENT:
-        pr_error("Alias is currently not supported in yaml config\n");
-        return -1;
-        break;
-    case YAML_SCALAR_EVENT:
-        switch (state->level) {
-        case 0:
-            pr_error("Unexpected scalar event in the top level in yaml config\n");
-            return -1;
-        case 1:
-            switch (state->status) {
-            case YAML_CONFIG_PARSING_TOP:
-                if (!strcmp((char const *)event->data.scalar.value, "global")) {
-                    if (++state->global > 1) {
-                        pr_error("Multiple global session in the yaml config\n");
-                        return -1;
-                    }
-                    state->status = YAML_CONFIG_PARSING_GLOBAL;
-                } else if (!strcmp((char const *)event->data.scalar.value, "repos")) {
-                    if (++state->repos > 1) {
-                        pr_error("Multiple repos session in the yaml config\n'");
-                        return -1;
-                    }
-                    state->status = YAML_CONFIG_PARSING_REPOS;
-                } else {
-                    pr_error("Unexpected top-level key in yaml: %s\n", (char const *) event->data.scalar.value);
-                    return -1;
-                }
-                break;
-            default:
-                pr_error("Unexpected state %d\n", state->status);
-                return -1;
-            }
-        
-        default:
-            break;
-        }
-        break;
-    case YAML_SEQUENCE_START_EVENT:
-        switch (++state->level) {
-        case 1:
-            pr_error("Unexpected sequence event in the top level in yaml config\n");
-            return -1;
-        case 2:
-            switch (state->status) {
-            case YAML_CONFIG_PARSING_REPOS:
-                break;
-            default:
-                pr_error("Unexpected state\n");
-                return -1;
-            }
-        default:
-            break;
-        }
-        break;
-    case YAML_SEQUENCE_END_EVENT:
-        switch (--state->level) {
-        case 1:
-            switch (state->status) {
-            case YAML_CONFIG_PARSING_REPOS:
-                state->status = YAML_CONFIG_PARSING_TOP;
-                break;
-            default:
-                pr_error("Unexpected state\n");
-                return -1;
-            }
-        default:
-            break;
-        }
-        break;
-    case YAML_MAPPING_START_EVENT:
-        switch (++state->level) {
-        case 1:
-            switch (state->status) {
-            case YAML_CONFIG_PARSING_NONE:
-                state->status = YAML_CONFIG_PARSING_TOP;
-                break;
-            default:
-                pr_error("YAML config map starts at unexpected status %d\n", state->status);
-                return -1;
-            }
-        default:
-            break;
-        }
-        break;
-    case YAML_MAPPING_END_EVENT:
-        switch (--state->level) {
-        case 0:
-            switch (state->status) {
-            case YAML_CONFIG_PARSING_TOP:
-                state->status = YAML_CONFIG_PARSING_NONE;
-                break;
-            default:
-                pr_error("Mapping ends at level 1 with unexpected status %d\n", state->status);
-                return -1;
-            }
-            break;
-        case 1:
-            switch (state->status) {
-            case YAML_CONFIG_PARSING_GLOBAL:
-                state->status = YAML_CONFIG_PARSING_TOP;
-                break;
-            default:
-                pr_error("Mapping ends at level 2 with unexpected status %d\n", state->status);
-                return -1;
-            }
+    switch (state->status) {
+    case YAML_CONFIG_PARSING_STATUS_NONE:
+        switch (event->type) {
+        case YAML_STREAM_START_EVENT:
+            state->status = YAML_CONFIG_PARSING_STATUS_STREAM;
             break;
         default:
+            goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_STREAM:
+        switch (event->type) {
+        case YAML_DOCUMENT_START_EVENT:
+            state->status = YAML_CONFIG_PARSING_STATUS_DOCUMENT;
+            break;
+        case YAML_STREAM_END_EVENT:
+            state->status = YAML_CONFIG_PARSING_STATUS_NONE;
+            break;
+        default:
+            goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_DOCUMENT:
+        switch (event->type) {
+        case YAML_MAPPING_START_EVENT:
+            state->status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            break;
+        case YAML_DOCUMENT_END_EVENT:
+            state->status = YAML_CONFIG_PARSING_STATUS_STREAM;
+            break;
+        default:
+            goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_SECTION:
+        switch (event->type) {
+        case YAML_SCALAR_EVENT: {
+            char const *const key = (char const *)event->data.scalar.value;
+            switch (event->data.scalar.length) {
+            case 5:
+                if (!strncmp(key, "proxy", 5))
+                    state->status = YAML_CONFIG_PARSING_STATUS_PROXY;
+                else if (!strncmp(key, "repos", 5))
+                    state->status = YAML_CONFIG_PARSING_STATUS_REPOS;
+                break;
+            case 9:
+                if (!strncmp(key, "dir_repos", 9))
+                    state->status = YAML_CONFIG_PARSING_STATUS_DIR_REPOS;
+                break;
+            case 12:
+                if (!strncmp(key, "dir_archives", 12))
+                    state->status = YAML_CONFIG_PARSING_STATUS_DIR_ARCHIVES;
+                break;
+            case 13:
+                if (!strncmp(key, "dir_checkouts", 13))
+                    state->status = YAML_CONFIG_PARSING_STATUS_DIR_CHECKOUTS;
+                break;
+            }
+            if (state->status == YAML_CONFIG_PARSING_STATUS_SECTION) {
+                pr_error("Unrecognized config key '%s'\n", key);
+                return -1;
+            }
             break;
         }
-        // if (--state->level == 0) {
-        //     switch (state->status) {
-        //     case YAML_CONFIG_PARSING_GLOBAL:
-        //     case YAML_CONFIG_PARSING_REPOS:
-        //         pr_warn("Ending parsing a session\n");
-        //         state->status = YAML_CONFIG_PARSING_TOP;
-        //         break;
-        //     default:
-        //         pr_error("YAML config returns to top level from unexpected status %d\n", state->status);
-        //         return -1;
-        //     }
-        // }
+        case YAML_MAPPING_END_EVENT:
+            state->status = YAML_CONFIG_PARSING_STATUS_DOCUMENT;
+            break;
+        default:
+            goto unexpected_event_type;
+        }
         break;
-    }
-    if (state->level < 0) {
-        pr_error("YAML level underflow!\n");
-        return -1;
-    }
+    case YAML_CONFIG_PARSING_STATUS_PROXY:
+    case YAML_CONFIG_PARSING_STATUS_DIR_REPOS:
+    case YAML_CONFIG_PARSING_STATUS_DIR_ARCHIVES:
+    case YAML_CONFIG_PARSING_STATUS_DIR_CHECKOUTS:
+        switch (event->type) {
+        case YAML_SCALAR_EVENT: {
+            char **value = NULL;
+            unsigned short *len = NULL;
+            switch (state->status) {
+            case YAML_CONFIG_PARSING_STATUS_PROXY:
+                value = &config->proxy_url;
+                len = &config->len_proxy_url;
+                break;
+            case YAML_CONFIG_PARSING_STATUS_DIR_REPOS:
+                value = &config->dir_repos;
+                len = &config->len_dir_repos;
+                break;
+            case YAML_CONFIG_PARSING_STATUS_DIR_ARCHIVES:
+                value = &config->dir_archives;
+                len = &config->len_dir_archives;
+                break;
+            case YAML_CONFIG_PARSING_STATUS_DIR_CHECKOUTS:
+                value = &config->dir_checkouts;
+                len = &config->len_dir_checkouts;
+                break;
+            default:
+                pr_error("Internal: impossible value\n");
+                return -1;
+            }
+            if (value == NULL || len == NULL) {
+                pr_error("Internal: impossible value\n");
+                return -1;
+            }
+            if (*value != NULL) free(*value);
+            if ((*value = malloc(event->data.scalar.length + 1)) == NULL) {
+                pr_error("Failed to allocate memory\n");
+                return -1;
+            }
+            memcpy(*value, event->data.scalar.value, event->data.scalar.length);
+            *value[event->data.scalar.length] = '\0';
+            *len = event->data.scalar.length;
+            state->status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            break;
+        }
+        default:
+            goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_PROXY_AFTER:
+        switch (event->type) {
+        case YAML_SCALAR_EVENT:
+            config->proxy_after = strtoul(
+                (char const *)event->data.scalar.value, NULL, 10);
+            state->status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            break;
+        default:
+            goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_REPOS:
+        switch (event->type) {
+        case YAML_SEQUENCE_START_EVENT:
+            state->status = YAML_CONFIG_PARSING_STATUS_REPOS_LIST;
+            break;
+        default:
+            goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_REPOS_LIST:
+        switch (event->type) {
+        case YAML_SCALAR_EVENT: // url-only repo
+            if (config_add_repo_and_init_with_url(
+                config,
+                (char const *)event->data.scalar.value,
+                event->data.scalar.length
+            )) {
+                pr_error("Failed to add repo with url '%s'\n", 
+                    (char const *) event->data.scalar.value);
+                return -1;
+            }
+            break;
+        case YAML_SEQUENCE_END_EVENT: // all end
+            state->status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            break;
+        case YAML_MAPPING_START_EVENT: // advanced repo config
+            state->status = YAML_CONFIG_PARSING_STATUS_REPO_URL;
+            break;
+        default:
+            goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_REPO_URL: // only accept repo url as mapping name
+        switch (event->type) {
+        case YAML_SCALAR_EVENT:
+            if (config_add_repo_and_init_with_url(
+                config,
+                (char const *)event->data.scalar.value,
+                event->data.scalar.length
+            )) {
+                pr_error("Failed to add repo with url '%s'\n", 
+                    (char const *) event->data.scalar.value);
+                return -1;
+            }
+            state->repo_id = config->repos_count - 1;
+            state->status = YAML_CONFIG_PARSING_STATUS_REPO_AFTER_URL;
+            break;
+        // case YAML_MAPPING_END_EVENT:
+        //     state->status = YAML_CONFIG_PARSING_STATUS_REPOS_LIST;
+        //     break;
+        default:
+            goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_REPO_AFTER_URL:
+        switch (event->type) {
+        case YAML_MAPPING_START_EVENT:
+            state->status = YAML_CONFIG_PARSING_STATUS_REPO_SECTION;
+            break;
+        default:
+            goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_REPO_SECTION:
+        switch(event->type) {
+        case YAML_SCALAR_EVENT: {
+            char const *const key = (char const *)event->data.scalar.value;
+            switch (event->data.scalar.length) {
+            case 6:
+                if (!strncmp(key, "wanted", 6))
+                    state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED;
+                break;
+            }
+            if (state->status == YAML_CONFIG_PARSING_STATUS_REPO_SECTION) {
+                pr_error("Unrecognized config key '%s'\n", key);
+                return -1;
+            }
+            break;
+        }
+        default:
+            goto unexpected_event_type;
+        }
+    case YAML_CONFIG_PARSING_STATUS_REPO_WANTED:
+        break;
     return 0;
+    }
+unexpected_event_type:
+    pr_error(
+        "Unexpected event type %d for current status %d\n", 
+        event->type, state->status);
+    return -1;
 }
 
 int config_from_yaml(
@@ -436,7 +583,7 @@ int config_from_yaml(
             pr_error("Failed to parse: %s\n", parser.problem);
             goto error;
         }
-        if (config_update_from_yaml_event(&config, &event, &state)) {
+        if (config_update_from_yaml_event(config, &event, &state)) {
             pr_error("Failed to update config from yaml event\n");
             goto error;
         }
