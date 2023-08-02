@@ -1880,6 +1880,57 @@ free_commit:
 }
 
 // May re-allocate the config->repos array, must re-assign repo after calling
+int mirror_repo_ensure_wanted_reference(
+    struct config *const restrict config,
+    unsigned long const repo_id,
+    struct wanted_reference *const restrict wanted_reference,
+    git_reference *reference
+) {
+    struct repo *restrict repo = config->repos + repo_id;
+    char const *const reference_name = wanted_reference->commit.base.name;
+    git_object *object;
+    int r;
+    if ((r = git_reference_peel(&object, reference, GIT_OBJECT_COMMIT))) {
+        pr_error(
+            "Failed to peel reference '%s' into a commit object, "
+            "libgit return %d\n",
+            reference_name, r);
+        return -1;
+    }
+    git_commit *commit = (git_commit *)object;
+    wanted_reference->commit_resolved = true;
+    wanted_reference->commit.id = *git_commit_id(commit);
+    if (git_oid_tostr(
+            wanted_reference->commit.id_hex_string,
+            sizeof wanted_reference->commit.id_hex_string, 
+            &wanted_reference->commit.id
+        )[0] == '\0') {
+        pr_error("Failed to format git oid hex string\n");
+        git_object_free(object);
+        return -1;
+    }
+    git_object_free(object);
+    pr_warn("Resolved reference '%s' of repo '%s' to commit '%s', "
+        "working on that commit instead\n",
+        reference_name, repo->url, 
+        wanted_reference->commit.id_hex_string);
+    r = mirror_repo_ensure_wanted_commit(
+        config, repo_id, &wanted_reference->commit);
+    repo = config->repos + repo_id;
+    if (r) {
+        pr_error("Failed to ensuring robust of commit '%s' resolved from "
+            "reference '%s' of repo '%s'\n", 
+            wanted_reference->commit.id_hex_string, 
+            reference_name,
+            repo->url);
+        return -1;
+    }
+    pr_warn("Ensured existence and robust of reference '%s' in repo '%s'\n",
+        reference_name, repo->url);
+    return 0;
+}
+
+// May re-allocate the config->repos array, must re-assign repo after calling
 int mirror_repo_ensure_wanted_head(
     struct config *const restrict config,
     unsigned long const repo_id,
@@ -1902,71 +1953,82 @@ int mirror_repo_ensure_wanted_head(
         pr_error("Failed to find head, unhandled libgit return %d\n", r);
         return -1;
     }
-    git_object *object;
-    if ((r = git_reference_peel(&object, head, GIT_OBJECT_COMMIT))) {
-        pr_error(
-            "Failed to peel HEAD into a commit object, libgit return %d\n",
-            r);
-        return -1;
-    }
-    git_commit *commit = (git_commit *)object;
-    wanted_head->commit_resolved = true;
-    wanted_head->commit.id = *git_commit_id(commit);
-    if (git_oid_tostr(
-            wanted_head->commit.id_hex_string,
-            sizeof wanted_head->commit.id_hex_string, 
-            &wanted_head->commit.id
-        )[0] == '\0') {
-        pr_error("Failed to format git oid hex string\n");
-        git_object_free(object);
-        return -1;
-    }
-    git_object_free(object);
-    pr_warn("Resolved HEAD of repo '%s' to commit '%s', working on that commit "
-        "instead\n",
-        repo->url, wanted_head->commit.id_hex_string);
-    r = mirror_repo_ensure_wanted_commit(config, repo_id, &wanted_head->commit);
-    repo = config->repos + repo_id;
-    if (r) {
-        pr_error("Failed to ensuring robust of commit '%s' resolved from HEAD "
-        "of repo '%s'\n", wanted_head->commit.id_hex_string, repo->url);
-        return -1;
-    }
-    pr_warn("Ensured existence of HEAD in repo '%s'\n", repo->url);
-    return 0;
+    r = mirror_repo_ensure_wanted_reference(config, repo_id, wanted_head, head);
+    git_reference_free(head);
+    return r;
 }
 
-// int mirror_repo_ensure_wanted_reference(
-//     struct config *const restrict config,
-//     struct repo *const restrict repo,
-//     struct wanted_base *wanted_object
-// ) {
-//     if (!repo->updated) {
-//         if (update_repo(config, repo)) {
-//             pr_error(
-//                 "Failed to make sure repo '%s' is up-to-date before "
-//                 "resolving reference\n", repo->url);
-//             return -1;
-//         }
-//     }
-//     switch (wanted_object->type) {
-//     case WANTED_TYPE_ALL_BRANCHES:
-//     case WANTED_TYPE_ALL_TAGS:
-//         // git_branch_iterator
-//         break;
-//     case WANTED_TYPE_BRANCH:
-//     case WANTED_TYPE_TAG:
+// May re-allocate the config->repos array, must re-assign repo after calling
+int mirror_repo_ensure_wanted_branch(
+    struct config *const restrict config,
+    unsigned long const repo_id,
+    struct wanted_reference *const restrict wanted_branch
+) {
+    struct repo *restrict repo = config->repos + repo_id;
+    char const *const branch = wanted_branch->commit.base.name;
+    git_reference *reference;
+    int r = git_branch_lookup(
+        &reference, repo->repository, branch, GIT_BRANCH_LOCAL);
+    switch (r) {
+    case GIT_OK:
+        break;
+    case GIT_ENOTFOUND:
+        pr_error("Branch '%s' was not found in repo '%s'\n",
+            branch, repo->url);
+        return -1;
+    case GIT_EINVALIDSPEC:
+        pr_error("'%s' is an illegal branch spec\n", branch);
+        return -1;
+    default:
+        pr_error("Failed to find branch '%s', "
+            "unhandled libgit return %d\n",
+            branch, r);
+        return -1;
+    }
+    r = mirror_repo_ensure_wanted_reference(
+        config, repo_id, wanted_branch, reference);
+    git_reference_free(reference);
+    return r;
+}
 
-//         break;
-//     default:
-//         pr_error("Impossible wanted object type\n");
-//         return -1;
-//     }
-
-
-//     // mirror_repo_ensure_wanted_commit();
-//     return 0;
-// }
+int mirror_repo_ensure_wanted_tag(
+    struct config *const restrict config,
+    unsigned long const repo_id,
+    struct wanted_reference *const restrict wanted_tag
+) {
+    struct repo *restrict repo = config->repos + repo_id;
+    char ref_name[NAME_MAX];
+    char const *const tag_name = wanted_tag->commit.base.name;
+    if (snprintf(ref_name, sizeof ref_name, "refs/tags/%s", tag_name) < 0) {
+        pr_error_with_errno(
+            "Failed to generate full ref name of tag '%s' for repo '%s'",
+            tag_name, repo->url);
+        return -1;
+    }
+    git_reference *reference;
+    int r = git_reference_lookup(&reference, repo->repository, ref_name);
+    switch (r) {
+    case GIT_OK:
+        break;
+    case GIT_ENOTFOUND:
+        pr_error("Tag '%s' (full ref name '%s') was not found in repo '%s'\n",
+            tag_name, ref_name, repo->url);
+        return -1;
+    case GIT_EINVALIDSPEC:
+        pr_error("Tag '%s' (full ref name '%s') is an illegal branch spec\n", 
+            tag_name, ref_name);
+        return -1;
+    default:
+        pr_error("Failed to find tag '%s' (full ref name '%s'), "
+            "unhandled libgit return %d\n",
+            tag_name, ref_name, r);
+        return -1;
+    }
+    r = mirror_repo_ensure_wanted_reference(
+        config, repo_id, wanted_tag, reference);
+    git_reference_free(reference);
+    return r;
+}
 
 int mirror_repo(
     struct config *const restrict config,
