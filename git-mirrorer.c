@@ -488,7 +488,9 @@ int wanted_object_fill_type_from_string(
 }
 
 int wanted_object_complete_commit_from_base(
-    struct wanted_base **wanted_object
+    struct wanted_objects *wanted_objects,
+    struct wanted_base **wanted_object,
+    bool is_tail
 ) {
     git_oid oid;
     if (git_oid_fromstr(&oid, (*wanted_object)->name)) {
@@ -513,17 +515,27 @@ int wanted_object_complete_commit_from_base(
     }
     wanted_commit->base = **wanted_object;
     wanted_commit->id = oid;
-    if ((*wanted_object)->previous) 
+    if ((*wanted_object)->previous) {
         (*wanted_object)->previous->next = (struct wanted_base *)wanted_commit;
-    if ((*wanted_object)->next) 
+        wanted_commit->base.previous = (*wanted_object)->previous;
+    }
+    if ((*wanted_object)->next) {
         (*wanted_object)->next->previous = (struct wanted_base *)wanted_commit;
+        wanted_commit->base.next = (*wanted_object)->next;
+    }
+    if (wanted_objects->objects_head == *wanted_object)
+        wanted_objects->objects_head = (struct wanted_base *)wanted_commit;
+    if (!is_tail && wanted_objects->objects_tail == *wanted_object)
+        wanted_objects->objects_tail = (struct wanted_base *)wanted_commit;
     free(*wanted_object);
     *wanted_object = (struct wanted_base *)wanted_commit;
     return 0;
 }
 
 int wanted_object_complete_reference_from_base(
-    struct wanted_base **wanted_object
+    struct wanted_objects *wanted_objects,
+    struct wanted_base **wanted_object,
+    bool is_tail
 ) {
     struct wanted_reference *wanted_reference = 
         malloc(sizeof *wanted_reference);
@@ -533,19 +545,29 @@ int wanted_object_complete_reference_from_base(
     }
     *wanted_reference = WANTED_REFERENCE_INIT;
     wanted_reference->commit.base = **wanted_object;
-    if ((*wanted_object)->previous) 
+    if ((*wanted_object)->previous) {   
         (*wanted_object)->previous->next = 
             (struct wanted_base *)wanted_reference;
-    if ((*wanted_object)->next) 
+        wanted_reference->commit.base.previous = (*wanted_object)->previous;
+    }
+    if ((*wanted_object)->next) {
         (*wanted_object)->next->previous = 
             (struct wanted_base *)wanted_reference;
+        wanted_reference->commit.base.next = (*wanted_object)->next;
+    }
+    if (wanted_objects->objects_head == *wanted_object)
+        wanted_objects->objects_head = (struct wanted_base *)wanted_reference;
+    if (!is_tail && wanted_objects->objects_tail == *wanted_object)
+        wanted_objects->objects_tail = (struct wanted_base *)wanted_reference;
     free(*wanted_object);
     *wanted_object = (struct wanted_base *)wanted_reference;
     return 0;
 }
 
 int wanted_object_complete_from_base(
-    struct wanted_base **wanted_object
+    struct wanted_objects *wanted_objects,
+    struct wanted_base **wanted_object,
+    bool is_tail
 ) {
     switch ((*wanted_object)->type) {
     case WANTED_TYPE_UNKNOWN:
@@ -555,11 +577,13 @@ int wanted_object_complete_from_base(
     case WANTED_TYPE_ALL_TAGS:
         return 0;
     case WANTED_TYPE_COMMIT:
-        return wanted_object_complete_commit_from_base(wanted_object);
+        return wanted_object_complete_commit_from_base(
+            wanted_objects, wanted_object, is_tail);
     case WANTED_TYPE_BRANCH:
     case WANTED_TYPE_TAG:
     case WANTED_TYPE_HEAD:
-        return wanted_object_complete_reference_from_base(wanted_object);
+        return wanted_object_complete_reference_from_base(
+            wanted_objects, wanted_object, is_tail);
     default:
         pr_error("Impossible routine\n");
         return -1;
@@ -602,7 +626,9 @@ int config_repo_add_wanted_object (
     wanted_object->name_len = len_object;
     if (guess_type) {
         wanted_object->type = wanted_type;
-        if (wanted_object_complete_from_base(&wanted_object)) {
+        if (wanted_object_complete_from_base(
+                &repo->wanted_objects,
+                &wanted_object, false)) {
             pr_error("Failed to complete object\n");
             goto free_name;
         }
@@ -915,8 +941,9 @@ int config_update_from_yaml_event(
                     (config->repos + state->repo_id)
                         -> wanted_objects.objects_tail) ||
                 wanted_object_complete_from_base(
+                    &(config->repos + state->repo_id)->wanted_objects,
                     &((config->repos + state->repo_id)
-                        -> wanted_objects.objects_tail))) {
+                        -> wanted_objects.objects_tail), true)) {
                 pr_error("Failed to finish wanted object\n");
                 return -1;
             }
@@ -2080,10 +2107,30 @@ int mirror_repo(
             switch (wanted_object->type) {
             case WANTED_TYPE_ALL_BRANCHES:
             case WANTED_TYPE_ALL_TAGS:
-            case WANTED_TYPE_BRANCH:
-            case WANTED_TYPE_TAG:
                 pr_error("WIP!!!\n");
                 return -1;
+            case WANTED_TYPE_BRANCH:
+                r = mirror_repo_ensure_wanted_branch(
+                    config, repo_id, (struct wanted_reference *)wanted_object);
+                repo = config->repos + repo_id;
+                if (r) {
+                    pr_error(
+                        "Failed to ensure branch '%s' robust for repo '%s'",
+                        wanted_object->name, repo->url);
+                    return -1;
+                }
+                break;
+            case WANTED_TYPE_TAG:
+            r = mirror_repo_ensure_wanted_tag(
+                    config, repo_id, (struct wanted_reference *)wanted_object);
+                repo = config->repos + repo_id;
+                if (r) {
+                    pr_error(
+                        "Failed to ensure tag'%s' robust for repo '%s'",
+                        wanted_object->name, repo->url);
+                    return -1;
+                }
+                break;
             case WANTED_TYPE_HEAD:
                 r = mirror_repo_ensure_wanted_head(
                     config, repo_id, (struct wanted_reference *)wanted_object);
