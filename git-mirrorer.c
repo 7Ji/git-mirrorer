@@ -217,7 +217,7 @@ struct config const CONFIG_INIT = {
 
 int mirror_repo_ensure_wanted_commit(
     struct config *const restrict config,
-    struct repo *const restrict repo,
+    unsigned long const repo_id,
     struct wanted_commit *const restrict wanted_commit
 );
 
@@ -1368,8 +1368,9 @@ int repo_open_or_init_bare(
 
 int update_repo(
     struct config *const restrict config,
-    struct repo *const restrict repo
+    unsigned long const repo_id
 ) {
+    struct repo *const restrict repo = config->repos + repo_id;
     pr_warn("Updating repo '%s'...\n", repo->url);
     git_remote *remote;
     int r = git_remote_lookup(&remote, repo->repository, MIRROR_REMOTE) < 0;
@@ -1446,8 +1447,9 @@ free_remote:
 
 int repo_prepare_open_or_create(
     struct config *const restrict config,
-    struct repo *const restrict repo
+    unsigned long const repo_id
 ) {
+    struct repo *const restrict repo = config->repos + repo_id;
     switch (repo_open_or_init_bare(repo)) {
     case -1:
         pr_error("Failed to open or init bare repo for '%s'\n", repo->url);
@@ -1457,7 +1459,7 @@ int repo_prepare_open_or_create(
     case 1:
         pr_warn(
             "Repo '%s' just created locally, need to update\n", repo->url);
-        if (update_repo(config, repo)) {
+        if (update_repo(config, repo_id)) {
             pr_error(
                 "Failed to update freshly created repo '%s'\n", repo->url);
             return -1;
@@ -1471,7 +1473,7 @@ int config_repos_prepare_open_or_create(
     struct config *const restrict config
 ) {
     for (unsigned long i = 0; i < config->repos_count; ++i) {
-        if (repo_prepare_open_or_create(config, config->repos + i)) {
+        if (repo_prepare_open_or_create(config, i)) {
             pr_error("Failed to open or create repo '%s' at '%s'\n", 
                 (config->repos + i)->url, (config->repos + i)->dir_path);
             return -1;
@@ -1510,9 +1512,11 @@ int config_free(
     return 0;
 }
 
+
+// May re-allocate the config->repos array, must re-assign repo after calling
 int mirror_repo_parse_parse_submodule_in_tree(
     struct config *const restrict config,
-    struct repo const *const restrict repo,
+    unsigned long repo_id,
     git_tree const *const restrict tree, 
     char const *const restrict path,
     unsigned short len_path,
@@ -1557,7 +1561,6 @@ int mirror_repo_parse_parse_submodule_in_tree(
         "Specific commit '%s' is needed for submodule at path '%s' "
         "with url '%s'\n", wanted_commit->id_hex_string, path, url);
     XXH64_hash_t url_hash = XXH3_64bits(url, len_url);
-    unsigned long repo_id = repo - config->repos;
     bool repo_in_config = false;
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         struct repo *const restrict repo_cmp = 
@@ -1589,7 +1592,7 @@ int mirror_repo_parse_parse_submodule_in_tree(
                     "need to go back to handle that specific commit\n",
                     wanted_commit->id_hex_string, repo_cmp->url);
                 if (mirror_repo_ensure_wanted_commit(
-                        config, repo_cmp, wanted_commit)) {
+                        config, repo_id, wanted_commit)) {
                     pr_error("Failed to handle added commit '%s' to parsed "
                     "repo '%s'\n", wanted_commit->id_hex_string, repo_cmp->url);
                     goto free_entry;
@@ -1605,8 +1608,10 @@ int mirror_repo_parse_parse_submodule_in_tree(
             pr_error("Failed to add repo '%s'\n", url);
             goto free_name;
         }
+        // THIS WILL CHANGE DURING THE ABOVE FUNCTION
+        unsigned long repo_new_id = config->repos_count - 1;
         struct repo *const restrict repo_new =
-            config->repos + config->repos_count - 1;
+            config->repos + repo_new_id;
         repo_new->added_from = RPEO_ADDED_FROM_SUBMODULES;
         repo_new->wanted_objects.objects_count = 1;
         repo_new->wanted_objects.objects_head = 
@@ -1616,7 +1621,7 @@ int mirror_repo_parse_parse_submodule_in_tree(
         if (config_repo_finish(
                 repo_new, config->dir_repos, config->len_dir_repos) || 
             repo_prepare_open_or_create(
-                config, repo_new)) {
+                config, repo_new_id)) {
             pr_error("Failed to insert repo '%s' with its only wanted commit "
                 "'%s' to repos\n",
                 repo_new->url, wanted_commit->id_hex_string);
@@ -1634,9 +1639,10 @@ free_entry:
     return -1;
 }
 
+// May re-allocate the config->repos array, must re-assign repo after calling
 int mirror_repo_parse_gitmodules_blob(
     struct config *const restrict config,
-    struct repo const *const restrict repo,
+    unsigned long repo_id,
     git_tree const *const tree,
     git_blob *const restrict blob_gitmodules
 ) {
@@ -1739,7 +1745,7 @@ int mirror_repo_parse_gitmodules_blob(
                             "Submodule '%s', path '%s', url '%s'\n", 
                             submodule_name, submodule_path, submodule_url);
                         if (mirror_repo_parse_parse_submodule_in_tree(
-                            config, repo, tree, 
+                            config, repo_id, tree, 
                                     submodule_path, len_submodule_path,
                                     submodule_url, len_submodule_url)) {
                             pr_error(
@@ -1763,13 +1769,15 @@ int mirror_repo_parse_gitmodules_blob(
     return 0;
 }
 
+// May re-allocate the config->repos array, must re-assign repo after calling
 int mirror_repo_parse_submodules(
     struct config *const restrict config,
-    struct repo const *const restrict repo,
+    unsigned long const repo_id,
     struct wanted_commit *const restrict wanted_commit,
     git_tree const *const tree,
     git_tree_entry const *const entry_gitmodules
 ) {
+    struct repo const *restrict repo = config->repos + repo_id;
     if (git_tree_entry_type(entry_gitmodules) != GIT_OBJECT_BLOB) {
         pr_error(
             "Tree entry .gitmodules in commit '%s' for repo '%s' "
@@ -1785,7 +1793,10 @@ int mirror_repo_parse_submodules(
         return -1;
     }
     git_blob *blob_gitmodules = (git_blob *)object_gitmodules;
-    if (mirror_repo_parse_gitmodules_blob(config, repo, tree, blob_gitmodules)) {
+    r = mirror_repo_parse_gitmodules_blob(
+        config, repo_id, tree, blob_gitmodules);
+    repo = config->repos + repo_id;
+    if (r) {
         pr_error("Failed to parse gitmodules blob\n");
         r = -1;
         goto free_object;
@@ -1796,11 +1807,13 @@ free_object:
     return r;
 }
 
+// May re-allocate the config->repos array, must re-assign repo after calling
 int mirror_repo_ensure_wanted_commit(
     struct config *const restrict config,
-    struct repo *const restrict repo,
+    unsigned long const repo_id,
     struct wanted_commit *const restrict wanted_commit
 ) {
+    struct repo *restrict repo = config->repos + repo_id;
     git_commit *commit;
     int r = git_commit_lookup(&commit, repo->repository, &wanted_commit->id);
     if (r) {
@@ -1817,7 +1830,7 @@ int mirror_repo_ensure_wanted_commit(
             "but the repo is not updated yet, "
             "trying to update the repo before looking up the commit again\n", 
             wanted_commit->id_hex_string, repo->url, r);
-        if (update_repo(config, repo)) {
+        if (update_repo(config, repo_id)) {
             pr_error("Failed to update repo\n");
             return -1;
         }
@@ -1846,8 +1859,10 @@ int mirror_repo_ensure_wanted_commit(
         pr_warn(
             "Found .gitmodules in commit tree of '%s' for repo '%s', "
             "parsing submodules\n", wanted_commit->id_hex_string, repo->url);
-        if (mirror_repo_parse_submodules(
-            config, repo, wanted_commit, tree, entry_gitmodules)) {
+        r = mirror_repo_parse_submodules(
+            config, repo_id, wanted_commit, tree, entry_gitmodules);
+        repo = config->repos + repo_id;
+        if (r) {
             pr_error(
                 "Failed to parse submodules in commit tree of '%s' "
                 "for repo '%s'\n", 
@@ -1862,6 +1877,63 @@ int mirror_repo_ensure_wanted_commit(
 free_commit:
     git_commit_free(commit);
     return r;
+}
+
+// May re-allocate the config->repos array, must re-assign repo after calling
+int mirror_repo_ensure_wanted_head(
+    struct config *const restrict config,
+    unsigned long const repo_id,
+    struct wanted_reference *const restrict wanted_head
+) {
+    struct repo *restrict repo = config->repos + repo_id;
+    git_reference *head;
+    int r = git_repository_head(&head, repo->repository);
+    switch (r) {
+    case GIT_OK:
+        break;
+    case GIT_EUNBORNBRANCH:
+        pr_error("Failed to resolve head, HEAD points to a non-"
+            "existing branch\n");
+        return -1;
+    case GIT_ENOTFOUND:
+        pr_error("Failed to resolve head, HEAD is missing\n");
+        return -1;
+    default:
+        pr_error("Failed to find head, unhandled libgit return %d\n", r);
+        return -1;
+    }
+    git_object *object;
+    if ((r = git_reference_peel(&object, head, GIT_OBJECT_COMMIT))) {
+        pr_error(
+            "Failed to peel HEAD into a commit object, libgit return %d\n",
+            r);
+        return -1;
+    }
+    git_commit *commit = (git_commit *)object;
+    wanted_head->commit_resolved = true;
+    wanted_head->commit.id = *git_commit_id(commit);
+    if (git_oid_tostr(
+            wanted_head->commit.id_hex_string,
+            sizeof wanted_head->commit.id_hex_string, 
+            &wanted_head->commit.id
+        )[0] == '\0') {
+        pr_error("Failed to format git oid hex string\n");
+        git_object_free(object);
+        return -1;
+    }
+    git_object_free(object);
+    pr_warn("Resolved HEAD of repo '%s' to commit '%s', working on that commit "
+        "instead\n",
+        repo->url, wanted_head->commit.id_hex_string);
+    r = mirror_repo_ensure_wanted_commit(config, repo_id, &wanted_head->commit);
+    repo = config->repos + repo_id;
+    if (r) {
+        pr_error("Failed to ensuring robust of commit '%s' resolved from HEAD "
+        "of repo '%s'\n", wanted_head->commit.id_hex_string, repo->url);
+        return -1;
+    }
+    pr_warn("Ensured existence of HEAD in repo '%s'\n", repo->url);
+    return 0;
 }
 
 // int mirror_repo_ensure_wanted_reference(
@@ -1898,14 +1970,15 @@ free_commit:
 
 int mirror_repo(
     struct config *const restrict config,
-    struct repo *const restrict repo
+    unsigned long const repo_id
 ) {
+    struct repo *restrict repo = config->repos + repo_id;
     pr_warn("Mirroring repo '%s'\n", repo->url);
     if (repo->wanted_objects.dynamic && !repo->updated) {
         pr_warn(
             "Dynamic wanted objects set for repo '%s', need to update\n", 
             repo->url);
-        if (update_repo(config, repo)) {
+        if (update_repo(config, repo_id)) {
             pr_error(
                 "Failed to update repo '%s' to prepare for "
                 "dynamic wanted objects\n",
@@ -1913,15 +1986,18 @@ int mirror_repo(
             return -1;
         }
     }
+    int r = -1;
     for (struct wanted_base *wanted_object = repo->wanted_objects.objects_head;
         wanted_object != NULL;
         wanted_object = wanted_object->next) {
         switch (wanted_object->type) {
         case WANTED_TYPE_COMMIT:
-            if (mirror_repo_ensure_wanted_commit(
-                config, repo, (struct wanted_commit *)wanted_object)) {
+            r = mirror_repo_ensure_wanted_commit(
+                config, repo_id, (struct wanted_commit *)wanted_object);
+            repo = config->repos + repo_id;
+            if (r) {
                 pr_error(
-                    "Failed to ensure commit '%s' robust for in repo '%s'",
+                    "Failed to ensure commit '%s' robust for repo '%s'",
                     wanted_object->name, repo->url);
                 return -1;   
             }
@@ -1932,23 +2008,29 @@ int mirror_repo(
         case WANTED_TYPE_TAG:
         case WANTED_TYPE_HEAD:
             if (!repo->updated) {
-                if (update_repo(config, repo)) {
+                if (update_repo(config, repo_id)) {
                     pr_error(
                         "Failed to make sure repo '%s' is up-to-date before "
                         "resolving reference\n", repo->url);
                     return -1;
                 }
             }
-            pr_error("WIP!!!\n");
-            return -1;
             switch (wanted_object->type) {
             case WANTED_TYPE_ALL_BRANCHES:
             case WANTED_TYPE_ALL_TAGS:
-                // git_branch_iterator
-                break;
             case WANTED_TYPE_BRANCH:
             case WANTED_TYPE_TAG:
-
+                pr_error("WIP!!!\n");
+                return -1;
+            case WANTED_TYPE_HEAD:
+                r = mirror_repo_ensure_wanted_head(
+                    config, repo_id, (struct wanted_reference *)wanted_object);
+                repo = config->repos + repo_id;
+                if (r) {
+                    pr_error("Failed to ensure HEAD robust for repo '%s'",
+                    repo->url);
+                    return -1;
+                }
                 break;
             default:
                 pr_error("Impossible wanted object type\n");
@@ -1963,7 +2045,6 @@ int mirror_repo(
                 wanted_object->name, repo->url);
             return -1;
         }
-        
     }
     pr_warn("Finished mirroring repo '%s'\n", repo->url);
     return 0;
@@ -1977,8 +2058,7 @@ int mirror_all_repos(
         return -1;
     }
     for (unsigned long i = 0; i < config->repos_count; ++i) {
-        struct repo *const restrict repo = config->repos + i;
-        if (mirror_repo(config, repo)) {
+        if (mirror_repo(config, i)) {
             pr_error("Failed to mirror all repos\n");
             return -1;
         }
