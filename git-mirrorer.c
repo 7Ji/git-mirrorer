@@ -80,22 +80,33 @@ struct wanted_base {
 
 struct wanted_base const WANTED_BASE_INIT = {0};
 
+struct wanted_base const WANTED_ALL_BRANCHES_INIT = {
+    .type = WANTED_TYPE_ALL_BRANCHES, 0 };
+
+struct wanted_base const WANTED_ALL_TAGS_INIT = {
+    .type = WANTED_TYPE_ALL_TAGS, 0 };
+
 struct wanted_commit {
     struct wanted_base base;
     git_oid id;
     char id_hex_string[GIT_OID_MAX_HEXSIZE + 1];
 };
 
-struct wanted_commit const WANTED_COMMIT_INIT = {0};
+struct wanted_commit const WANTED_COMMIT_INIT = {
+    .base.type = WANTED_TYPE_COMMIT, 0};
 
 struct wanted_reference {
     struct wanted_commit commit;
     bool commit_resolved;
-    // char *reference;
-    // unsigned short reference_len;
 };
 
 struct wanted_reference const WANTED_REFERENCE_INIT = {0};
+
+struct wanted_reference const WANTED_BRANCH_INIT = {
+    .commit.base.type = WANTED_TYPE_BRANCH, 0 };
+
+struct wanted_reference const WANTED_TAG_INIT = {
+    .commit.base.type = WANTED_TYPE_TAG, 0 };
 
 struct wanted_objects {
     struct wanted_base *objects_head;
@@ -204,6 +215,11 @@ struct config const CONFIG_INIT = {
     .proxy_after = 0,
 };
 
+int mirror_repo_ensure_wanted_commit(
+    struct config *const restrict config,
+    struct repo *const restrict repo,
+    struct wanted_commit *const restrict wanted_commit
+);
 
 int sideband_progress(char const *string, int len, void *payload) {
 	(void)payload; /* unused */
@@ -1116,10 +1132,10 @@ error:
 
 int config_repo_finish(
     struct repo *const restrict repo,
-    char const *const restrict dir_repo,
-    unsigned short len_dir_repo
+    char const *const restrict dir_repos,
+    unsigned short len_dir_repos
 ) {
-    if (repo == NULL || dir_repo == NULL || len_dir_repo == 0) {
+    if (repo == NULL || dir_repos == NULL || len_dir_repos == 0) {
         pr_error("Internal: invalid arguments\n");
         return -1;
     }
@@ -1166,7 +1182,7 @@ int config_repo_finish(
             break;
         }
     }
-    repo->dir_path_len = len_dir_repo + sizeof repo->dir_name;
+    repo->dir_path_len = len_dir_repos + sizeof repo->dir_name;
     if ((repo->dir_path = malloc(repo->dir_path_len + 1)) == NULL) {
         pr_error(
             "Failed to allocate memory for dir path of repo '%s'\n",
@@ -1174,7 +1190,7 @@ int config_repo_finish(
         return -1;
     }
     if (snprintf(repo->dir_path, repo->dir_path_len + 1, "%s/%s", 
-        dir_repo, repo->dir_name) < 0) {
+        dir_repos, repo->dir_name) < 0) {
         free(repo->dir_path);
         pr_error_with_errno(
             "Failed to format dir path of repo '%s'\n",
@@ -1428,26 +1444,37 @@ free_remote:
     return r;
 }
 
+int repo_prepare_open_or_create(
+    struct config *const restrict config,
+    struct repo *const restrict repo
+) {
+    switch (repo_open_or_init_bare(repo)) {
+    case -1:
+        pr_error("Failed to open or init bare repo for '%s'\n", repo->url);
+        return -1;
+    case 0:
+        break;
+    case 1:
+        pr_warn(
+            "Repo '%s' just created locally, need to update\n", repo->url);
+        if (update_repo(config, repo)) {
+            pr_error(
+                "Failed to update freshly created repo '%s'\n", repo->url);
+            return -1;
+        }
+        break;
+    }
+    return 0;
+}
+
 int config_repos_prepare_open_or_create(
     struct config *const restrict config
 ) {
     for (unsigned long i = 0; i < config->repos_count; ++i) {
-        struct repo *const restrict repo = config->repos + i;
-        switch (repo_open_or_init_bare(repo)) {
-        case -1:
-            pr_error("Failed to open or init bare repo for '%s'\n", repo->url);
+        if (repo_prepare_open_or_create(config, config->repos + i)) {
+            pr_error("Failed to open or create repo '%s' at '%s'\n", 
+                (config->repos + i)->url, (config->repos + i)->dir_path);
             return -1;
-        case 0:
-            break;
-        case 1:
-            pr_warn(
-                "Repo '%s' just created locally, need to update\n", repo->url);
-            if (update_repo(config, repo)) {
-                pr_error(
-                    "Failed to update freshly created repo '%s'\n", repo->url);
-                return -1;
-            }
-            break;
         }
     }
     return 0;
@@ -1483,9 +1510,262 @@ int config_free(
     return 0;
 }
 
+int mirror_repo_parse_parse_submodule_in_tree(
+    struct config *const restrict config,
+    struct repo const *const restrict repo,
+    git_tree const *const restrict tree, 
+    char const *const restrict path,
+    unsigned short len_path,
+    char const *const restrict url,
+    unsigned short len_url
+) {
+    (void )len_path;
+    git_tree_entry *entry;
+    if (git_tree_entry_bypath(&entry, tree, path)) {
+        pr_error(
+            "Path '%s' of submodule does not exist in tree, "
+            "bad .gitmodules file?\n", path);
+        return -1;
+    }
+    if (git_tree_entry_type(entry) != GIT_OBJECT_COMMIT) {
+        pr_error("Object at path '%s' in tree is not a commit\n", path);
+        goto free_entry;
+    }
+    struct wanted_commit *wanted_commit = malloc(sizeof *wanted_commit);
+    if (wanted_commit == NULL) {
+        pr_error("Failed to allocate memory for wanted commit\n");
+        goto free_entry;
+    }
+    *wanted_commit = WANTED_COMMIT_INIT;
+    wanted_commit->id = *git_tree_entry_id(entry);
+    if (git_oid_tostr(
+            wanted_commit->id_hex_string,
+            sizeof wanted_commit->id_hex_string, 
+            &wanted_commit->id
+        )[0] == '\0') {
+        pr_error("Failed to format commit into hex string\n");
+        goto free_wanted_commit;
+    }
+    if ((wanted_commit->base.name = malloc(GIT_OID_MAX_HEXSIZE + 1)) == NULL) {
+        pr_error("Failed to allocate memory for commit name\n");
+        goto free_wanted_commit;
+    }
+    memcpy(wanted_commit->base.name, wanted_commit->id_hex_string, 
+        sizeof wanted_commit->id_hex_string);
+    wanted_commit->base.name_len = GIT_OID_MAX_HEXSIZE;
+    pr_warn(
+        "Specific commit '%s' is needed for submodule at path '%s' "
+        "with url '%s'\n", wanted_commit->id_hex_string, path, url);
+    XXH64_hash_t url_hash = XXH3_64bits(url, len_url);
+    unsigned long repo_id = repo - config->repos;
+    bool repo_in_config = false;
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        struct repo *const restrict repo_cmp = 
+            config->repos + i;
+        if (repo_cmp->url_hash == url_hash) {
+            repo_cmp->wanted_objects.objects_tail->next = 
+                (struct wanted_base *)wanted_commit;
+            wanted_commit->base.previous = 
+                repo_cmp->wanted_objects.objects_tail;
+            repo_cmp->wanted_objects.objects_tail = 
+                (struct wanted_base *)wanted_commit;
+            ++repo_cmp->wanted_objects.objects_count;
+            if (i >= repo_id) {
+                // Note, i >= repo_id includes the current repo.
+                // I decide not to care if a commit could reference itself
+                // via a submodule, it just does not make sense as a commit
+                // hash is only ever generated after you've submitted a tree
+                // including all submodules. The chance a commit hash would be
+                // generated with the same content of itself is just unlikely.
+                // So, we don't need to do sanity check, as I don't believe
+                // this will cause infinite loop
+                pr_warn("Added wanted commit '%s' to repo '%s', will handle "
+                        "that commit later\n", 
+                        wanted_commit->id_hex_string, repo_cmp->url);
+            } else {
+                // Only care the case we've already gone through
+                // the repo.
+                pr_warn("Added wanted commit '%s' to parsed repo '%s', "
+                    "need to go back to handle that specific commit\n",
+                    wanted_commit->id_hex_string, repo_cmp->url);
+                if (mirror_repo_ensure_wanted_commit(
+                        config, repo_cmp, wanted_commit)) {
+                    pr_error("Failed to handle added commit '%s' to parsed "
+                    "repo '%s'\n", wanted_commit->id_hex_string, repo_cmp->url);
+                    goto free_entry;
+                }
+            }
+            repo_in_config = true;
+            break;
+        }
+    }
+    if (!repo_in_config) {
+        pr_warn("Repo '%s' was not seen before, need to add it\n", url);
+        if (config_add_repo_and_init_with_url(config, url, len_url)) {
+            pr_error("Failed to add repo '%s'\n", url);
+            goto free_name;
+        }
+        struct repo *const restrict repo_new =
+            config->repos + config->repos_count - 1;
+        repo_new->added_from = RPEO_ADDED_FROM_SUBMODULES;
+        repo_new->wanted_objects.objects_count = 1;
+        repo_new->wanted_objects.objects_head = 
+            (struct wanted_base *)wanted_commit;
+        repo_new->wanted_objects.objects_tail = 
+            (struct wanted_base *)wanted_commit;
+        if (config_repo_finish(
+                repo_new, config->dir_repos, config->len_dir_repos) || 
+            repo_prepare_open_or_create(
+                config, repo_new)) {
+            pr_error("Failed to insert repo '%s' with its only wanted commit "
+                "'%s' to repos\n",
+                repo_new->url, wanted_commit->id_hex_string);
+            goto free_entry;
+        }
+    }
+    git_tree_entry_free(entry);
+    return 0;
+free_name:
+    free(wanted_commit->base.name);
+free_wanted_commit:
+    free(wanted_commit);
+free_entry:
+    git_tree_entry_free(entry);
+    return -1;
+}
+
+int mirror_repo_parse_gitmodules_blob(
+    struct config *const restrict config,
+    struct repo const *const restrict repo,
+    git_tree const *const tree,
+    git_blob *const restrict blob_gitmodules
+) {
+    const char *blob_gitmodules_ro_buffer = 
+        git_blob_rawcontent(blob_gitmodules);
+    if (blob_gitmodules_ro_buffer == NULL) {
+        pr_error("Failed to get a ro buffer for gitmodules\n");
+        return -1;
+    }
+    git_object_size_t blob_gitmodules_size = 
+        git_blob_rawsize(blob_gitmodules);
+    if (blob_gitmodules_size == 0) {
+        pr_error("Tree entry .gitmodules blob size is 0\n");
+        return -1;
+    }
+    char submodule_name[NAME_MAX] = "\0";
+    char submodule_path[PATH_MAX] = "\0";
+    char submodule_url[PATH_MAX] = "\0";
+    unsigned short  len_submodule_name = 0,
+                    len_submodule_path = 0,
+                    len_submodule_url = 0;
+    for (git_object_size_t id_start = 0; id_start < blob_gitmodules_size; ) {
+        switch (blob_gitmodules_ro_buffer[id_start]) {
+        case '\0':
+        case '\n':
+        case '\r':
+        case '\b':
+            ++id_start;
+            continue;
+        }
+        unsigned short line_length = 0;
+        git_object_size_t id_end = id_start + 1;
+        for (; id_end < blob_gitmodules_size && line_length == 0;) {
+            switch (blob_gitmodules_ro_buffer[id_end]) {
+            case '\0':
+            case '\n':
+                line_length = id_end - id_start;
+                break;
+            default:
+                ++id_end;
+                break;
+            }
+        }
+        if (line_length > 7) { // The shortest, "\turl = "
+            char const *line = blob_gitmodules_ro_buffer + id_start;
+            char const *line_end = blob_gitmodules_ro_buffer + id_end;
+            switch (blob_gitmodules_ro_buffer[id_start]) {
+            case '[':
+                if (!strncmp(line + 1, "submodule \"", 11)) {
+                    if (submodule_name[0]) {
+                        pr_error(
+                            "Incomplete submodule definition for '%s'\n", 
+                            submodule_name);
+                        return -1;
+                    }
+                    char const *submodule_name_start = line + 12;
+                    char const *right_quote = submodule_name_start;
+                    for (;
+                        *right_quote != '"' && right_quote < line_end; 
+                        ++right_quote);
+                    len_submodule_name = right_quote - submodule_name_start;
+                    strncpy(
+                        submodule_name,
+                        submodule_name_start,
+                        len_submodule_name);
+                    submodule_name[len_submodule_name] = '\0';
+                }
+                break;
+            case '\t':
+                char const *value = NULL;
+                char *submodule_value = NULL;
+                unsigned short *len_submodule_value = NULL;
+                if (!strncmp(line + 1, "path = ", 7)) {
+                    value = line + 8;
+                    submodule_value = submodule_path;
+                    len_submodule_value = &len_submodule_path;
+                } else if (!strncmp(line + 1, "url = ", 6)) {
+                    value = line + 7;
+                    submodule_value = submodule_url;
+                    len_submodule_value = &len_submodule_url;
+                }
+                if (value) {
+                    if (submodule_name[0] == '\0') {
+                        pr_error(
+                            "Submodule definition begins before "
+                            "the submodule name\n");
+                        return -1;
+                    }
+                    if (submodule_value[0] != '\0') {
+                        pr_error("Duplicated value definition for "
+                            "submodule '%s'\n", submodule_name);
+                        return -1;
+                    }
+                    *len_submodule_value = line_end - value;
+                    strncpy(submodule_value, value, *len_submodule_value);
+                    submodule_value[*len_submodule_value] = '\0';
+                    if (submodule_path[0] != '\0' && 
+                        submodule_url[0] != '\0') {
+                        pr_warn(
+                            "Submodule '%s', path '%s', url '%s'\n", 
+                            submodule_name, submodule_path, submodule_url);
+                        if (mirror_repo_parse_parse_submodule_in_tree(
+                            config, repo, tree, 
+                                    submodule_path, len_submodule_path,
+                                    submodule_url, len_submodule_url)) {
+                            pr_error(
+                                "Failed to recursively clone or update "
+                                "submodule '%s' (url '%s')\n", 
+                                submodule_name, submodule_url);
+                            return -1;
+                        }
+                        submodule_name[0] = '\0';
+                        submodule_path[0] = '\0';
+                        submodule_url[0] = '\0';
+                    }
+                }
+                break;
+            default:
+                break;
+            }
+        }
+        id_start = id_end + 1;
+    }
+    return 0;
+}
+
 int mirror_repo_parse_submodules(
     struct config *const restrict config,
-    struct repo *const restrict repo,
+    struct repo const *const restrict repo,
     struct wanted_commit *const restrict wanted_commit,
     git_tree const *const tree,
     git_tree_entry const *const entry_gitmodules
@@ -1505,19 +1785,11 @@ int mirror_repo_parse_submodules(
         return -1;
     }
     git_blob *blob_gitmodules = (git_blob *)object_gitmodules;
-    const char *blob_gitmodules_ro_buffer = 
-        git_blob_rawcontent(blob_gitmodules);
-    if (blob_gitmodules_ro_buffer == NULL) {
-        pr_error("Failed to get a ro buffer for gitmodules\n");
+    if (mirror_repo_parse_gitmodules_blob(config, repo, tree, blob_gitmodules)) {
+        pr_error("Failed to parse gitmodules blob\n");
+        r = -1;
         goto free_object;
     }
-    git_object_size_t blob_gitmodules_size = git_blob_rawsize(blob_gitmodules);
-    if (blob_gitmodules_size == 0) {
-        pr_error("Tree entry .gitmodules blob size is 0\n");
-        goto free_object;
-    }
-
-
     r = 0;
 free_object:
     free(object_gitmodules);
@@ -1549,8 +1821,8 @@ int mirror_repo_ensure_wanted_commit(
             pr_error("Failed to update repo\n");
             return -1;
         }
-        if (r = git_commit_lookup(
-            &commit, repo->repository, &wanted_commit->id)) {
+        if ((r = git_commit_lookup(
+            &commit, repo->repository, &wanted_commit->id))) {
             pr_error(
                 "Failed to lookup commit '%s' in repo '%s' "
                 "even after updating the repo, libgit return %d, "
@@ -1568,7 +1840,7 @@ int mirror_repo_ensure_wanted_commit(
         r = -1;
         goto free_commit;
     }
-    git_tree_entry *entry_gitmodules = 
+    git_tree_entry const *const entry_gitmodules = 
         git_tree_entry_byname(tree, ".gitmodules");
     if (entry_gitmodules != NULL) {
         pr_warn(
@@ -1584,43 +1856,45 @@ int mirror_repo_ensure_wanted_commit(
             goto free_commit;
         }
     }
+    pr_warn("Ensured existence of commit '%s' in repo '%s'\n",
+        wanted_commit->id_hex_string, repo->url);
     r = 0;
 free_commit:
     git_commit_free(commit);
     return r;
 }
 
-int mirror_repo_ensure_wanted_reference(
-    struct config *const restrict config,
-    struct repo *const restrict repo,
-    struct wanted_base *wanted_object
-) {
-    if (!repo->updated) {
-        if (update_repo(config, repo)) {
-            pr_error(
-                "Failed to make sure repo '%s' is up-to-date before "
-                "resolving reference\n", repo->url);
-            return -1;
-        }
-    }
-    switch (wanted_object->type) {
-    case WANTED_TYPE_ALL_BRANCHES:
-    case WANTED_TYPE_ALL_TAGS:
-        // git_branch_iterator
-        break;
-    case WANTED_TYPE_BRANCH:
-    case WANTED_TYPE_TAG:
+// int mirror_repo_ensure_wanted_reference(
+//     struct config *const restrict config,
+//     struct repo *const restrict repo,
+//     struct wanted_base *wanted_object
+// ) {
+//     if (!repo->updated) {
+//         if (update_repo(config, repo)) {
+//             pr_error(
+//                 "Failed to make sure repo '%s' is up-to-date before "
+//                 "resolving reference\n", repo->url);
+//             return -1;
+//         }
+//     }
+//     switch (wanted_object->type) {
+//     case WANTED_TYPE_ALL_BRANCHES:
+//     case WANTED_TYPE_ALL_TAGS:
+//         // git_branch_iterator
+//         break;
+//     case WANTED_TYPE_BRANCH:
+//     case WANTED_TYPE_TAG:
 
-        break;
-    default:
-        pr_error("Impossible wanted object type\n");
-        return -1;
-    }
+//         break;
+//     default:
+//         pr_error("Impossible wanted object type\n");
+//         return -1;
+//     }
 
 
-    // mirror_repo_ensure_wanted_commit();
-    return 0;
-}
+//     // mirror_repo_ensure_wanted_commit();
+//     return 0;
+// }
 
 int mirror_repo(
     struct config *const restrict config,
@@ -1643,17 +1917,51 @@ int mirror_repo(
         wanted_object != NULL;
         wanted_object = wanted_object->next) {
         switch (wanted_object->type) {
+        case WANTED_TYPE_COMMIT:
+            if (mirror_repo_ensure_wanted_commit(
+                config, repo, (struct wanted_commit *)wanted_object)) {
+                pr_error(
+                    "Failed to ensure commit '%s' robust for in repo '%s'",
+                    wanted_object->name, repo->url);
+                return -1;   
+            }
+            break;
+        case WANTED_TYPE_ALL_BRANCHES:
+        case WANTED_TYPE_ALL_TAGS:
+        case WANTED_TYPE_BRANCH:
+        case WANTED_TYPE_TAG:
+        case WANTED_TYPE_HEAD:
+            if (!repo->updated) {
+                if (update_repo(config, repo)) {
+                    pr_error(
+                        "Failed to make sure repo '%s' is up-to-date before "
+                        "resolving reference\n", repo->url);
+                    return -1;
+                }
+            }
+            pr_error("WIP!!!\n");
+            return -1;
+            switch (wanted_object->type) {
+            case WANTED_TYPE_ALL_BRANCHES:
+            case WANTED_TYPE_ALL_TAGS:
+                // git_branch_iterator
+                break;
+            case WANTED_TYPE_BRANCH:
+            case WANTED_TYPE_TAG:
+
+                break;
+            default:
+                pr_error("Impossible wanted object type\n");
+                return -1;
+            }
+            break;
         case WANTED_TYPE_UNKNOWN:
+        default:
             pr_error(
                 "Impossible wanted type unknown for wanted object '%s' "
                 "for repo '%s'\n",
                 wanted_object->name, repo->url);
             return -1;
-        case WANTED_TYPE_COMMIT:
-
-            break;
-        default: /* WIP !!! */
-            break;
         }
         
     }
