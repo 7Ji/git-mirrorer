@@ -398,17 +398,37 @@ enum wanted_type wanted_object_guess_type(
     unsigned short len_object
 ) {
     switch (len_object) {
+    case 3:
+        if (!strncasecmp(object, "dev", 3)) return WANTED_TYPE_BRANCH;
+        break;
     case 4:
         if (!strncmp(object, "HEAD", 4)) return WANTED_TYPE_HEAD;
+        else if (!strncasecmp(object, "main", 4)) return WANTED_TYPE_BRANCH;
+        break;
+    case 6:
+        if (!strncasecmp(object, "master", 6)) return WANTED_TYPE_BRANCH;
         break;
     case 8:
-        if (!strncmp(object, "all_tags", 8)) return WANTED_TYPE_ALL_TAGS;
+        if (!strncasecmp(object, "all_tags", 8)) return WANTED_TYPE_ALL_TAGS;
         break;
     case 12:
-        if (!strncmp(object, "all_branches", 12)) return WANTED_TYPE_ALL_BRANCHES;
+        if (!strncasecmp(object, "all_branches", 12)) return WANTED_TYPE_ALL_BRANCHES;
         break;
     case 40:
         if (object_name_is_sha1(object)) return WANTED_TYPE_COMMIT;
+        break;
+    default:
+        break;
+    }
+    switch (object[0]) {
+    case 'v':
+    case 'V':
+        switch (object[1]) {
+        case '0'...'9':
+            return WANTED_TYPE_TAG;
+        default:
+            break;
+        }
         break;
     default:
         break;
