@@ -1398,6 +1398,115 @@ int config_free(
     return 0;
 }
 
+int mirror_repo_parse_submodules(
+    struct config *const restrict config,
+    struct repo *const restrict repo,
+    struct wanted_commit *const restrict wanted_commit,
+    git_tree const *const tree,
+    git_tree_entry const *const entry_gitmodules
+) {
+    if (git_tree_entry_type(entry_gitmodules) != GIT_OBJECT_BLOB) {
+        pr_error("Tree entry .gitmodules in commit '%s' for repo '%s' is not a blob\n", wanted_commit->id_hex_string, repo->url);
+        return -1;
+    }
+    git_object *object_gitmodules;
+    int r = git_tree_entry_to_object(&object_gitmodules, repo->repository, entry_gitmodules);
+    if (r) {
+        pr_error("Failed to convert tree entry for gitmodules to object\n");
+        return -1;
+    }
+    git_blob *blob_gitmodules = (git_blob *)object_gitmodules;
+    const char *blob_gitmodules_ro_buffer = git_blob_rawcontent(blob_gitmodules);
+    if (blob_gitmodules_ro_buffer == NULL) {
+        pr_error("Failed to get a ro buffer for gitmodules\n");
+        goto free_object;
+    }
+    git_object_size_t blob_gitmodules_size = git_blob_rawsize(blob_gitmodules);
+    if (blob_gitmodules_size == 0) {
+        pr_error("Tree entry .gitmodules blob size is 0\n");
+        goto free_object;
+    }
+
+
+    r = 0;
+free_object:
+    free(object_gitmodules);
+    return r;
+}
+
+int mirror_repo_ensure_wanted_commit(
+    struct config *const restrict config,
+    struct repo *const restrict repo,
+    struct wanted_commit *const restrict wanted_commit
+) {
+    git_commit *commit;
+    int r = git_commit_lookup(&commit, repo->repository, &wanted_commit->id);
+    if (r) {
+        if (repo->updated) {
+            pr_error("Failed to lookup commit '%s' in repo '%s' even it's up-to-date, libgit return %d, consider failure\n", wanted_commit->id_hex_string, repo->url, r);
+            return -1;
+        }
+        pr_warn("Commit '%s' does not exist in repo '%s' (libgit return %d), but the repo is not updated yet, trying to update the repo before looking up the commit again\n", wanted_commit->id_hex_string, repo->url, r);
+        if (update_repo(config, repo)) {
+            pr_error("Failed to update repo\n");
+            return -1;
+        }
+        if (r = git_commit_lookup(&commit, repo->repository, &wanted_commit->id)) {
+            pr_error("Failed to lookup commit '%s' in repo '%s' even after updating the repo, libgit return %d, consider failure\n", wanted_commit->id_hex_string, repo->url, r);
+            return -1;
+        }
+    }
+    git_tree *tree;
+    if ((r = git_commit_tree(&tree, commit))) {
+        pr_error("Failed to get the commit tree pointed by commit '%s' in repo '%s', libgit return %d\n", wanted_commit->id_hex_string, repo->url, r);
+        r = -1;
+        goto free_commit;
+    }
+    git_tree_entry *entry_gitmodules = git_tree_entry_byname(tree, ".gitmodules");
+    if (entry_gitmodules != NULL) {
+        pr_warn("Found .gitmodules in commit tree of '%s' for repo '%s', parsing submodules\n", wanted_commit->id_hex_string, repo->url);
+        if (mirror_repo_parse_submodules(config, repo, wanted_commit, tree, entry_gitmodules)) {
+            pr_error("Failed to parse submodules in commit tree of '%s' for repo '%s'\n", wanted_commit->id_hex_string, repo->url);
+            r = -1;
+            goto free_commit;
+        }
+    }
+    r = 0;
+free_commit:
+    git_commit_free(commit);
+    return r;
+}
+
+int mirror_repo_ensure_wanted_reference(
+    struct config *const restrict config,
+    struct repo *const restrict repo,
+    struct wanted_base *wanted_object
+) {
+    if (!repo->updated) {
+        if (update_repo(config, repo)) {
+            pr_error("Failed to make sure repo '%s' is up-to-date before resolving reference\n", repo->url);
+            return -1;
+        }
+    }
+    switch (wanted_object->type) {
+    case WANTED_TYPE_ALL_BRANCHES:
+    case WANTED_TYPE_ALL_TAGS:
+        // git_branch_iterator
+        break;
+    case WANTED_TYPE_BRANCH:
+    case WANTED_TYPE_TAG:
+
+        break;
+    default:
+        pr_error("Impossible wanted object type\n");
+        return -1;
+    }
+
+
+    // mirror_repo_ensure_wanted_commit();
+    return 0;
+}
+
 int mirror_repo(
     struct config *const restrict config,
     struct repo *const restrict repo
@@ -1418,6 +1527,7 @@ int mirror_repo(
             pr_error("Impossible wanted type unknown for wanted object '%s' for repo '%s'\n", wanted_object->name, repo->url);
             return -1;
         case WANTED_TYPE_COMMIT:
+
             break;
         default: /* WIP !!! */
             break;
