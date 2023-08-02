@@ -113,8 +113,8 @@ struct repo {
     char *url;
     unsigned short url_len;
     XXH64_hash_t url_hash;
-    // char dir[REPO_DIR_LEN];
     char *dir_path;
+    unsigned short dir_path_len;
     char dir_name[17];
     git_repository *repository;
     struct wanted_objects wanted_objects;
@@ -966,10 +966,10 @@ void print_config_repo_wanted(struct wanted_objects const *const restrict wanted
     for (struct wanted_base *wanted_object = wanted_objects->objects_head;
         wanted_object; wanted_object = wanted_object->next) {
         fprintf(stderr,
-            "       - %s:\n"
-            "           type: %d (%s)\n"
-            "           archive: %s\n"
-            "           checkout: %s\n",
+            "|        - %s:\n"
+            "|            type: %d (%s)\n"
+            "|            archive: %s\n"
+            "|            checkout: %s\n",
             wanted_object->name,
             wanted_object->type,
             WANTED_TYPE_STRINGS[wanted_object->type],
@@ -982,13 +982,17 @@ void print_config_repo_wanted(struct wanted_objects const *const restrict wanted
 
 void print_config_repo(struct repo const *const restrict repo) {
     fprintf(stderr,
-        " - %s:\n"
-        "     hash: %016lx\n",
+        "|  - %s:\n"
+        "|      hash: %016lx\n"
+        "|      dir: %s\n",
         repo->url,
-        repo->url_hash);
+        repo->url_hash,
+        repo->dir_path);
     if (repo->wanted_objects.objects_count) {
         fprintf(stderr,
-        "     wanted (%lu):\n", repo->wanted_objects.objects_count);
+        "|      wanted (%lu, %s):\n", 
+            repo->wanted_objects.objects_count,
+            repo->wanted_objects.dynamic ? "dynamic" : "static");
         print_config_repo_wanted(&repo->wanted_objects);
     }
 
@@ -996,19 +1000,18 @@ void print_config_repo(struct repo const *const restrict repo) {
 
 void print_config(struct config const *const restrict config) {
     fprintf(stderr,
-        "\n"
-        "proxy: %s\n"
-        "proxy_after: %hu\n"
-        "dir_repos: %s\n"
-        "dir_archives: %s\n"
-        "dir_checkouts: %s\n",
+        "| proxy: %s\n"
+        "| proxy_after: %hu\n"
+        "| dir_repos: %s\n"
+        "| dir_archives: %s\n"
+        "| dir_checkouts: %s\n",
         config->proxy_url,
         config->proxy_after,
         config->dir_repos,
         config->dir_archives,
         config->dir_checkouts);
     if (config->repos_count) {
-        fprintf(stderr, "repos (%lu): \n", config->repos_count);
+        fprintf(stderr, "| repos (%lu): \n", config->repos_count);
         for (unsigned long i = 0; i < config->repos_count; ++i) {
             print_config_repo(config->repos + i);
         }
@@ -1060,6 +1063,68 @@ error:
     return -1;
 }
 
+int config_repo_finish(
+    struct repo *const restrict repo,
+    char const *const restrict dir_repo,
+    unsigned short len_dir_repo
+) {
+    if (repo == NULL || dir_repo == NULL || len_dir_repo == 0) {
+        pr_error("Internal: invalid arguments\n");
+        return -1;
+    }
+    if (repo->wanted_objects.objects_count == 0) {
+        pr_warn("Repo '%s' does not have wanted objects defined, adding HEAD as wanted\n", repo->url);
+        struct wanted_reference *wanted_head = malloc(sizeof *wanted_head);
+        if (wanted_head == NULL) {
+            pr_error("Failed to allocate memory\n");
+            return -1;
+        }
+        *wanted_head = WANTED_REFERENCE_INIT;
+        if ((wanted_head->commit.base.name = malloc(sizeof("HEAD"))) == NULL) {
+            free(wanted_head);
+            pr_error("Failed to allocate memory\n");
+            return -1;
+        }
+        strncpy(wanted_head->commit.base.name, "HEAD", 5);
+        wanted_head->commit.base.name_len = 4;
+        wanted_head->commit.base.type = WANTED_TYPE_HEAD;
+        repo->wanted_objects.objects_head = (struct wanted_base *)wanted_head;
+        repo->wanted_objects.objects_tail = (struct wanted_base *)wanted_head;
+        ++repo->wanted_objects.objects_count;
+    }
+    for (struct wanted_base *wanted_object = repo->wanted_objects.objects_head;
+        wanted_object != NULL;
+        wanted_object = wanted_object->next) {
+        switch (wanted_object->type) {
+        case WANTED_TYPE_UNKNOWN:
+            pr_error("Type of wanted object '%s' for repo '%s' is unknown, you must set it explicitly\n", wanted_object->name, repo->url);
+            return -1;
+        case WANTED_TYPE_ALL_BRANCHES:
+        case WANTED_TYPE_ALL_TAGS:
+        case WANTED_TYPE_BRANCH:
+        case WANTED_TYPE_TAG:
+        case WANTED_TYPE_HEAD:
+            repo->wanted_objects.dynamic = true;
+            break;
+        default:
+            break;
+        }
+    }
+    repo->dir_path_len = len_dir_repo + sizeof repo->dir_name;
+    if ((repo->dir_path = malloc(repo->dir_path_len + 1)) == NULL) {
+        pr_error("Failed to allocate memory for dir path of repo '%s'\n", repo->url);
+        return -1;
+    }
+    if (snprintf(repo->dir_path, repo->dir_path_len + 1, "%s/%s", dir_repo, repo->dir_name) < 0) {
+        free(repo->dir_path);
+        pr_error_with_errno("Failed to format dir path of repo '%s'\n", repo->url);
+        return -1;
+    }
+    pr_warn("Repo '%s' will be stored at '%s'\n", repo->url, repo->dir_path);
+    // repo->
+    return 0;
+}
+
 int config_finish(
     struct config *const restrict config
 ) {
@@ -1068,24 +1133,32 @@ int config_finish(
             return -1;
         }
         memcpy(config->dir_repos, DIR_REPOS, sizeof(DIR_REPOS));
+        config->len_dir_repos = sizeof(DIR_REPOS) - 1;
     }
     if (config->dir_archives == NULL) {
         if ((config->dir_archives = malloc(sizeof(DIR_ARCHIVES))) == NULL) {
             return -1;
         }
         memcpy(config->dir_archives, DIR_ARCHIVES, sizeof(DIR_ARCHIVES));
+        config->len_dir_archives = sizeof(DIR_ARCHIVES) - 1;
     }
     if (config->dir_checkouts == NULL) {
         if ((config->dir_checkouts = malloc(sizeof(DIR_CHECKOUTS))) == NULL) {
             return -1;
         }
         memcpy(config->dir_checkouts, DIR_CHECKOUTS, sizeof(DIR_CHECKOUTS));
+        config->len_dir_checkouts = sizeof(DIR_CHECKOUTS) - 1;
     }
     if (config->proxy_url && config->proxy_url[0] != '\0') {
         config->fetch_options.proxy_opts.url = config->proxy_url;
     } else if (config->proxy_after) {
         pr_warn("You've set proxy_after but not set proxy, fixing proxy_after to 0\n");
         config->proxy_after = 0;
+    }
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        if (config_repo_finish(config->repos + i, config->dir_repos, config->len_dir_repos)) {
+            pr_error("Failed to finish repo\n");
+        }
     }
     pr_warn("Finished config, config is as follows:\n");
     print_config(config);
@@ -1161,6 +1234,10 @@ int main(int const argc, char *argv[]) {
     if (config_read(&config, config_path)) {
         pr_error("Failed to read config\n");
         return -1;
+    }
+    if (config.repos_count == 0) {
+        pr_warn("No repos defined, early quit\n");
+        return 0;
     }
     pr_warn("Shutting down\n");
     return 0;
