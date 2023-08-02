@@ -259,7 +259,8 @@ static inline void version() {
         stderr);
 }
 
-// Read from fd until EOF, return the size being read, or -1 if failed, the pointer should be free'd by caller
+// Read from fd until EOF, 
+// return the size being read, or -1 if failed, the pointer should be free'd by caller
 ssize_t buffer_read_from_fd(unsigned char **buffer, int fd) {
     if (buffer == NULL || fd < 0) {
         pr_error("Internal: invalid arguments\n");
@@ -487,8 +488,10 @@ int wanted_object_complete_commit_from_base(
     }
     wanted_commit->base = **wanted_object;
     wanted_commit->id = oid;
-    if ((*wanted_object)->previous) (*wanted_object)->previous->next = (struct wanted_base *)wanted_commit;
-    if ((*wanted_object)->next) (*wanted_object)->next->previous = (struct wanted_base *)wanted_commit;
+    if ((*wanted_object)->previous) 
+        (*wanted_object)->previous->next = (struct wanted_base *)wanted_commit;
+    if ((*wanted_object)->next) 
+        (*wanted_object)->next->previous = (struct wanted_base *)wanted_commit;
     free(*wanted_object);
     *wanted_object = (struct wanted_base *)wanted_commit;
     return 0;
@@ -504,8 +507,10 @@ int wanted_object_complete_reference_from_base(
     }
     *wanted_reference = WANTED_REFERENCE_INIT;
     wanted_reference->commit.base = **wanted_object;
-    if ((*wanted_object)->previous) (*wanted_object)->previous->next = (struct wanted_base *)wanted_reference;
-    if ((*wanted_object)->next) (*wanted_object)->next->previous = (struct wanted_base *)wanted_reference;
+    if ((*wanted_object)->previous) 
+        (*wanted_object)->previous->next = (struct wanted_base *)wanted_reference;
+    if ((*wanted_object)->next) 
+        (*wanted_object)->next->previous = (struct wanted_base *)wanted_reference;
     free(*wanted_object);
     *wanted_object = (struct wanted_base *)wanted_reference;
     return 0;
@@ -1094,7 +1099,9 @@ int config_repo_finish(
         return -1;
     }
     if (repo->wanted_objects.objects_count == 0) {
-        pr_warn("Repo '%s' does not have wanted objects defined, adding HEAD as wanted\n", repo->url);
+        pr_warn(
+            "Repo '%s' does not have wanted objects defined, adding HEAD as wanted\n", 
+            repo->url);
         struct wanted_reference *wanted_head = malloc(sizeof *wanted_head);
         if (wanted_head == NULL) {
             pr_error("Failed to allocate memory\n");
@@ -1118,7 +1125,9 @@ int config_repo_finish(
         wanted_object = wanted_object->next) {
         switch (wanted_object->type) {
         case WANTED_TYPE_UNKNOWN:
-            pr_error("Type of wanted object '%s' for repo '%s' is unknown, you must set it explicitly\n", wanted_object->name, repo->url);
+            pr_error(
+                "Type of wanted object '%s' for repo '%s' is unknown, "
+                "you must set it explicitly\n", wanted_object->name, repo->url);
             return -1;
         case WANTED_TYPE_ALL_BRANCHES:
         case WANTED_TYPE_ALL_TAGS:
@@ -1136,7 +1145,8 @@ int config_repo_finish(
         pr_error("Failed to allocate memory for dir path of repo '%s'\n", repo->url);
         return -1;
     }
-    if (snprintf(repo->dir_path, repo->dir_path_len + 1, "%s/%s", dir_repo, repo->dir_name) < 0) {
+    if (snprintf(repo->dir_path, repo->dir_path_len + 1, "%s/%s", 
+        dir_repo, repo->dir_name) < 0) {
         free(repo->dir_path);
         pr_error_with_errno("Failed to format dir path of repo '%s'\n", repo->url);
         return -1;
@@ -1177,7 +1187,8 @@ int config_finish(
         config->proxy_after = 0;
     }
     for (unsigned long i = 0; i < config->repos_count; ++i) {
-        if (config_repo_finish(config->repos + i, config->dir_repos, config->len_dir_repos)) {
+        if (config_repo_finish(
+            config->repos + i, config->dir_repos, config->len_dir_repos)) {
             pr_error("Failed to finish repo\n");
         }
     }
@@ -1200,7 +1211,11 @@ int config_read(
     } else {
         pr_warn("Reading config from stdin\n");
         if (isatty(STDIN_FILENO)) {
-            pr_warn("Standard input (stdin) is connected to a terminal, but you've configured to read config from stdin, this might not be what you want and may lead to your terminal being jammed\n");
+            pr_warn(
+                "Standard input (stdin) is connected to a terminal, "
+                "but you've configured to read config from stdin, "
+                "this might not be what you want and may lead to "
+                "your terminal being jammed\n");
         }
     }
     unsigned char *config_buffer;
@@ -1227,7 +1242,8 @@ int config_read(
 int repo_open_or_init_bare(
     struct repo *const restrict repo
 ) {
-    if (repo == NULL || repo->url[0] == '\0' || repo->dir_path == NULL || repo->dir_path[0] == '\0') {
+    if (repo == NULL || repo->url[0] == '\0' || 
+        repo->dir_path == NULL || repo->dir_path[0] == '\0') {
         pr_error("Internal: invalid argument\n");
         return -1;
     }
@@ -1238,19 +1254,29 @@ int repo_open_or_init_bare(
     int r = git_repository_open_bare(&repo->repository, repo->dir_path);
     switch (r) {
     case GIT_OK:
-        pr_warn("Opened existing bare repository '%s' for repo '%s'\n", repo->dir_path, repo->url);
+        pr_warn(
+            "Opened existing bare repository '%s' for repo '%s'\n",
+            repo->dir_path, repo->url);
         return 0;
     case GIT_ENOTFOUND:
-        pr_warn("Dir '%s' for repo '%s' does not exist yet, trying to create it\n", repo->dir_path, repo->url);
+        pr_warn(
+            "Dir '%s' for repo '%s' does not exist yet, trying to create it\n", 
+            repo->dir_path, repo->url);
         r = git_repository_init(&repo->repository, repo->dir_path, 1);
         if (r < 0) {
-            pr_error("Failed to initialize a bare repostitory at '%s' for repo '%s', libgit return %d\n", repo->dir_path, repo->url, r);
+            pr_error(
+                "Failed to initialize a bare repostitory at '%s' for repo '%s', "
+                "libgit return %d\n", repo->dir_path, repo->url, r);
             return -1;
         } else {
             git_remote *remote;
-            r = git_remote_create_with_fetchspec(&remote, repo->repository, MIRROR_REMOTE, repo->url, MIRROR_FETCHSPEC);
+            r = git_remote_create_with_fetchspec(
+                &remote, repo->repository, MIRROR_REMOTE, repo->url, MIRROR_FETCHSPEC);
             if (r < 0) {
-                pr_error("Failed to create remote '"MIRROR_REMOTE"' with fetch spec '"MIRROR_FETCHSPEC"' for url '%s', libgit returns %d\n",
+                pr_error(
+                    "Failed to create remote '"MIRROR_REMOTE"' "
+                    "with fetch spec '"MIRROR_FETCHSPEC"' for url '%s', "
+                    "libgit returns %d\n",
                     repo->url, r);
                 git_repository_free(repo->repository);
                 return -1;
@@ -1258,14 +1284,18 @@ int repo_open_or_init_bare(
             git_config *config;
             r = git_repository_config(&config, repo->repository);
             if (r < 0) {
-                pr_error("Failed to get config for repo for url '%s', libgit return %d\n", repo->url, r);
+                pr_error(
+                    "Failed to get config for repo for url '%s', "
+                    "libgit return %d\n", repo->url, r);
                 git_remote_free(remote);
                 git_repository_free(repo->repository);
                 return -1;
             }
             r = git_config_set_bool(config, MIRROR_CONFIG, true);
             if (r < 0) {
-                pr_error("Failed to set config '"MIRROR_CONFIG"' to true for repo for url '%s, libgit return %d\n", repo->url, r);
+                pr_error(
+                    "Failed to set config '"MIRROR_CONFIG"' to true for "
+                    "repo for url '%s, libgit return %d\n", repo->url, r);
                 git_config_free(config);
                 git_remote_free(remote);
                 git_repository_free(repo->repository);
@@ -1276,7 +1306,9 @@ int repo_open_or_init_bare(
             return 1;
         }
     default:
-        pr_error("Failed to open bare repository at '%s' for repo '%s' and cannot fix libgit return %d\n", repo->dir_path, repo->url, r);
+        pr_error(
+            "Failed to open bare repository at '%s' for repo '%s' "
+            "and cannot fix libgit return %d\n", repo->dir_path, repo->url, r);
         return -1;
     }
 
@@ -1291,29 +1323,39 @@ int update_repo(
     git_remote *remote;
     int r = git_remote_lookup(&remote, repo->repository, MIRROR_REMOTE) < 0;
     if (r) {
-        pr_error("Failed to lookup remote '"MIRROR_REMOTE"' from local repo for url '%s', libgit return %d\n", repo->url, r);
+        pr_error(
+            "Failed to lookup remote '"MIRROR_REMOTE"' from local repo "
+            "for url '%s', libgit return %d\n", repo->url, r);
         return -1;
     }
     char const *const repo_remote_url = git_remote_url(remote);
     if (strcmp(repo_remote_url, repo->url)) {
-        pr_error("Configured remote url is '%s' instead of '%s', give up\n", repo_remote_url, repo->url);
+        pr_error(
+            "Configured remote url is '%s' instead of '%s', give up\n", 
+            repo_remote_url, repo->url);
         r = -1;
         goto free_remote;
     }
     git_strarray strarray;
     r = git_remote_get_fetch_refspecs(&strarray, remote);
     if (r < 0) {
-        pr_error("Failed to get fetch refspecs strarry for '%s', libgit return %d\n", repo->url, r);
+        pr_error(
+            "Failed to get fetch refspecs strarry for '%s', libgit return %d\n", 
+            repo->url, r);
         r = -1;
         goto free_strarray;
     }
     if (strarray.count != 1) {
-        pr_error("Refspec more than one for '%s', refuse to continue\n", repo->url);
+        pr_error(
+            "Refspec more than one for '%s', refuse to continue\n", 
+            repo->url);
         r = -1;
         goto free_strarray;
     }
     if (strcmp(strarray.strings[0], MIRROR_FETCHSPEC)) {
-        pr_error("Fetch spec is '%s' instead of '"MIRROR_FETCHSPEC"' for '%s', give up\n", strarray.strings[0], repo->url);
+        pr_error(
+            "Fetch spec is '%s' instead of '"MIRROR_FETCHSPEC"' for '%s', give up\n", 
+            strarray.strings[0], repo->url);
         r = -1;
         goto free_strarray;
     }
@@ -1326,7 +1368,9 @@ int update_repo(
         }
         r = git_remote_fetch(remote, NULL, &config->fetch_options, NULL);
         if (r) {
-            pr_error("Failed to fetch, libgit return %d%s\n", r, try < config->proxy_after ? ", will retry" : "");
+            pr_error(
+                "Failed to fetch, libgit return %d%s\n", 
+                r, try < config->proxy_after ? ", will retry" : "");
         } else {
             break;
         }
@@ -1382,7 +1426,8 @@ int config_free(
             if (repo->url) free (repo->url);
             if (repo->dir_path) free (repo->dir_path);
             if (repo->wanted_objects.objects_count) {
-                for (struct wanted_base *wanted_object = repo->wanted_objects.objects_head;
+                for (struct wanted_base *wanted_object = 
+                    repo->wanted_objects.objects_head;
                     wanted_object != NULL;
                     wanted_object = wanted_object->next) {
                     if (wanted_object->name) free (wanted_object->name);
@@ -1406,11 +1451,14 @@ int mirror_repo_parse_submodules(
     git_tree_entry const *const entry_gitmodules
 ) {
     if (git_tree_entry_type(entry_gitmodules) != GIT_OBJECT_BLOB) {
-        pr_error("Tree entry .gitmodules in commit '%s' for repo '%s' is not a blob\n", wanted_commit->id_hex_string, repo->url);
+        pr_error(
+            "Tree entry .gitmodules in commit '%s' for repo '%s' is not a blob\n", 
+            wanted_commit->id_hex_string, repo->url);
         return -1;
     }
     git_object *object_gitmodules;
-    int r = git_tree_entry_to_object(&object_gitmodules, repo->repository, entry_gitmodules);
+    int r = git_tree_entry_to_object(
+        &object_gitmodules, repo->repository, entry_gitmodules);
     if (r) {
         pr_error("Failed to convert tree entry for gitmodules to object\n");
         return -1;
@@ -1443,30 +1491,47 @@ int mirror_repo_ensure_wanted_commit(
     int r = git_commit_lookup(&commit, repo->repository, &wanted_commit->id);
     if (r) {
         if (repo->updated) {
-            pr_error("Failed to lookup commit '%s' in repo '%s' even it's up-to-date, libgit return %d, consider failure\n", wanted_commit->id_hex_string, repo->url, r);
+            pr_error(
+                "Failed to lookup commit '%s' in repo '%s' even it's up-to-date, "
+                "libgit return %d, consider failure\n", 
+                wanted_commit->id_hex_string, repo->url, r);
             return -1;
         }
-        pr_warn("Commit '%s' does not exist in repo '%s' (libgit return %d), but the repo is not updated yet, trying to update the repo before looking up the commit again\n", wanted_commit->id_hex_string, repo->url, r);
+        pr_warn(
+            "Commit '%s' does not exist in repo '%s' (libgit return %d), "
+            "but the repo is not updated yet, "
+            "trying to update the repo before looking up the commit again\n", 
+            wanted_commit->id_hex_string, repo->url, r);
         if (update_repo(config, repo)) {
             pr_error("Failed to update repo\n");
             return -1;
         }
         if (r = git_commit_lookup(&commit, repo->repository, &wanted_commit->id)) {
-            pr_error("Failed to lookup commit '%s' in repo '%s' even after updating the repo, libgit return %d, consider failure\n", wanted_commit->id_hex_string, repo->url, r);
+            pr_error(
+                "Failed to lookup commit '%s' in repo '%s' "
+                "even after updating the repo, libgit return %d, consider failure\n", 
+                wanted_commit->id_hex_string, repo->url, r);
             return -1;
         }
     }
     git_tree *tree;
     if ((r = git_commit_tree(&tree, commit))) {
-        pr_error("Failed to get the commit tree pointed by commit '%s' in repo '%s', libgit return %d\n", wanted_commit->id_hex_string, repo->url, r);
+        pr_error(
+            "Failed to get the commit tree pointed by commit '%s' in repo '%s', "
+            "libgit return %d\n", wanted_commit->id_hex_string, repo->url, r);
         r = -1;
         goto free_commit;
     }
     git_tree_entry *entry_gitmodules = git_tree_entry_byname(tree, ".gitmodules");
     if (entry_gitmodules != NULL) {
-        pr_warn("Found .gitmodules in commit tree of '%s' for repo '%s', parsing submodules\n", wanted_commit->id_hex_string, repo->url);
-        if (mirror_repo_parse_submodules(config, repo, wanted_commit, tree, entry_gitmodules)) {
-            pr_error("Failed to parse submodules in commit tree of '%s' for repo '%s'\n", wanted_commit->id_hex_string, repo->url);
+        pr_warn(
+            "Found .gitmodules in commit tree of '%s' for repo '%s', "
+            "parsing submodules\n", wanted_commit->id_hex_string, repo->url);
+        if (mirror_repo_parse_submodules(
+            config, repo, wanted_commit, tree, entry_gitmodules)) {
+            pr_error(
+                "Failed to parse submodules in commit tree of '%s' for repo '%s'\n", 
+                wanted_commit->id_hex_string, repo->url);
             r = -1;
             goto free_commit;
         }
@@ -1484,7 +1549,9 @@ int mirror_repo_ensure_wanted_reference(
 ) {
     if (!repo->updated) {
         if (update_repo(config, repo)) {
-            pr_error("Failed to make sure repo '%s' is up-to-date before resolving reference\n", repo->url);
+            pr_error(
+                "Failed to make sure repo '%s' is up-to-date before "
+                "resolving reference\n", repo->url);
             return -1;
         }
     }
@@ -1515,7 +1582,9 @@ int mirror_repo(
     if (repo->wanted_objects.dynamic && !repo->updated) {
         pr_warn("Dynamic wanted objects set for repo '%s', need to update\n", repo->url);
         if (update_repo(config, repo)) {
-            pr_error("Failed to update repo '%s' to prepare for dynamic wanted objects\n", repo->url);
+            pr_error(
+                "Failed to update repo '%s' to prepare for dynamic wanted objects\n", 
+                repo->url);
             return -1;
         }
     }
@@ -1524,7 +1593,9 @@ int mirror_repo(
         wanted_object = wanted_object->next) {
         switch (wanted_object->type) {
         case WANTED_TYPE_UNKNOWN:
-            pr_error("Impossible wanted type unknown for wanted object '%s' for repo '%s'\n", wanted_object->name, repo->url);
+            pr_error(
+                "Impossible wanted type unknown for wanted object '%s' for repo '%s'\n",
+                wanted_object->name, repo->url);
             return -1;
         case WANTED_TYPE_COMMIT:
 
