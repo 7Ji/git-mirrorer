@@ -1263,14 +1263,87 @@ int repo_open_or_init_bare(
     return 0;
 }
 
+int update_repo(
+    struct config *const restrict config,
+    struct repo *const restrict repo
+) {
+    pr_warn("Updating repo '%s'...\n", repo->url);
+    git_remote *remote;
+    int r = git_remote_lookup(&remote, repo->repository, MIRROR_REMOTE) < 0;
+    if (r) {
+        pr_error("Failed to lookup remote '"MIRROR_REMOTE"' from local repo for url '%s', libgit return %d\n", repo->url, r);
+        return -1;
+    }
+    char const *const repo_remote_url = git_remote_url(remote);
+    if (strcmp(repo_remote_url, repo->url)) {
+        pr_error("Configured remote url is '%s' instead of '%s', give up\n", repo_remote_url, repo->url);
+        r = -1;
+        goto free_remote;
+    }
+    git_strarray strarray;
+    r = git_remote_get_fetch_refspecs(&strarray, remote);
+    if (r < 0) {
+        pr_error("Failed to get fetch refspecs strarry for '%s', libgit return %d\n", repo->url, r);
+        r = -1;
+        goto free_strarray;
+    }
+    if (strarray.count != 1) {
+        pr_error("Refspec more than one for '%s', refuse to continue\n", repo->url);
+        r = -1;
+        goto free_strarray;
+    }
+    if (strcmp(strarray.strings[0], MIRROR_FETCHSPEC)) {
+        pr_error("Fetch spec is '%s' instead of '"MIRROR_FETCHSPEC"' for '%s', give up\n", strarray.strings[0], repo->url);
+        r = -1;
+        goto free_strarray;
+    }
+    pr_warn("Begging fetching for '%s'\n", repo->url);
+    config->fetch_options.proxy_opts.type = GIT_PROXY_NONE;
+    for (unsigned short try = 0; try <= config->proxy_after; ++try) {
+        if (try == config->proxy_after) {
+            if (try) pr_warn("Failed for %hu times, use proxy\n", config->proxy_after);
+            config->fetch_options.proxy_opts.type = GIT_PROXY_SPECIFIED;
+        }
+        r = git_remote_fetch(remote, NULL, &config->fetch_options, NULL);
+        if (r) {
+            pr_error("Failed to fetch, libgit return %d%s\n", r, try < config->proxy_after ? ", will retry" : "");
+        } else {
+            break;
+        }
+    }
+    if (r) {
+        pr_error("Failed to update repo, considered failure\n");
+        r = -1;
+        goto free_strarray;
+    }
+    pr_warn("Ending fetching for '%s'\n", repo->url);
+    repo->updated = true;
+    r = 0;
+free_strarray:
+    git_strarray_free(&strarray);
+free_remote:
+    git_remote_free(remote);
+    return r;
+}
+
 int config_repos_prepare_open_or_create(
     struct config *const restrict config
 ) {
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         struct repo *const restrict repo = config->repos + i;
-        if (repo_open_or_init_bare(repo) < 0) {
+        switch (repo_open_or_init_bare(repo)) {
+        case -1:
             pr_error("Failed to open or init bare repo for '%s'\n", repo->url);
             return -1;
+        case 0:
+            break;
+        case 1:
+            pr_warn("Repo '%s' just created locally, need to update\n", repo->url);
+            if (update_repo(config, repo)) {
+                pr_error("Failed to update freshly created repo '%s'\n", repo->url);
+                return -1;
+            }
+            break;
         }
     }
     return 0;
@@ -1302,6 +1375,54 @@ int config_free(
         }
         free (config->repos);
     }
+    return 0;
+}
+
+int mirror_repo(
+    struct config *const restrict config,
+    struct repo *const restrict repo
+) {
+    pr_warn("Mirroring repo '%s'\n", repo->url);
+    if (repo->wanted_objects.dynamic && !repo->updated) {
+        pr_warn("Dynamic wanted objects set for repo '%s', need to update\n", repo->url);
+        if (update_repo(config, repo)) {
+            pr_error("Failed to update repo '%s' to prepare for dynamic wanted objects\n", repo->url);
+            return -1;
+        }
+    }
+    for (struct wanted_base *wanted_object = repo->wanted_objects.objects_head;
+        wanted_object != NULL;
+        wanted_object = wanted_object->next) {
+        switch (wanted_object->type) {
+        case WANTED_TYPE_UNKNOWN:
+            pr_error("Impossible wanted type unknown for wanted object '%s' for repo '%s'\n", wanted_object->name, repo->url);
+            return -1;
+        case WANTED_TYPE_COMMIT:
+            break;
+        default: /* WIP !!! */
+            break;
+        }
+        
+    }
+    pr_warn("Finished mirroring repo '%s'\n", repo->url);
+    return 0;
+}
+
+int mirror_all_repos(
+    struct config *const restrict config
+) {
+    if (config_repos_prepare_open_or_create(config)) {
+        pr_error("Failed to prepare repos\n");
+        return -1;
+    }
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        struct repo *const restrict repo = config->repos + i;
+        if (mirror_repo(config, repo)) {
+            pr_error("Failed to mirror all repos\n");
+            return -1;
+        }
+    }
+    pr_warn("Finished mirroring all repos\n");
     return 0;
 }
 
@@ -1344,11 +1465,12 @@ int main(int const argc, char *argv[]) {
     }
     pr_warn("Initializing libgit2\n");
     git_libgit2_init();
-    if (config_repos_prepare_open_or_create(&config)) {
-        pr_error("Failed to prepare repos\n");
+    int r = mirror_all_repos(&config);
+    if (r) {
+        pr_error("Failed to mirro all repos\n");
     }
     config_free(&config);
     pr_warn("Shutting down libgit2\n");
     git_libgit2_shutdown();
-    return 0;
+    return r;
 }
