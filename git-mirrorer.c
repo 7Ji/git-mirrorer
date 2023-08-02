@@ -211,7 +211,8 @@ int sideband_progress(char const *string, int len, void *payload) {
 	return 0;
 }
 
-static inline void print_progress(git_indexer_progress const *const restrict stats) {
+static inline void print_progress(
+    git_indexer_progress const *const restrict stats) {
 
 	int network_percent = stats->total_objects > 0 ?
 		(100*stats->received_objects) / stats->total_objects :
@@ -246,7 +247,7 @@ static inline void help() {
     fputs(
         "git-mirrorer\n"
         "  --config/-c\t[path to .yaml config file]"
-            " or a single - for reading from stdin; if not set, read from stdin\n"
+        " or a single - for reading from stdin; if not set, read from stdin\n"
         "  --help/-h\tprint this message\n"
         "  --version/-v\tprint the version\n",
         stderr
@@ -255,12 +256,14 @@ static inline void help() {
 
 static inline void version() {
     fputs(
-        "git-mirrorer version "VERSION" by 7Ji, licensed under GPLv3 or later\n", 
+        "git-mirrorer version "VERSION" by 7Ji, "
+        "licensed under GPLv3 or later\n", 
         stderr);
 }
 
 // Read from fd until EOF, 
-// return the size being read, or -1 if failed, the pointer should be free'd by caller
+// return the size being read, or -1 if failed, 
+// the pointer should be free'd by caller
 ssize_t buffer_read_from_fd(unsigned char **buffer, int fd) {
     if (buffer == NULL || fd < 0) {
         pr_error("Internal: invalid arguments\n");
@@ -338,12 +341,15 @@ int config_add_repo_and_init_with_url(
     XXH64_hash_t url_hash = XXH3_64bits(url, len_url);
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         if (config->repos[i].url_hash == url_hash) {
-            pr_error("Repo '%s' was already defined, duplication not allowed\n", url);
+            pr_error(
+                "Repo '%s' was already defined, duplication not allowed\n",
+                 url);
             return -1;
         }
     }
     if (++config->repos_count >= config->repos_allocated) {
-        while (config->repos_count >= (config->repos_allocated *= ALLOC_MULTIPLY)) {
+        while (config->repos_count >= (
+            config->repos_allocated *= ALLOC_MULTIPLY)) {
             if (config->repos_allocated == ULONG_MAX) {
                 pr_error("Impossible to allocate more memory\n");
                 return -1;
@@ -361,7 +367,8 @@ int config_add_repo_and_init_with_url(
     }
     struct repo *repo = config->repos + config->repos_count - 1;
     *repo = REPO_INIT;
-    if (snprintf(repo->dir_name, sizeof repo->dir_name, "%016lx", url_hash) < 0) {
+    if (snprintf(
+        repo->dir_name, sizeof repo->dir_name, "%016lx", url_hash) < 0) {
         pr_error_with_errno("Failed to generate hashed dir name");
         --config->repos_count;
         return -1;
@@ -413,7 +420,8 @@ enum wanted_type wanted_object_guess_type(
         if (!strncasecmp(object, "all_tags", 8)) return WANTED_TYPE_ALL_TAGS;
         break;
     case 12:
-        if (!strncasecmp(object, "all_branches", 12)) return WANTED_TYPE_ALL_BRANCHES;
+        if (!strncasecmp(object, "all_branches", 12)) 
+            return WANTED_TYPE_ALL_BRANCHES;
         break;
     case 40:
         if (object_name_is_sha1(object)) return WANTED_TYPE_COMMIT;
@@ -468,7 +476,8 @@ int wanted_object_complete_commit_from_base(
 ) {
     git_oid oid;
     if (git_oid_fromstr(&oid, (*wanted_object)->name)) {
-        pr_error("Failed to resolve '%s' to a git object id\n", (*wanted_object)->name);
+        pr_error("Failed to resolve '%s' to a git object id\n",
+            (*wanted_object)->name);
         return -1;
     }
     struct wanted_commit *wanted_commit = malloc(sizeof *wanted_commit);
@@ -500,7 +509,8 @@ int wanted_object_complete_commit_from_base(
 int wanted_object_complete_reference_from_base(
     struct wanted_base **wanted_object
 ) {
-    struct wanted_reference *wanted_reference = malloc(sizeof *wanted_reference);
+    struct wanted_reference *wanted_reference = 
+        malloc(sizeof *wanted_reference);
     if (wanted_reference == NULL) {
         pr_error("Failed to allocate memory\n");
         return -1;
@@ -508,9 +518,11 @@ int wanted_object_complete_reference_from_base(
     *wanted_reference = WANTED_REFERENCE_INIT;
     wanted_reference->commit.base = **wanted_object;
     if ((*wanted_object)->previous) 
-        (*wanted_object)->previous->next = (struct wanted_base *)wanted_reference;
+        (*wanted_object)->previous->next = 
+            (struct wanted_base *)wanted_reference;
     if ((*wanted_object)->next) 
-        (*wanted_object)->next->previous = (struct wanted_base *)wanted_reference;
+        (*wanted_object)->next->previous = 
+            (struct wanted_base *)wanted_reference;
     free(*wanted_object);
     *wanted_object = (struct wanted_base *)wanted_reference;
     return 0;
@@ -784,7 +796,8 @@ int config_update_from_yaml_event(
             goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_REPO_URL: // only accept repo url as mapping name
+    case YAML_CONFIG_PARSING_STATUS_REPO_URL: 
+        // only accept repo url as mapping name
         switch (event->type) {
         case YAML_SCALAR_EVENT:
             if (config_add_repo_and_init_with_url(
@@ -883,10 +896,11 @@ int config_update_from_yaml_event(
             break;
         case YAML_MAPPING_END_EVENT: {
             if (wanted_object_guess_type_self_optional(
-                (config->repos + state->repo_id)-> wanted_objects.objects_tail) ||
+                    (config->repos + state->repo_id)
+                        -> wanted_objects.objects_tail) ||
                 wanted_object_complete_from_base(
-                    &((config->repos + state->repo_id)-> wanted_objects.objects_tail)
-                )) {
+                    &((config->repos + state->repo_id)
+                        -> wanted_objects.objects_tail))) {
                 pr_error("Failed to finish wanted object\n");
                 return -1;
             }
@@ -900,7 +914,8 @@ int config_update_from_yaml_event(
     case YAML_CONFIG_PARSING_STATUS_REPO_WANTED_AFTER_OBJECT:
         switch (event->type) {
         case YAML_MAPPING_START_EVENT:
-            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION;
+            state->status = 
+                YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION;
             break;
         default:
             goto unexpected_event_type;
@@ -926,7 +941,8 @@ int config_update_from_yaml_event(
                     state->status = 
                     YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_CHECKOUT;
             }
-            if (state->status == YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION) {
+            if (state->status == 
+                YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION) {
                 pr_error("Unrecognized config key '%s'\n", key);
                 return -1;
             }
@@ -946,10 +962,13 @@ int config_update_from_yaml_event(
                 (config->repos + state->repo_id)->wanted_objects.objects_tail,
                 (char const *)event->data.scalar.value
             )) {
-                pr_error("Invalid object type '%s'\n", (char const *)event->data.scalar.value);
+                pr_error(
+                    "Invalid object type '%s'\n", 
+                    (char const *)event->data.scalar.value);
                 return -1;
             }
-            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION;
+            state->status = 
+                YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION;
             break;
         default:
             goto unexpected_event_type;
@@ -959,20 +978,25 @@ int config_update_from_yaml_event(
     case YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_CHECKOUT:
         switch (event->type) {
         case YAML_SCALAR_EVENT: {
-            int bool_value = bool_from_string((char const *)event->data.scalar.value);
+            int bool_value = bool_from_string(
+                (char const *)event->data.scalar.value);
             if (bool_value < 0) {
                 pr_error("Failed to parse '%s' into a bool value\n", 
                     (char const *)event->data.scalar.value);
                 return -1;
             }
-            if (state->status == YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_ARCHIVE) {
-                config->repos[state->repo_id].wanted_objects.objects_tail->archive
-                    = bool_value;
+            if (state->status == 
+                YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_ARCHIVE) {
+                config->repos[state->repo_id]
+                    .wanted_objects.objects_tail->archive
+                        = bool_value;
             } else {
-                config->repos[state->repo_id].wanted_objects.objects_tail->checkout
-                    = bool_value;
+                config->repos[state->repo_id]
+                    .wanted_objects.objects_tail->checkout
+                        = bool_value;
             }
-            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION;
+            state->status = 
+                YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION;
             break;
         }
         default:
@@ -988,7 +1012,8 @@ unexpected_event_type:
     return -1;
 }
 
-void print_config_repo_wanted(struct wanted_objects const *const restrict wanted_objects) {
+void print_config_repo_wanted(
+    struct wanted_objects const *const restrict wanted_objects) {
     for (struct wanted_base *wanted_object = wanted_objects->objects_head;
         wanted_object; wanted_object = wanted_object->next) {
         fprintf(stderr,
@@ -1100,7 +1125,8 @@ int config_repo_finish(
     }
     if (repo->wanted_objects.objects_count == 0) {
         pr_warn(
-            "Repo '%s' does not have wanted objects defined, adding HEAD as wanted\n", 
+            "Repo '%s' does not have wanted objects defined, "
+            "adding HEAD as wanted\n",
             repo->url);
         struct wanted_reference *wanted_head = malloc(sizeof *wanted_head);
         if (wanted_head == NULL) {
@@ -1142,13 +1168,17 @@ int config_repo_finish(
     }
     repo->dir_path_len = len_dir_repo + sizeof repo->dir_name;
     if ((repo->dir_path = malloc(repo->dir_path_len + 1)) == NULL) {
-        pr_error("Failed to allocate memory for dir path of repo '%s'\n", repo->url);
+        pr_error(
+            "Failed to allocate memory for dir path of repo '%s'\n",
+            repo->url);
         return -1;
     }
     if (snprintf(repo->dir_path, repo->dir_path_len + 1, "%s/%s", 
         dir_repo, repo->dir_name) < 0) {
         free(repo->dir_path);
-        pr_error_with_errno("Failed to format dir path of repo '%s'\n", repo->url);
+        pr_error_with_errno(
+            "Failed to format dir path of repo '%s'\n",
+            repo->url);
         return -1;
     }
     pr_warn("Repo '%s' will be stored at '%s'\n", repo->url, repo->dir_path);
@@ -1183,7 +1213,9 @@ int config_finish(
     if (config->proxy_url && config->proxy_url[0] != '\0') {
         config->fetch_options.proxy_opts.url = config->proxy_url;
     } else if (config->proxy_after) {
-        pr_warn("You've set proxy_after but not set proxy, fixing proxy_after to 0\n");
+        pr_warn(
+            "You've set proxy_after but not set proxy, "
+            "fixing proxy_after to 0\n");
         config->proxy_after = 0;
     }
     for (unsigned long i = 0; i < config->repos_count; ++i) {
@@ -1265,13 +1297,16 @@ int repo_open_or_init_bare(
         r = git_repository_init(&repo->repository, repo->dir_path, 1);
         if (r < 0) {
             pr_error(
-                "Failed to initialize a bare repostitory at '%s' for repo '%s', "
-                "libgit return %d\n", repo->dir_path, repo->url, r);
+                "Failed to initialize a bare repostitory at '%s' "
+                "for repo '%s', "
+                "libgit return %d\n", 
+                repo->dir_path, repo->url, r);
             return -1;
         } else {
             git_remote *remote;
             r = git_remote_create_with_fetchspec(
-                &remote, repo->repository, MIRROR_REMOTE, repo->url, MIRROR_FETCHSPEC);
+                &remote, repo->repository, MIRROR_REMOTE, 
+                repo->url, MIRROR_FETCHSPEC);
             if (r < 0) {
                 pr_error(
                     "Failed to create remote '"MIRROR_REMOTE"' "
@@ -1331,7 +1366,7 @@ int update_repo(
     char const *const repo_remote_url = git_remote_url(remote);
     if (strcmp(repo_remote_url, repo->url)) {
         pr_error(
-            "Configured remote url is '%s' instead of '%s', give up\n", 
+            "Configured remote url is '%s' instead of '%s', give up\n",
             repo_remote_url, repo->url);
         r = -1;
         goto free_remote;
@@ -1340,7 +1375,7 @@ int update_repo(
     r = git_remote_get_fetch_refspecs(&strarray, remote);
     if (r < 0) {
         pr_error(
-            "Failed to get fetch refspecs strarry for '%s', libgit return %d\n", 
+            "Failed to get fetch refspecs strarry for '%s', libgit return %d\n",
             repo->url, r);
         r = -1;
         goto free_strarray;
@@ -1354,7 +1389,8 @@ int update_repo(
     }
     if (strcmp(strarray.strings[0], MIRROR_FETCHSPEC)) {
         pr_error(
-            "Fetch spec is '%s' instead of '"MIRROR_FETCHSPEC"' for '%s', give up\n", 
+            "Fetch spec is '%s' instead of '"MIRROR_FETCHSPEC"' "
+            "for '%s', give up\n",
             strarray.strings[0], repo->url);
         r = -1;
         goto free_strarray;
@@ -1363,7 +1399,9 @@ int update_repo(
     config->fetch_options.proxy_opts.type = GIT_PROXY_NONE;
     for (unsigned short try = 0; try <= config->proxy_after; ++try) {
         if (try == config->proxy_after) {
-            if (try) pr_warn("Failed for %hu times, use proxy\n", config->proxy_after);
+            if (try) 
+                pr_warn(
+                    "Failed for %hu times, use proxy\n", config->proxy_after);
             config->fetch_options.proxy_opts.type = GIT_PROXY_SPECIFIED;
         }
         r = git_remote_fetch(remote, NULL, &config->fetch_options, NULL);
@@ -1402,9 +1440,11 @@ int config_repos_prepare_open_or_create(
         case 0:
             break;
         case 1:
-            pr_warn("Repo '%s' just created locally, need to update\n", repo->url);
+            pr_warn(
+                "Repo '%s' just created locally, need to update\n", repo->url);
             if (update_repo(config, repo)) {
-                pr_error("Failed to update freshly created repo '%s'\n", repo->url);
+                pr_error(
+                    "Failed to update freshly created repo '%s'\n", repo->url);
                 return -1;
             }
             break;
@@ -1452,7 +1492,8 @@ int mirror_repo_parse_submodules(
 ) {
     if (git_tree_entry_type(entry_gitmodules) != GIT_OBJECT_BLOB) {
         pr_error(
-            "Tree entry .gitmodules in commit '%s' for repo '%s' is not a blob\n", 
+            "Tree entry .gitmodules in commit '%s' for repo '%s' "
+            "is not a blob\n",
             wanted_commit->id_hex_string, repo->url);
         return -1;
     }
@@ -1464,7 +1505,8 @@ int mirror_repo_parse_submodules(
         return -1;
     }
     git_blob *blob_gitmodules = (git_blob *)object_gitmodules;
-    const char *blob_gitmodules_ro_buffer = git_blob_rawcontent(blob_gitmodules);
+    const char *blob_gitmodules_ro_buffer = 
+        git_blob_rawcontent(blob_gitmodules);
     if (blob_gitmodules_ro_buffer == NULL) {
         pr_error("Failed to get a ro buffer for gitmodules\n");
         goto free_object;
@@ -1492,7 +1534,8 @@ int mirror_repo_ensure_wanted_commit(
     if (r) {
         if (repo->updated) {
             pr_error(
-                "Failed to lookup commit '%s' in repo '%s' even it's up-to-date, "
+                "Failed to lookup commit '%s' in repo '%s' "
+                "even it's up-to-date, "
                 "libgit return %d, consider failure\n", 
                 wanted_commit->id_hex_string, repo->url, r);
             return -1;
@@ -1506,10 +1549,12 @@ int mirror_repo_ensure_wanted_commit(
             pr_error("Failed to update repo\n");
             return -1;
         }
-        if (r = git_commit_lookup(&commit, repo->repository, &wanted_commit->id)) {
+        if (r = git_commit_lookup(
+            &commit, repo->repository, &wanted_commit->id)) {
             pr_error(
                 "Failed to lookup commit '%s' in repo '%s' "
-                "even after updating the repo, libgit return %d, consider failure\n", 
+                "even after updating the repo, libgit return %d, "
+                "consider failure\n",
                 wanted_commit->id_hex_string, repo->url, r);
             return -1;
         }
@@ -1517,12 +1562,14 @@ int mirror_repo_ensure_wanted_commit(
     git_tree *tree;
     if ((r = git_commit_tree(&tree, commit))) {
         pr_error(
-            "Failed to get the commit tree pointed by commit '%s' in repo '%s', "
-            "libgit return %d\n", wanted_commit->id_hex_string, repo->url, r);
+            "Failed to get the commit tree pointed by commit '%s' "
+            "in repo '%s', libgit return %d\n", 
+            wanted_commit->id_hex_string, repo->url, r);
         r = -1;
         goto free_commit;
     }
-    git_tree_entry *entry_gitmodules = git_tree_entry_byname(tree, ".gitmodules");
+    git_tree_entry *entry_gitmodules = 
+        git_tree_entry_byname(tree, ".gitmodules");
     if (entry_gitmodules != NULL) {
         pr_warn(
             "Found .gitmodules in commit tree of '%s' for repo '%s', "
@@ -1530,7 +1577,8 @@ int mirror_repo_ensure_wanted_commit(
         if (mirror_repo_parse_submodules(
             config, repo, wanted_commit, tree, entry_gitmodules)) {
             pr_error(
-                "Failed to parse submodules in commit tree of '%s' for repo '%s'\n", 
+                "Failed to parse submodules in commit tree of '%s' "
+                "for repo '%s'\n", 
                 wanted_commit->id_hex_string, repo->url);
             r = -1;
             goto free_commit;
@@ -1580,10 +1628,13 @@ int mirror_repo(
 ) {
     pr_warn("Mirroring repo '%s'\n", repo->url);
     if (repo->wanted_objects.dynamic && !repo->updated) {
-        pr_warn("Dynamic wanted objects set for repo '%s', need to update\n", repo->url);
+        pr_warn(
+            "Dynamic wanted objects set for repo '%s', need to update\n", 
+            repo->url);
         if (update_repo(config, repo)) {
             pr_error(
-                "Failed to update repo '%s' to prepare for dynamic wanted objects\n", 
+                "Failed to update repo '%s' to prepare for "
+                "dynamic wanted objects\n",
                 repo->url);
             return -1;
         }
@@ -1594,7 +1645,8 @@ int mirror_repo(
         switch (wanted_object->type) {
         case WANTED_TYPE_UNKNOWN:
             pr_error(
-                "Impossible wanted type unknown for wanted object '%s' for repo '%s'\n",
+                "Impossible wanted type unknown for wanted object '%s' "
+                "for repo '%s'\n",
                 wanted_object->name, repo->url);
             return -1;
         case WANTED_TYPE_COMMIT:
@@ -1651,7 +1703,8 @@ int main(int const argc, char *argv[]) {
             help();
             return 0;
         default:
-            pr_error("Unexpected argument, %d (-%c) '%s'\n", c, c, argv[optind - 1]);
+            pr_error(
+                "Unexpected argument, %d (-%c) '%s'\n", c, c, argv[optind - 1]);
             return -1;
         }
     }
