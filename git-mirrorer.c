@@ -119,6 +119,7 @@ struct repo {
     git_repository *repository;
     struct wanted_objects wanted_objects;
     enum repo_added_from added_from;
+    bool updated;
 };
 
 struct config {
@@ -1202,6 +1203,108 @@ int config_read(
     return 0;
 }
 
+// 0 existing and opened, 1 does not exist but created, -1 error
+int repo_open_or_init_bare(
+    struct repo *const restrict repo
+) {
+    if (repo == NULL || repo->url[0] == '\0' || repo->dir_path == NULL || repo->dir_path[0] == '\0') {
+        pr_error("Internal: invalid argument\n");
+        return -1;
+    }
+    if (repo->repository != NULL) {
+        pr_error("Repository already opened for repo '%s'\n", repo->url);
+        return -1;
+    }
+    int r = git_repository_open_bare(&repo->repository, repo->dir_path);
+    switch (r) {
+    case GIT_OK:
+        pr_warn("Opened existing bare repository '%s' for repo '%s'\n", repo->dir_path, repo->url);
+        return 0;
+    case GIT_ENOTFOUND:
+        pr_warn("Dir '%s' for repo '%s' does not exist yet, trying to create it\n", repo->dir_path, repo->url);
+        r = git_repository_init(&repo->repository, repo->dir_path, 1);
+        if (r < 0) {
+            pr_error("Failed to initialize a bare repostitory at '%s' for repo '%s', libgit return %d\n", repo->dir_path, repo->url, r);
+            return -1;
+        } else {
+            git_remote *remote;
+            r = git_remote_create_with_fetchspec(&remote, repo->repository, MIRROR_REMOTE, repo->url, MIRROR_FETCHSPEC);
+            if (r < 0) {
+                pr_error("Failed to create remote '"MIRROR_REMOTE"' with fetch spec '"MIRROR_FETCHSPEC"' for url '%s', libgit returns %d\n",
+                    repo->url, r);
+                git_repository_free(repo->repository);
+                return -1;
+            }
+            git_config *config;
+            r = git_repository_config(&config, repo->repository);
+            if (r < 0) {
+                pr_error("Failed to get config for repo for url '%s', libgit return %d\n", repo->url, r);
+                git_remote_free(remote);
+                git_repository_free(repo->repository);
+                return -1;
+            }
+            r = git_config_set_bool(config, MIRROR_CONFIG, true);
+            if (r < 0) {
+                pr_error("Failed to set config '"MIRROR_CONFIG"' to true for repo for url '%s, libgit return %d\n", repo->url, r);
+                git_config_free(config);
+                git_remote_free(remote);
+                git_repository_free(repo->repository);
+                return -1;
+            }
+            git_config_free(config);
+            git_remote_free(remote);
+            return 1;
+        }
+    default:
+        pr_error("Failed to open bare repository at '%s' for repo '%s' and cannot fix libgit return %d\n", repo->dir_path, repo->url, r);
+        return -1;
+    }
+
+    return 0;
+}
+
+int config_repos_prepare_open_or_create(
+    struct config *const restrict config
+) {
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        struct repo *const restrict repo = config->repos + i;
+        if (repo_open_or_init_bare(repo) < 0) {
+            pr_error("Failed to open or init bare repo for '%s'\n", repo->url);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int config_free(
+    struct config *const restrict config
+) {
+    if (config->dir_archives) free (config->dir_archives);
+    if (config->dir_repos) free (config->dir_repos);
+    if (config->dir_checkouts) free (config->dir_checkouts);
+    if (config->proxy_url) free (config->proxy_url);
+    if (config->repos) {
+        for (unsigned long i = 0; i < config->repos_count; ++i) {
+            struct repo *const restrict repo = config->repos + i;
+            if (repo->url) free (repo->url);
+            if (repo->dir_path) free (repo->dir_path);
+            if (repo->wanted_objects.objects_count) {
+                for (struct wanted_base *wanted_object = repo->wanted_objects.objects_head;
+                    wanted_object != NULL;
+                    wanted_object = wanted_object->next) {
+                    if (wanted_object->name) free (wanted_object->name);
+                    if (wanted_object->previous) free (wanted_object->previous);
+                }
+                if (repo->wanted_objects.objects_tail)
+                    free (repo->wanted_objects.objects_tail);
+            }
+            if (repo->repository) git_repository_free(repo->repository);
+        }
+        free (config->repos);
+    }
+    return 0;
+}
+
 int main(int const argc, char *argv[]) {
     char *config_path = NULL;
     struct option const long_options[] = {
@@ -1239,6 +1342,13 @@ int main(int const argc, char *argv[]) {
         pr_warn("No repos defined, early quit\n");
         return 0;
     }
-    pr_warn("Shutting down\n");
+    pr_warn("Initializing libgit2\n");
+    git_libgit2_init();
+    if (config_repos_prepare_open_or_create(&config)) {
+        pr_error("Failed to prepare repos\n");
+    }
+    config_free(&config);
+    pr_warn("Shutting down libgit2\n");
+    git_libgit2_shutdown();
     return 0;
 }
