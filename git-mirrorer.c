@@ -1473,11 +1473,12 @@ free_remote:
     return r;
 }
 
-int repo_prepare_open_or_create(
+int repo_prepare_open_or_create_if_needed(
     struct config *const restrict config,
     unsigned long const repo_id
 ) {
     struct repo *const restrict repo = config->repos + repo_id;
+    if (repo->repository != NULL) return 0;
     switch (repo_open_or_init_bare(repo)) {
     case -1:
         pr_error("Failed to open or init bare repo for '%s'\n", repo->url);
@@ -1493,19 +1494,6 @@ int repo_prepare_open_or_create(
             return -1;
         }
         break;
-    }
-    return 0;
-}
-
-int config_repos_prepare_open_or_create(
-    struct config *const restrict config
-) {
-    for (unsigned long i = 0; i < config->repos_count; ++i) {
-        if (repo_prepare_open_or_create(config, i)) {
-            pr_error("Failed to open or create repo '%s' at '%s'\n", 
-                (config->repos + i)->url, (config->repos + i)->dir_path);
-            return -1;
-        }
     }
     return 0;
 }
@@ -1647,9 +1635,7 @@ int mirror_repo_parse_parse_submodule_in_tree(
         repo_new->wanted_objects.objects_tail = 
             (struct wanted_base *)wanted_commit;
         if (config_repo_finish(
-                repo_new, config->dir_repos, config->len_dir_repos) || 
-            repo_prepare_open_or_create(
-                config, repo_new_id)) {
+                repo_new, config->dir_repos, config->len_dir_repos)) {
             pr_error("Failed to insert repo '%s' with its only wanted commit "
                 "'%s' to repos\n",
                 repo_new->url, wanted_commit->id_hex_string);
@@ -1841,9 +1827,14 @@ int mirror_repo_ensure_wanted_commit(
     unsigned long const repo_id,
     struct wanted_commit *const restrict wanted_commit
 ) {
+    int r = repo_prepare_open_or_create_if_needed(config, repo_id);
     struct repo *restrict repo = config->repos + repo_id;
+    if (r) {
+        pr_error("Failed to ensure repo '%s' is opened\n", repo->url);
+        return -1;
+    }
     git_commit *commit;
-    int r = git_commit_lookup(&commit, repo->repository, &wanted_commit->id);
+    r = git_commit_lookup(&commit, repo->repository, &wanted_commit->id);
     if (r) {
         if (repo->updated) {
             pr_error(
@@ -1964,9 +1955,14 @@ int mirror_repo_ensure_wanted_head(
     unsigned long const repo_id,
     struct wanted_reference *const restrict wanted_head
 ) {
+    int r = repo_prepare_open_or_create_if_needed(config, repo_id);
     struct repo *restrict repo = config->repos + repo_id;
+    if (r) {
+        pr_error("Failed to ensure repo '%s' is opened\n", repo->url);
+        return -1;
+    }
     git_reference *head;
-    int r = git_repository_head(&head, repo->repository);
+    r = git_repository_head(&head, repo->repository);
     switch (r) {
     case GIT_OK:
         break;
@@ -1992,10 +1988,15 @@ int mirror_repo_ensure_wanted_branch(
     unsigned long const repo_id,
     struct wanted_reference *const restrict wanted_branch
 ) {
+    int r = repo_prepare_open_or_create_if_needed(config, repo_id);
     struct repo *restrict repo = config->repos + repo_id;
+    if (r) {
+        pr_error("Failed to ensure repo '%s' is opened\n", repo->url);
+        return -1;
+    }
     char const *const branch = wanted_branch->commit.base.name;
     git_reference *reference;
-    int r = git_branch_lookup(
+    r = git_branch_lookup(
         &reference, repo->repository, branch, GIT_BRANCH_LOCAL);
     switch (r) {
     case GIT_OK:
@@ -2024,7 +2025,12 @@ int mirror_repo_ensure_wanted_tag(
     unsigned long const repo_id,
     struct wanted_reference *const restrict wanted_tag
 ) {
+    int r = repo_prepare_open_or_create_if_needed(config, repo_id);
     struct repo *restrict repo = config->repos + repo_id;
+    if (r) {
+        pr_error("Failed to ensure repo '%s' is opened\n", repo->url);
+        return -1;
+    }
     char ref_name[NAME_MAX];
     char const *const tag_name = wanted_tag->commit.base.name;
     if (snprintf(ref_name, sizeof ref_name, "refs/tags/%s", tag_name) < 0) {
@@ -2034,7 +2040,7 @@ int mirror_repo_ensure_wanted_tag(
         return -1;
     }
     git_reference *reference;
-    int r = git_reference_lookup(&reference, repo->repository, ref_name);
+    r = git_reference_lookup(&reference, repo->repository, ref_name);
     switch (r) {
     case GIT_OK:
         break;
@@ -2062,7 +2068,12 @@ int mirror_repo(
     struct config *const restrict config,
     unsigned long const repo_id
 ) {
+    int r = repo_prepare_open_or_create_if_needed(config, repo_id);
     struct repo *restrict repo = config->repos + repo_id;
+    if (r) {
+        pr_error("Failed to ensure repo '%s' is opened\n", repo->url);
+        return -1;
+    }
     pr_warn("Mirroring repo '%s'\n", repo->url);
     if (repo->wanted_objects.dynamic && !repo->updated) {
         pr_warn(
@@ -2076,7 +2087,7 @@ int mirror_repo(
             return -1;
         }
     }
-    int r = -1;
+    r = -1;
     for (struct wanted_base *wanted_object = repo->wanted_objects.objects_head;
         wanted_object != NULL;
         wanted_object = wanted_object->next) {
@@ -2163,10 +2174,6 @@ int mirror_repo(
 int mirror_all_repos(
     struct config *const restrict config
 ) {
-    if (config_repos_prepare_open_or_create(config)) {
-        pr_error("Failed to prepare repos\n");
-        return -1;
-    }
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         if (mirror_repo(config, i)) {
             pr_error("Failed to mirror all repos\n");
