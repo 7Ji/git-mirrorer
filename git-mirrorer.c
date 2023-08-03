@@ -2281,12 +2281,53 @@ int mirror_repo_ensure_wanted_reference(
     return r;
 }
 
+int repo_add_wanted_reference(
+    struct repo *const restrict repo,
+    char const *const restrict reference_name,
+    bool const archive,
+    bool const checkout
+) {
+    if (strncmp(reference_name, "refs/", 5)) {
+        pr_error("Reference does not start with 'refs/'\n");
+        return -1;
+    }
+    struct wanted_reference *const restrict wanted_reference =
+        malloc(sizeof *wanted_reference);
+    if (wanted_reference == NULL) {
+        pr_error("Failed to allocate memory for more wanted references\n");
+        return -1;
+    }
+    *wanted_reference = WANTED_REFERENCE_INIT;
+    wanted_reference->commit.base.name_len = strlen(reference_name);
+    wanted_reference->commit.base.name = 
+        malloc(wanted_reference->commit.base.name_len);
+    if (wanted_reference->commit.base.name == NULL) {
+        pr_error("Failed to allocate memory for reference name\n");
+        free(wanted_reference);
+        return -1;
+    }
+    memcpy(wanted_reference->commit.base.name, reference_name,
+        wanted_reference->commit.base.name_len);
+    wanted_reference->commit.base.archive = archive;
+    wanted_reference->commit.base.checkout = checkout;
+    struct wanted_objects *const wanted_objects = &repo->wanted_objects;
+    wanted_objects->dynamic = true;
+    ++wanted_objects->objects_count;
+    wanted_objects->objects_tail->next = 
+        (struct wanted_base *) wanted_reference;
+    wanted_reference->commit.base.previous = 
+        wanted_objects->objects_tail;
+    wanted_objects->objects_tail = (struct wanted_base *) wanted_reference;
+    pr_warn("Added wanted reference '%s' to repo '%s'\n", 
+        wanted_reference->commit.base.name, repo->url);
+    return 0;
+}
+
 int mirror_repo_ensure_all_branches(
     struct config *const restrict config,
     unsigned long const repo_id,
     struct wanted_base *const restrict wanted_all_branches
 ) {
-    (void) wanted_all_branches;
     int r = repo_prepare_open_or_create_if_needed(config, repo_id);
     struct repo *restrict repo = config->repos + repo_id;
     if (r) {
@@ -2305,7 +2346,6 @@ int mirror_repo_ensure_all_branches(
     pr_warn(
         "Looping through all branches to create "
         "individual wanted references\n");
-    struct wanted_objects *const wanted_objects = &repo->wanted_objects;
     while ((r = git_branch_next(
         &reference, &branch_t, branch_iterator)) == GIT_OK) {
         char const *const reference_name = git_reference_name(reference);
@@ -2318,34 +2358,12 @@ int mirror_repo_ensure_all_branches(
             pr_error("Reference does not start with 'refs/'\n");
             return -1;
         }
-        struct wanted_reference *const restrict wanted_reference =
-            malloc(sizeof *wanted_reference);
-        if (wanted_reference == NULL) {
-            pr_error("Failed to allocate memory for more wanted references\n");
+        if (repo_add_wanted_reference(repo, reference_name, 
+            wanted_all_branches->archive, wanted_all_branches->checkout)) {
+            pr_error("Failed to add branch reference '%s' as wannted to "
+            "repo '%s'\n", reference_name, repo->url);
             return -1;
         }
-        *wanted_reference = WANTED_REFERENCE_INIT;
-        wanted_reference->commit.base.name_len = strlen(reference_name);
-        wanted_reference->commit.base.name = 
-            malloc(wanted_reference->commit.base.name_len);
-        if (wanted_reference->commit.base.name == NULL) {
-            pr_error("Failed to allocate memory for reference name\n");
-            free(wanted_reference);
-            return -1;
-        }
-        memcpy(wanted_reference->commit.base.name, reference_name,
-            wanted_reference->commit.base.name_len);
-        wanted_reference->commit.base.archive = wanted_all_branches->archive;
-        wanted_reference->commit.base.checkout = wanted_all_branches->checkout;
-        wanted_objects->dynamic = true;
-        ++wanted_objects->objects_count;
-        wanted_objects->objects_tail->next = 
-            (struct wanted_base *) wanted_reference;
-        wanted_reference->commit.base.previous = 
-            wanted_objects->objects_tail;
-        wanted_objects->objects_tail = (struct wanted_base *) wanted_reference;
-        pr_warn("Added wanted reference '%s' to repo '%s'\n", 
-            wanted_reference->commit.base.name, repo->url);
     }
     switch (r) {
     case GIT_OK:
@@ -2360,6 +2378,29 @@ int mirror_repo_ensure_all_branches(
     }
 }
 
+struct mirror_repo_ensure_all_tags_foreach_callback_payload {
+    struct repo *const restrict repo;
+    bool const archive;
+    bool const checkout;
+};
+
+int mirror_repo_ensure_all_tags_foreach_callback(
+    char const *name, git_oid *oid, void *payload
+) {
+    (void) oid;
+    struct mirror_repo_ensure_all_tags_foreach_callback_payload 
+        *const restrict private_payload = 
+        (struct mirror_repo_ensure_all_tags_foreach_callback_payload *
+            const restrict) payload;
+    if (repo_add_wanted_reference(private_payload->repo, name, 
+        private_payload->archive, private_payload->checkout)) {
+        pr_error("Failed to add tag reference '%s' as wannted to "
+        "repo '%s'\n", name, private_payload->repo->url);
+        return -1;
+    }
+    return 0;
+}
+
 int mirror_repo_ensure_all_tags(
     struct config *const restrict config,
     unsigned long const repo_id,
@@ -2371,6 +2412,20 @@ int mirror_repo_ensure_all_tags(
     if (r) {
         pr_error("Failed to ensure repo '%s' is opened, libgit return %d\n", 
             repo->url, r);
+        return -1;
+    }
+    struct mirror_repo_ensure_all_tags_foreach_callback_payload 
+        const private_payload = {
+            .repo = repo,
+            .archive = wanted_all_tags->archive,
+            .checkout = wanted_all_tags->checkout,
+        };
+    pr_warn(
+        "Looping through all tags to create individual wanted references\n");
+    if ((r = git_tag_foreach(
+        repo->repository, mirror_repo_ensure_all_tags_foreach_callback,
+        (void *)&private_payload))) {
+        pr_error("Failed git_tag_foreach callback, libgit return %d\n", r);
         return -1;
     }
     return 0;
@@ -2431,8 +2486,17 @@ int mirror_repo(
             }
             switch (wanted_object->type) {
             case WANTED_TYPE_ALL_TAGS:
-                pr_error("WIP!!!\n");
-                return -1;
+                r = mirror_repo_ensure_all_tags(
+                    config, repo_id, (struct wanted_base *)wanted_object);
+                repo = config->repos + repo_id;
+                if (r) {
+                    pr_error(
+                        "Failed to ensure all tags robust for repo '%s'\n",
+                        repo->url
+                    );
+                    return -1;
+                }
+                break;
             case WANTED_TYPE_ALL_BRANCHES:
                 r = mirror_repo_ensure_all_branches(
                     config, repo_id, (struct wanted_base *)wanted_object);
