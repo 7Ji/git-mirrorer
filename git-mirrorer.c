@@ -227,6 +227,32 @@ struct config const CONFIG_INIT = {
     .proxy_after = 0,
 };
 
+int wanted_compare_commit(
+    struct wanted_commit const *const restrict a,
+    struct wanted_commit const *const restrict b
+) {
+    if (a->base.type != b->base.type ||
+        a->base.type != WANTED_TYPE_COMMIT) {
+        pr_error("Objects not both commits\n");
+        return -1;
+    }
+    if (a->base.name_len != b->base.name_len ||
+        a->base.name_len != GIT_OID_MAX_HEXSIZE) {
+        pr_error("Object names not both commit hash\n");
+        return -2;
+    }
+    if (a->base.archive != b->base.archive) {
+        return 1;
+    }
+    if (a->base.checkout != b->base.checkout) {
+        return 2;
+    }
+    if (git_oid_cmp(&a->id, &b->id)) {
+        return 3;
+    }
+    return 0;
+};
+
 int mirror_repo_ensure_wanted_commit(
     struct config *const restrict config,
     unsigned long const repo_id,
@@ -1582,36 +1608,49 @@ int mirror_repo_parse_parse_submodule_in_tree(
         struct repo *const restrict repo_cmp = 
             config->repos + i;
         if (repo_cmp->url_hash == url_hash) {
-            repo_cmp->wanted_objects.objects_tail->next = 
-                (struct wanted_base *)wanted_commit;
-            wanted_commit->base.previous = 
-                repo_cmp->wanted_objects.objects_tail;
-            repo_cmp->wanted_objects.objects_tail = 
-                (struct wanted_base *)wanted_commit;
-            ++repo_cmp->wanted_objects.objects_count;
-            if (i >= repo_id) {
-                // Note, i >= repo_id includes the current repo.
-                // I decide not to care if a commit could reference itself
-                // via a submodule, it just does not make sense as a commit
-                // hash is only ever generated after you've submitted a tree
-                // including all submodules. The chance a commit hash would be
-                // generated with the same content of itself is just unlikely.
-                // So, we don't need to do sanity check, as I don't believe
-                // this will cause infinite loop
-                pr_warn("Added wanted commit '%s' to repo '%s', will handle "
+            for (struct wanted_base *wanted_object =
+                repo_cmp->wanted_objects.objects_head;
+                wanted_object != NULL;
+                wanted_object = wanted_object->next) {
+                if (wanted_object->type == WANTED_TYPE_COMMIT) {
+                    int r = wanted_compare_commit(
+                        wanted_commit, (struct wanted_commit *)wanted_object);
+                    if (r < 0) {
+                        pr_error("Encounter already added illegal commit\n");
+                        goto free_wanted_commit;
+                    } else if (r == 0) {
+                        pr_warn(
+                            "Already added commit '%s' to repo '%s', skipped\n",
+                            wanted_commit->id_hex_string, repo_cmp->url);
+                        repo_in_config = true;
+                        break;
+                    }
+                }
+            }
+            if (!repo_in_config) {
+                repo_cmp->wanted_objects.objects_tail->next = 
+                    (struct wanted_base *)wanted_commit;
+                wanted_commit->base.previous = 
+                    repo_cmp->wanted_objects.objects_tail;
+                repo_cmp->wanted_objects.objects_tail = 
+                    (struct wanted_base *)wanted_commit;
+                ++repo_cmp->wanted_objects.objects_count;
+                if (i >= repo_id) {
+                    pr_warn(
+                        "Added wanted commit '%s' to repo '%s', will handle "
                         "that commit later\n", 
                         wanted_commit->id_hex_string, repo_cmp->url);
-            } else {
-                // Only care the case we've already gone through
-                // the repo.
-                pr_warn("Added wanted commit '%s' to parsed repo '%s', "
-                    "need to go back to handle that specific commit\n",
-                    wanted_commit->id_hex_string, repo_cmp->url);
-                if (mirror_repo_ensure_wanted_commit(
-                        config, repo_id, wanted_commit)) {
-                    pr_error("Failed to handle added commit '%s' to parsed "
-                    "repo '%s'\n", wanted_commit->id_hex_string, repo_cmp->url);
-                    goto free_entry;
+                } else {
+                    pr_warn("Added wanted commit '%s' to parsed repo '%s', "
+                        "need to go back to handle that specific commit\n",
+                        wanted_commit->id_hex_string, repo_cmp->url);
+                    if (mirror_repo_ensure_wanted_commit(
+                            config, repo_id, wanted_commit)) {
+                        pr_error("Failed to handle added commit '%s' to parsed "
+                                    "repo '%s'\n",
+                             wanted_commit->id_hex_string, repo_cmp->url);
+                        goto free_entry;
+                    }
                 }
             }
             repo_in_config = true;
