@@ -1577,83 +1577,48 @@ int mirror_repo_parse_parse_submodule_in_tree(
         pr_error("Object at path '%s' in tree is not a commit\n", path);
         goto free_entry;
     }
-    struct wanted_commit *wanted_commit = malloc(sizeof *wanted_commit);
-    if (wanted_commit == NULL) {
-        pr_error("Failed to allocate memory for wanted commit\n");
-        goto free_entry;
-    }
-    *wanted_commit = WANTED_COMMIT_INIT;
-    wanted_commit->id = *git_tree_entry_id(entry);
+    struct wanted_commit wanted_commit_local = WANTED_COMMIT_INIT;
+    wanted_commit_local.id = *git_tree_entry_id(entry);
     if (git_oid_tostr(
-            wanted_commit->id_hex_string,
-            sizeof wanted_commit->id_hex_string, 
-            &wanted_commit->id
+            wanted_commit_local.id_hex_string,
+            sizeof wanted_commit_local.id_hex_string, 
+            &wanted_commit_local.id
         )[0] == '\0') {
         pr_error("Failed to format commit into hex string\n");
-        goto free_wanted_commit;
+        goto free_entry;
     }
-    if ((wanted_commit->base.name = malloc(GIT_OID_MAX_HEXSIZE + 1)) == NULL) {
-        pr_error("Failed to allocate memory for commit name\n");
-        goto free_wanted_commit;
-    }
-    memcpy(wanted_commit->base.name, wanted_commit->id_hex_string, 
-        sizeof wanted_commit->id_hex_string);
-    wanted_commit->base.name_len = GIT_OID_MAX_HEXSIZE;
     pr_warn(
         "Specific commit '%s' is needed for submodule at path '%s' "
-        "with url '%s'\n", wanted_commit->id_hex_string, path, url);
+        "with url '%s'\n", wanted_commit_local.id_hex_string, path, url);
     XXH64_hash_t url_hash = XXH3_64bits(url, len_url);
     bool repo_in_config = false;
+    long repo_add_id = -1;
     for (unsigned long i = 0; i < config->repos_count; ++i) {
-        struct repo *const restrict repo_cmp = 
-            config->repos + i;
+        struct repo *const restrict repo_cmp = config->repos + i;
         if (repo_cmp->url_hash == url_hash) {
+            bool commit_added = false;
             for (struct wanted_base *wanted_object =
                 repo_cmp->wanted_objects.objects_head;
                 wanted_object != NULL;
                 wanted_object = wanted_object->next) {
-                if (wanted_object->type == WANTED_TYPE_COMMIT) {
-                    int r = wanted_compare_commit(
-                        wanted_commit, (struct wanted_commit *)wanted_object);
-                    if (r < 0) {
-                        pr_error("Encounter already added illegal commit\n");
-                        goto free_wanted_commit;
-                    } else if (r == 0) {
-                        pr_warn(
-                            "Already added commit '%s' to repo '%s', skipped\n",
-                            wanted_commit->id_hex_string, repo_cmp->url);
-                        free(wanted_commit->base.name);
-                        free(wanted_commit);
-                        repo_in_config = true;
-                        break;
-                    }
-                }
+                if (wanted_object->type != WANTED_TYPE_COMMIT) continue;
+                struct wanted_commit *wanted_commit_cmp = 
+                    (struct wanted_commit *)wanted_object;
+                if (wanted_commit_cmp->base.archive != 
+                        wanted_commit_local.base.archive) continue;
+                if (wanted_commit_cmp->base.checkout !=
+                        wanted_commit_local.base.checkout) continue;
+                if (git_oid_cmp(
+                    &wanted_commit_cmp->id,
+                    &wanted_commit_local.id)) continue;
+                pr_warn(
+                    "Already added commit '%s' to repo '%s', skipped\n",
+                    wanted_commit_cmp->id_hex_string, repo_cmp->url);
+                commit_added = true;
+                break;
             }
-            if (!repo_in_config) {
-                repo_cmp->wanted_objects.objects_tail->next = 
-                    (struct wanted_base *)wanted_commit;
-                wanted_commit->base.previous = 
-                    repo_cmp->wanted_objects.objects_tail;
-                repo_cmp->wanted_objects.objects_tail = 
-                    (struct wanted_base *)wanted_commit;
-                ++repo_cmp->wanted_objects.objects_count;
-                if (i >= repo_id) {
-                    pr_warn(
-                        "Added wanted commit '%s' to repo '%s', will handle "
-                        "that commit later\n", 
-                        wanted_commit->id_hex_string, repo_cmp->url);
-                } else {
-                    pr_warn("Added wanted commit '%s' to parsed repo '%s', "
-                        "need to go back to handle that specific commit\n",
-                        wanted_commit->id_hex_string, repo_cmp->url);
-                    if (mirror_repo_ensure_wanted_commit(
-                            config, repo_id, wanted_commit)) {
-                        pr_error("Failed to handle added commit '%s' to parsed "
-                                    "repo '%s'\n",
-                             wanted_commit->id_hex_string, repo_cmp->url);
-                        goto free_entry;
-                    }
-                }
+            if (!commit_added) {
+                repo_add_id = i;
             }
             repo_in_config = true;
             break;
@@ -1663,32 +1628,74 @@ int mirror_repo_parse_parse_submodule_in_tree(
         pr_warn("Repo '%s' was not seen before, need to add it\n", url);
         if (config_add_repo_and_init_with_url(config, url, len_url)) {
             pr_error("Failed to add repo '%s'\n", url);
-            goto free_name;
-        }
-        // THIS WILL CHANGE DURING THE ABOVE FUNCTION
-        unsigned long repo_new_id = config->repos_count - 1;
-        struct repo *const restrict repo_new =
-            config->repos + repo_new_id;
-        repo_new->added_from = RPEO_ADDED_FROM_SUBMODULES;
-        repo_new->wanted_objects.objects_count = 1;
-        repo_new->wanted_objects.objects_head = 
-            (struct wanted_base *)wanted_commit;
-        repo_new->wanted_objects.objects_tail = 
-            (struct wanted_base *)wanted_commit;
-        if (config_repo_finish(
-                repo_new, config->dir_repos, config->len_dir_repos)) {
-            pr_error("Failed to insert repo '%s' with its only wanted commit "
-                "'%s' to repos\n",
-                repo_new->url, wanted_commit->id_hex_string);
             goto free_entry;
         }
+        repo_add_id = config->repos_count - 1;
+        (config->repos + (repo_add_id = config->repos_count - 1))
+            ->added_from = RPEO_ADDED_FROM_SUBMODULES;
     }
+    if (repo_add_id >= 0) {
+        struct repo *const restrict repo_add = 
+            config->repos + repo_add_id;
+        if ((wanted_commit_local.base.name = malloc(GIT_OID_MAX_HEXSIZE + 1)) 
+            == NULL) {
+            pr_error("Failed to allocate memory for wanted namme of "
+                "commit '%s' to add to repo '%s'\n",
+                wanted_commit_local.id_hex_string,
+                repo_add->url);
+            goto free_entry;
+        }
+        struct wanted_commit *wanted_commit = malloc(sizeof *wanted_commit);
+        if (wanted_commit == NULL) {
+            pr_error("Failed to allocate memory for wanted commit '%s' "
+                "to add to repo '%s'\n", 
+                wanted_commit_local.id_hex_string,
+                repo_add->url);
+            goto free_name;
+        }
+        wanted_commit_local.base.name_len = GIT_OID_MAX_HEXSIZE;
+        memcpy(
+            wanted_commit_local.base.name, wanted_commit_local.id_hex_string,
+            sizeof wanted_commit_local.id_hex_string);
+        *wanted_commit = wanted_commit_local;
+        struct wanted_objects *const wanted_objects = 
+            &repo_add->wanted_objects;
+        if (wanted_objects->objects_tail) {
+            wanted_objects->objects_tail->next = 
+                (struct wanted_base *) wanted_commit;
+            wanted_commit->base.previous = wanted_objects->objects_tail;
+        }
+        wanted_objects->objects_tail = (struct wanted_base *) wanted_commit;
+        if (wanted_objects->objects_count++ == 0) {
+            wanted_objects->objects_head = (struct wanted_base *) wanted_commit;
+            if (config_repo_finish(
+                    repo_add, config->dir_repos, config->len_dir_repos)) {
+                pr_error("Failed to append repo '%s' to repos\n", repo_add->url);
+                goto free_entry;
+            }
+        }
+        if ((unsigned long) repo_add_id >= repo_id) {
+            pr_warn("Added commit '%s' as wanted to repo '%s', will handle "
+                "that repo later\n", wanted_commit_local.base.name, 
+                                     repo_add->url);
+
+        } else {
+            pr_warn("Added commit '%s' as wanted to parsaed repo '%s', "
+            "need to go back to handle that specific commit\n",
+            wanted_commit_local.base.name, repo_add->url);
+            if (mirror_repo_ensure_wanted_commit(
+                    config, repo_add_id, wanted_commit)) {
+                pr_error("Failed to handle added wanted commit '%s' to parsed"
+                "repo '%s'\n", wanted_commit_local.base.name, repo_add->url);
+                goto free_entry;
+            }
+        }
+    }
+    
     git_tree_entry_free(entry);
     return 0;
 free_name:
-    free(wanted_commit->base.name);
-free_wanted_commit:
-    free(wanted_commit);
+    free(wanted_commit_local.base.name);
 free_entry:
     git_tree_entry_free(entry);
     return -1;
@@ -2269,6 +2276,8 @@ int main(int const argc, char *argv[]) {
     if (r) {
         pr_error("Failed to mirro all repos\n");
     }
+    pr_warn("Current config before shutting down:\n");
+    print_config(&config);
     config_free(&config);
     pr_warn("Shutting down libgit2\n");
     git_libgit2_shutdown();
