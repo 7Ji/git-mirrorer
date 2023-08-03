@@ -1097,16 +1097,32 @@ void print_config_repo_wanted(
             wanted_object->archive ? "yes" : "no",
             wanted_object->checkout ? "yes" : "no"
         );
+        switch (wanted_object->type) {
+        case WANTED_TYPE_BRANCH:
+        case WANTED_TYPE_HEAD:
+        case WANTED_TYPE_TAG:
+            struct wanted_reference *wanted_reference = 
+                (struct wanted_reference *) wanted_object;
+            if (wanted_reference->commit_resolved) {
+                fprintf(stderr,
+                    "|            commit: %s\n",
+                    wanted_reference->commit.id_hex_string);
+            }
+            break;
+        default:
+            break;
+        }
     }
 
 }
 
 void print_config_repo(struct repo const *const restrict repo) {
     fprintf(stderr,
-        "|  - %s:\n"
+        "|  - %s%s:\n"
         "|      hash: %016lx\n"
         "|      dir: %s\n",
         repo->url,
+        repo->added_from ? " (added from submodule)" : "",
         repo->url_hash,
         repo->dir_path);
     if (repo->wanted_objects.objects_count) {
