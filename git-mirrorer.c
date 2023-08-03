@@ -1622,6 +1622,8 @@ int mirror_repo_parse_parse_submodule_in_tree(
                         pr_warn(
                             "Already added commit '%s' to repo '%s', skipped\n",
                             wanted_commit->id_hex_string, repo_cmp->url);
+                        free(wanted_commit->base.name);
+                        free(wanted_commit);
                         repo_in_config = true;
                         break;
                     }
