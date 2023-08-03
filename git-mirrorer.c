@@ -169,7 +169,8 @@ struct config {
                     len_proxy_url,
                     len_dir_repos,
                     len_dir_archives,
-                    len_dir_checkouts;
+                    len_dir_checkouts,
+                    export_threads;
 };
 
 enum YAML_CONFIG_PARSING_STATUS {
@@ -2584,6 +2585,63 @@ int mirror_all_repos(
     return 0;
 }
 
+int export_all_repos(
+    struct config const *const restrict config
+) {
+    if (config->export_threads <= 1) {
+        pr_warn("Single threaded exporting repos\n");
+    }
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        struct repo const *const repo = config->repos + i;
+        for (struct wanted_base const *wanted_object = 
+            repo->wanted_objects.objects_head;
+            wanted_object != NULL;
+            wanted_object = wanted_object->next) {
+            switch (wanted_object->type) {
+            case WANTED_TYPE_BRANCH:
+            case WANTED_TYPE_TAG:
+            case WANTED_TYPE_REFERENCE:
+            case WANTED_TYPE_HEAD:
+                if (!((struct wanted_reference const *)wanted_object)
+                    ->commit_resolved) {
+                    pr_error("Reference '%s' is not resolved into commit\n",
+                            wanted_object->name);
+                    goto error;
+                }
+                __attribute__((fallthrough));
+            case WANTED_TYPE_COMMIT: {
+                struct wanted_commit const * const wanted_commit = 
+                    (struct wanted_commit const *const)wanted_object;
+                char path[PATH_MAX];
+                if (wanted_object->archive) {
+                    snprintf(path, PATH_MAX, "%s/%s.tar.gz", 
+                        config->dir_archives,
+                        wanted_commit->id_hex_string);
+                    pr_warn(
+                        "Exporting wanted object '%s' of repo '%s' "
+                        "to %s\n",
+                        wanted_object->name, repo->url, path);
+                }
+                if (wanted_object->checkout) {
+                    snprintf(path, PATH_MAX, "%s/%s", config->dir_checkouts,
+                        wanted_commit->id_hex_string);
+                    pr_warn(
+                        "Exporting wanted object '%s' of repo '%s' "
+                        "to %s\n",
+                        wanted_object->name, repo->url, path);
+                }
+                break;
+            }
+            default:
+                break;
+            }
+        }
+    }
+    return 0;
+error:
+    return -1;
+}
+
 int main(int const argc, char *argv[]) {
     char *config_path = NULL;
     struct option const long_options[] = {
@@ -2627,7 +2685,13 @@ int main(int const argc, char *argv[]) {
     int r = mirror_all_repos(&config);
     if (r) {
         pr_error("Failed to mirro all repos\n");
+        goto shutdown;
     }
+    if ((r = export_all_repos(&config))) {
+        pr_error("Failed to export all repos (archives and checkouts)\n");
+        goto shutdown;
+    }
+shutdown:
     pr_warn("Current config before shutting down:\n");
     print_config(&config);
     config_free(&config);
