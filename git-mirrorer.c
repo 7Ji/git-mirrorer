@@ -86,10 +86,22 @@ struct wanted_base const WANTED_ALL_BRANCHES_INIT = {
 struct wanted_base const WANTED_ALL_TAGS_INIT = {
     .type = WANTED_TYPE_ALL_TAGS, 0 };
 
+struct wanted_commit_submodule {
+    char *path;
+    unsigned short path_len;
+    char *url;
+    unsigned short url_len;
+    XXH64_hash_t url_hash;
+    unsigned long repo_id;
+};
+
 struct wanted_commit {
     struct wanted_base base;
     git_oid id;
     char id_hex_string[GIT_OID_MAX_HEXSIZE + 1];
+    struct wanted_commit_submodule *submodules;
+    unsigned long submodules_count;
+    unsigned long submodules_allocated;
 };
 
 struct wanted_commit const WANTED_COMMIT_INIT = {
