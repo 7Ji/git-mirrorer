@@ -51,6 +51,7 @@ enum wanted_type {
     WANTED_TYPE_UNKNOWN,
     WANTED_TYPE_ALL_BRANCHES,
     WANTED_TYPE_ALL_TAGS,
+    WANTED_TYPE_REFERENCE,
     WANTED_TYPE_COMMIT,
     WANTED_TYPE_BRANCH,
     WANTED_TYPE_TAG,
@@ -63,6 +64,7 @@ char const *WANTED_TYPE_STRINGS[] = {
     "unknown",
     "all_branches",
     "all_tags",
+    "reference",
     "commit",
     "branch",
     "tag",
@@ -117,13 +119,17 @@ struct wanted_reference {
     bool commit_resolved;
 };
 
-struct wanted_reference const WANTED_REFERENCE_INIT = {0};
+struct wanted_reference const WANTED_REFERENCE_INIT = {
+    .commit.base.type = WANTED_TYPE_REFERENCE, 0};
 
 struct wanted_reference const WANTED_BRANCH_INIT = {
     .commit.base.type = WANTED_TYPE_BRANCH, 0 };
 
 struct wanted_reference const WANTED_TAG_INIT = {
     .commit.base.type = WANTED_TYPE_TAG, 0 };
+
+struct wanted_reference const WANTED_HEAD_INIT = {
+    .commit.base.type = WANTED_TYPE_HEAD, 0 };
 
 struct wanted_objects {
     struct wanted_base *objects_head;
@@ -501,6 +507,7 @@ enum wanted_type wanted_object_guess_type(
     default:
         break;
     }
+    if (!strncmp(object, "refs/", 5)) return WANTED_TYPE_REFERENCE;
     pr_error("Failed to figure out the type of wanted object '%s', "
         "try to set it explicitly e.g. type: branch\n", object);
     return WANTED_TYPE_UNKNOWN;
@@ -607,6 +614,7 @@ int wanted_object_complete_from_base(
         return 0;
     case WANTED_TYPE_COMMIT:
         return wanted_object_complete_commit_from_base(wanted_object);
+    case WANTED_TYPE_REFERENCE:
     case WANTED_TYPE_BRANCH:
     case WANTED_TYPE_TAG:
     case WANTED_TYPE_HEAD:
@@ -1104,8 +1112,9 @@ void print_config_repo_wanted(
         );
         switch (wanted_object->type) {
         case WANTED_TYPE_BRANCH:
-        case WANTED_TYPE_HEAD:
         case WANTED_TYPE_TAG:
+        case WANTED_TYPE_REFERENCE:
+        case WANTED_TYPE_HEAD:
             struct wanted_reference *wanted_reference = 
                 (struct wanted_reference *) wanted_object;
             if (wanted_reference->commit_resolved) {
@@ -2069,7 +2078,7 @@ free_commit:
 }
 
 // May re-allocate the config->repos array, must re-assign repo after calling
-int mirror_repo_ensure_wanted_reference(
+int mirror_repo_ensure_wanted_reference_common(
     struct config *const restrict config,
     unsigned long const repo_id,
     struct wanted_reference *const restrict wanted_reference,
@@ -2147,7 +2156,8 @@ int mirror_repo_ensure_wanted_head(
         pr_error("Failed to find head, unhandled libgit return %d\n", r);
         return -1;
     }
-    r = mirror_repo_ensure_wanted_reference(config, repo_id, wanted_head, head);
+    r = mirror_repo_ensure_wanted_reference_common(
+        config, repo_id, wanted_head, head);
     git_reference_free(head);
     return r;
 }
@@ -2184,7 +2194,7 @@ int mirror_repo_ensure_wanted_branch(
             branch, r);
         return -1;
     }
-    r = mirror_repo_ensure_wanted_reference(
+    r = mirror_repo_ensure_wanted_reference_common(
         config, repo_id, wanted_branch, reference);
     git_reference_free(reference);
     return r;
@@ -2228,10 +2238,142 @@ int mirror_repo_ensure_wanted_tag(
             tag_name, ref_name, r);
         return -1;
     }
-    r = mirror_repo_ensure_wanted_reference(
+    r = mirror_repo_ensure_wanted_reference_common(
         config, repo_id, wanted_tag, reference);
     git_reference_free(reference);
     return r;
+}
+
+int mirror_repo_ensure_wanted_reference(
+    struct config *const restrict config,
+    unsigned long const repo_id,
+    struct wanted_reference *const restrict wanted_reference
+) {
+    int r = repo_prepare_open_or_create_if_needed(config, repo_id);
+    struct repo *restrict repo = config->repos + repo_id;
+    if (r) {
+        pr_error("Failed to ensure repo '%s' is opened\n", repo->url);
+        return -1;
+    }
+    git_reference *reference;
+    r = git_reference_lookup(&reference, repo->repository, 
+        wanted_reference->commit.base.name);
+    switch (r) {
+    case GIT_OK:
+        break;
+    case GIT_ENOTFOUND:
+        pr_error("Reference '%s' was not found in repo '%s'\n",
+            wanted_reference->commit.base.name, repo->url);
+        return -1;
+    case GIT_EINVALIDSPEC:
+        pr_error("Reference '%s' is an illegal branch spec\n", 
+            wanted_reference->commit.base.name);
+        return -1;
+    default:
+        pr_error("Failed to find reference '%s', "
+            "unhandled libgit return %d\n",
+            wanted_reference->commit.base.name, r);
+        return -1;
+    }
+    r = mirror_repo_ensure_wanted_reference_common(
+        config, repo_id, wanted_reference, reference);
+    git_reference_free(reference);
+    return r;
+}
+
+int mirror_repo_ensure_all_branches(
+    struct config *const restrict config,
+    unsigned long const repo_id,
+    struct wanted_base *const restrict wanted_all_branches
+) {
+    (void) wanted_all_branches;
+    int r = repo_prepare_open_or_create_if_needed(config, repo_id);
+    struct repo *restrict repo = config->repos + repo_id;
+    if (r) {
+        pr_error("Failed to ensure repo '%s' is opened, libgit return %d\n", 
+            repo->url, r);
+        return -1;
+    }
+    git_branch_iterator *branch_iterator;
+    if ((r = git_branch_iterator_new(
+        &branch_iterator, repo->repository, GIT_BRANCH_LOCAL))) {
+        pr_error("Failed to create branch iterator for repo '%s', "
+        "libgit return %d\n", repo->url, r);
+    }
+    git_reference *reference;
+    git_branch_t branch_t;
+    pr_warn(
+        "Looping through all branches to create "
+        "individual wanted references\n");
+    struct wanted_objects *const wanted_objects = &repo->wanted_objects;
+    while ((r = git_branch_next(
+        &reference, &branch_t, branch_iterator)) == GIT_OK) {
+        char const *const reference_name = git_reference_name(reference);
+        pr_warn("Found branch '%s'\n", reference_name);
+        if (branch_t != GIT_BRANCH_LOCAL) {
+            pr_error("Found branch is not a local branch\n");
+            return -1;
+        }
+        if (strncmp(reference_name, "refs/", 5)) {
+            pr_error("Reference does not start with 'refs/'\n");
+            return -1;
+        }
+        struct wanted_reference *const restrict wanted_reference =
+            malloc(sizeof *wanted_reference);
+        if (wanted_reference == NULL) {
+            pr_error("Failed to allocate memory for more wanted references\n");
+            return -1;
+        }
+        *wanted_reference = WANTED_REFERENCE_INIT;
+        wanted_reference->commit.base.name_len = strlen(reference_name);
+        wanted_reference->commit.base.name = 
+            malloc(wanted_reference->commit.base.name_len);
+        if (wanted_reference->commit.base.name == NULL) {
+            pr_error("Failed to allocate memory for reference name\n");
+            free(wanted_reference);
+            return -1;
+        }
+        memcpy(wanted_reference->commit.base.name, reference_name,
+            wanted_reference->commit.base.name_len);
+        wanted_reference->commit.base.archive = wanted_all_branches->archive;
+        wanted_reference->commit.base.checkout = wanted_all_branches->checkout;
+        wanted_objects->dynamic = true;
+        ++wanted_objects->objects_count;
+        wanted_objects->objects_tail->next = 
+            (struct wanted_base *) wanted_reference;
+        wanted_reference->commit.base.previous = 
+            wanted_objects->objects_tail;
+        wanted_objects->objects_tail = (struct wanted_base *) wanted_reference;
+        pr_warn("Added wanted reference '%s' to repo '%s'\n", 
+            wanted_reference->commit.base.name, repo->url);
+    }
+    switch (r) {
+    case GIT_OK:
+        pr_error("Got GIT_OK at the end, this shouldn't happen\n");
+        return -1;
+    case GIT_ITEROVER:
+        return 0;
+    default:
+        pr_error(
+            "Failed to iterate through all banches, libgit return %d\n", r);
+        return -1;
+    }
+}
+
+int mirror_repo_ensure_all_tags(
+    struct config *const restrict config,
+    unsigned long const repo_id,
+    struct wanted_base *const restrict wanted_all_tags
+) {
+    (void) wanted_all_tags;
+    int r = repo_prepare_open_or_create_if_needed(config, repo_id);
+    struct repo *restrict repo = config->repos + repo_id;
+    if (r) {
+        pr_error("Failed to ensure repo '%s' is opened, libgit return %d\n", 
+            repo->url, r);
+        return -1;
+    }
+    return 0;
 }
 
 int mirror_repo(
@@ -2245,22 +2387,22 @@ int mirror_repo(
         return -1;
     }
     pr_warn("Mirroring repo '%s'\n", repo->url);
-    if (repo->wanted_objects.dynamic && !repo->updated) {
-        pr_warn(
-            "Dynamic wanted objects set for repo '%s', need to update\n", 
-            repo->url);
-        if (update_repo(config, repo_id)) {
-            pr_error(
-                "Failed to update repo '%s' to prepare for "
-                "dynamic wanted objects\n",
-                repo->url);
-            return -1;
-        }
-    }
     r = -1;
     for (struct wanted_base *wanted_object = repo->wanted_objects.objects_head;
         wanted_object != NULL;
         wanted_object = wanted_object->next) {
+        if (repo->wanted_objects.dynamic && !repo->updated) {
+            pr_warn(
+                "Dynamic wanted objects set for repo '%s', need to update\n", 
+                repo->url);
+            if (update_repo(config, repo_id)) {
+                pr_error(
+                    "Failed to update repo '%s' to prepare for "
+                    "dynamic wanted objects\n",
+                    repo->url);
+                return -1;
+            }
+        }
         switch (wanted_object->type) {
         case WANTED_TYPE_COMMIT:
             r = mirror_repo_ensure_wanted_commit(
@@ -2277,6 +2419,7 @@ int mirror_repo(
         case WANTED_TYPE_ALL_TAGS:
         case WANTED_TYPE_BRANCH:
         case WANTED_TYPE_TAG:
+        case WANTED_TYPE_REFERENCE:
         case WANTED_TYPE_HEAD:
             if (!repo->updated) {
                 if (update_repo(config, repo_id)) {
@@ -2287,28 +2430,51 @@ int mirror_repo(
                 }
             }
             switch (wanted_object->type) {
-            case WANTED_TYPE_ALL_BRANCHES:
             case WANTED_TYPE_ALL_TAGS:
                 pr_error("WIP!!!\n");
                 return -1;
+            case WANTED_TYPE_ALL_BRANCHES:
+                r = mirror_repo_ensure_all_branches(
+                    config, repo_id, (struct wanted_base *)wanted_object);
+                repo = config->repos + repo_id;
+                if (r) {
+                    pr_error(
+                        "Failed to ensure all branches robust for repo '%s'\n",
+                        repo->url
+                    );
+                    return -1;
+                }
+                break;
             case WANTED_TYPE_BRANCH:
                 r = mirror_repo_ensure_wanted_branch(
                     config, repo_id, (struct wanted_reference *)wanted_object);
                 repo = config->repos + repo_id;
                 if (r) {
                     pr_error(
-                        "Failed to ensure branch '%s' robust for repo '%s'",
+                        "Failed to ensure branch '%s' robust for repo '%s'\n",
                         wanted_object->name, repo->url);
                     return -1;
                 }
                 break;
             case WANTED_TYPE_TAG:
-            r = mirror_repo_ensure_wanted_tag(
+                r = mirror_repo_ensure_wanted_tag(
                     config, repo_id, (struct wanted_reference *)wanted_object);
                 repo = config->repos + repo_id;
                 if (r) {
                     pr_error(
-                        "Failed to ensure tag'%s' robust for repo '%s'",
+                        "Failed to ensure tag '%s' robust for repo '%s'\n",
+                        wanted_object->name, repo->url);
+                    return -1;
+                }
+                break;
+            case WANTED_TYPE_REFERENCE:
+                r = mirror_repo_ensure_wanted_reference(
+                    config, repo_id, (struct wanted_reference *)wanted_object);
+                repo = config->repos + repo_id;
+                if (r) {
+                    pr_error(
+                        "Failed to ensure reference '%s' robust "
+                        "for repo '%s'\n",
                         wanted_object->name, repo->url);
                     return -1;
                 }
@@ -2318,7 +2484,7 @@ int mirror_repo(
                     config, repo_id, (struct wanted_reference *)wanted_object);
                 repo = config->repos + repo_id;
                 if (r) {
-                    pr_error("Failed to ensure HEAD robust for repo '%s'",
+                    pr_error("Failed to ensure HEAD robust for repo '%s'\n",
                     repo->url);
                     return -1;
                 }
