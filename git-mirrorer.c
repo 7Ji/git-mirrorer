@@ -488,9 +488,7 @@ int wanted_object_fill_type_from_string(
 }
 
 int wanted_object_complete_commit_from_base(
-    struct wanted_objects *wanted_objects,
-    struct wanted_base **wanted_object,
-    bool is_tail
+    struct wanted_base **wanted_object
 ) {
     git_oid oid;
     if (git_oid_fromstr(&oid, (*wanted_object)->name)) {
@@ -523,19 +521,13 @@ int wanted_object_complete_commit_from_base(
         (*wanted_object)->next->previous = (struct wanted_base *)wanted_commit;
         wanted_commit->base.next = (*wanted_object)->next;
     }
-    if (wanted_objects->objects_head == *wanted_object)
-        wanted_objects->objects_head = (struct wanted_base *)wanted_commit;
-    if (!is_tail && wanted_objects->objects_tail == *wanted_object)
-        wanted_objects->objects_tail = (struct wanted_base *)wanted_commit;
     free(*wanted_object);
     *wanted_object = (struct wanted_base *)wanted_commit;
     return 0;
 }
 
 int wanted_object_complete_reference_from_base(
-    struct wanted_objects *wanted_objects,
-    struct wanted_base **wanted_object,
-    bool is_tail
+    struct wanted_base **wanted_object
 ) {
     struct wanted_reference *wanted_reference = 
         malloc(sizeof *wanted_reference);
@@ -555,19 +547,13 @@ int wanted_object_complete_reference_from_base(
             (struct wanted_base *)wanted_reference;
         wanted_reference->commit.base.next = (*wanted_object)->next;
     }
-    if (wanted_objects->objects_head == *wanted_object)
-        wanted_objects->objects_head = (struct wanted_base *)wanted_reference;
-    if (!is_tail && wanted_objects->objects_tail == *wanted_object)
-        wanted_objects->objects_tail = (struct wanted_base *)wanted_reference;
     free(*wanted_object);
     *wanted_object = (struct wanted_base *)wanted_reference;
     return 0;
 }
 
 int wanted_object_complete_from_base(
-    struct wanted_objects *wanted_objects,
-    struct wanted_base **wanted_object,
-    bool is_tail
+    struct wanted_base **wanted_object
 ) {
     switch ((*wanted_object)->type) {
     case WANTED_TYPE_UNKNOWN:
@@ -577,13 +563,11 @@ int wanted_object_complete_from_base(
     case WANTED_TYPE_ALL_TAGS:
         return 0;
     case WANTED_TYPE_COMMIT:
-        return wanted_object_complete_commit_from_base(
-            wanted_objects, wanted_object, is_tail);
+        return wanted_object_complete_commit_from_base(wanted_object);
     case WANTED_TYPE_BRANCH:
     case WANTED_TYPE_TAG:
     case WANTED_TYPE_HEAD:
-        return wanted_object_complete_reference_from_base(
-            wanted_objects, wanted_object, is_tail);
+        return wanted_object_complete_reference_from_base(wanted_object);
     default:
         pr_error("Impossible routine\n");
         return -1;
@@ -627,8 +611,7 @@ int config_repo_add_wanted_object (
     if (guess_type) {
         wanted_object->type = wanted_type;
         if (wanted_object_complete_from_base(
-                &repo->wanted_objects,
-                &wanted_object, false)) {
+                &wanted_object)) {
             pr_error("Failed to complete object\n");
             goto free_name;
         }
@@ -939,11 +922,17 @@ int config_update_from_yaml_event(
         case YAML_MAPPING_END_EVENT: {
             if (wanted_object_guess_type_self_optional(
                     (config->repos + state->repo_id)
-                        -> wanted_objects.objects_tail) ||
-                wanted_object_complete_from_base(
-                    &(config->repos + state->repo_id)->wanted_objects,
-                    &((config->repos + state->repo_id)
-                        -> wanted_objects.objects_tail), true)) {
+                        -> wanted_objects.objects_tail)) {
+                pr_error("Failed to guess type\n");
+                return -1;
+            }
+            struct wanted_objects *const wanted_objects =
+                &(config->repos + state->repo_id)->wanted_objects;
+            int r = wanted_object_complete_from_base(
+                        &wanted_objects->objects_tail);
+            if (wanted_objects->objects_count == 1)
+                wanted_objects->objects_head = wanted_objects->objects_tail;
+            if (r) {
                 pr_error("Failed to finish wanted object\n");
                 return -1;
             }
