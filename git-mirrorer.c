@@ -1719,6 +1719,31 @@ int update_repo(
         r = -1;
         goto free_strarray;
     }
+    git_remote_head const **heads;
+    size_t heads_count;
+    if (git_remote_ls(&heads, &heads_count, remote)) {
+        pr_error("Failed to ls remote\n");
+        r = -1;
+        goto free_strarray;
+    } else {
+        for (size_t i = 0; i < heads_count; ++i) {
+            git_remote_head const *const head = heads[i];
+            if (!strcmp(head->name, "HEAD")) {
+                pr_info("Remote HEAD points to %s\n", head->symref_target);
+                if ((r = git_repository_set_head(
+                        repo->repository, head->symref_target))) {
+                    pr_error("Failed to update repo '%s' HEAD to '%s'\n",
+                        repo->url, head->symref_target);
+                    r = -1;
+                    goto free_strarray;
+                }
+                pr_info("Set local HEAD of repo '%s' to '%s'\n",
+                    repo->url, head->symref_target);
+                break;
+            }
+        }
+    }
+
     pr_info("Ending fetching for '%s'\n", repo->url);
     repo->updated = true;
     r = 0;
@@ -2217,7 +2242,7 @@ int mirror_repo_ensure_wanted_commit(
             pr_error(
                 "Failed to lookup commit '%s' in repo '%s' "
                 "even after updating the repo, libgit return %d, "
-                "consider failure\n",
+                "consider failure\n",r = git_repository_set_head(repo, head->symref_target)
                 wanted_commit->id_hex_string, repo->url, r);
             return -1;
         }
@@ -2326,39 +2351,9 @@ int mirror_repo_ensure_wanted_head(
     case GIT_OK:
         break;
     case GIT_EUNBORNBRANCH: {
-#ifdef STRICT_HEAD
         pr_error("Failed to resolve head, HEAD points to a non-"
             "existing branch\n");        
         return -1;
-#else
-        pr_warn("Failed to resolve head, HEAD points to a non-existing branch, "
-            "trying to add branch 'main' as wanted\n");
-        struct wanted_reference *wanted_main = malloc(sizeof *wanted_main);
-        if (wanted_main == NULL) {
-            pr_error("Failed to allocate memory for wanted main branch\n");
-            return -1;
-        }
-        *wanted_main = WANTED_BRANCH_INIT;
-        wanted_main->commit.base.archive = wanted_head->commit.base.archive;
-        wanted_main->commit.base.checkout = wanted_head->commit.base.checkout;
-        ;
-        if ((wanted_main->commit.base.name = malloc(
-            wanted_main->commit.base.name_len = 5)) == NULL) {
-            pr_error(
-                "Failed to allocate memory for added wanted main branch name");
-            free(wanted_main);
-            return -1;
-        }
-        strncpy(wanted_main->commit.base.name, "main", 5);
-        wanted_main->commit.base.previous = repo->wanted_objects.objects_tail;
-        repo->wanted_objects.objects_tail->next = 
-            (struct wanted_base *) wanted_main;
-        repo->wanted_objects.objects_tail = (struct wanted_base *) wanted_main;
-        ++repo->wanted_objects.objects_count;
-        repo->wanted_objects.dynamic = true;
-        pr_info("Added branch 'main' as wanted, will handle that later\n");
-        return 0;
-#endif
     }
     case GIT_ENOTFOUND:
         pr_error("Failed to resolve head, HEAD is missing\n");
