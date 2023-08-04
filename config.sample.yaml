@@ -16,10 +16,10 @@ repos:
             # If archive is enabled, git-mirrorer will create archive for the commit under dir_archives
             archive: yes
             # If checkout is enabled, git-mirroer will create checkout for the commit under dir_checkouts
-            # Special note: the checkout won't contain .git work folder, the main purpose is to create temporary build folders
-            #               if you do want .git involved, you can just clone the mirrored repos instead.
+            # Special note: the checkout won't contain .git work folder, the main purpose is to create temporary build folders.
+            #               If you do want .git involved, you can just clone the mirrored repos instead.
             checkout: yes
-            # Specially, for all_branches and all_tags, archive and checkout are not created for themselved, but rather for 
+            # Specially, for all_branches and all_tags, archive and checkout are not created for themselves, but rather for 
             # the virtual wanted branches and wanted tags appened to the wanted objects list
         # A wanted object with name [vV][0-9] is automatically identified as a tag
         - v6.1
