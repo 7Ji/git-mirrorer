@@ -1696,7 +1696,7 @@ int update_repo(
         r = -1;
         goto free_strarray;
     }
-    pr_info("Begging fetching for '%s'\n", repo->url);
+    pr_info("Beginning fetching for '%s'\n", repo->url);
     config->fetch_options.proxy_opts.type = GIT_PROXY_NONE;
     for (unsigned short try = 0; try <= config->proxy_after + 3; ++try) {
         if (try == config->proxy_after) {
