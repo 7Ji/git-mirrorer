@@ -2585,6 +2585,15 @@ int mirror_all_repos(
     return 0;
 }
 
+int treewalk_callback(
+	const char *root, const git_tree_entry *entry, void *payload) {
+    (void) payload;
+    git_object_t type = git_tree_entry_type(entry);
+    pr_warn("Root: %s, entry: %s, type: %d (%s)\n", root, git_tree_entry_name(entry), type,
+    git_object_type2string(type));
+    return 0;
+}
+
 int export_all_repos(
     struct config const *const restrict config
 ) {
@@ -2612,6 +2621,19 @@ int export_all_repos(
             case WANTED_TYPE_COMMIT: {
                 struct wanted_commit const * const wanted_commit = 
                     (struct wanted_commit const *const)wanted_object;
+                if (!wanted_object->archive && !wanted_object->checkout)
+                    break;
+                git_commit *commit;
+                if (git_commit_lookup(&commit, repo->repository, &wanted_commit->id)) {
+                    pr_error("Failed to lookup commit\n");
+                    goto error;
+                }
+                git_tree *tree;
+                if (git_commit_tree(&tree, commit)) {
+                    pr_error("Failed to get the tree pointed by commit\n");
+                    goto error;
+                }
+                git_tree_walk(tree, GIT_TREEWALK_PRE, treewalk_callback, NULL);
                 char path[PATH_MAX];
                 if (wanted_object->archive) {
                     snprintf(path, PATH_MAX, "%s/%s.tar.gz", 
