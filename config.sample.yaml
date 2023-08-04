@@ -1,0 +1,43 @@
+# proxy: http://your_http_proxy # Only needed if you want to use proxy
+# proxy_after: 3 # If proxy is set, only after this amount of failed tries, will proxy be used, the retry counts are reset between each repo
+# dir_repos: repos # Set the repos folder
+# dir_archives: archives # Set the archives folder
+# dir_checkouts: checkouts # Set the checkout folder
+repos:
+  # A repo can be simply declared with its url
+  - https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
+  # Or a list of wanted objects can be declared
+  - https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git:
+      wanted:
+        # A special wanted object all_tags, git-mirrorer will guarantee all commits pointed by all tags are robust
+        - all_tags
+        # A special wanted object all_branches, git-mirrorer will guarantee all commits pointed by all branches are robust
+        - all_branches: # A wanted object can also be set with advanced options
+            # If archive is enabled, git-mirrorer will create archive for the commit under dir_archives
+            archive: yes
+            # If checkout is enabled, git-mirroer will create checkout for the commit under dir_checkouts
+            # Special note: the checkout won't contain .git work folder, the main purpose is to create temporary build folders
+            #               if you do want .git involved, you can just clone the mirrored repos instead.
+            checkout: yes
+            # Specially, for all_branches and all_tags, archive and checkout are not created for themselved, but rather for 
+            # the virtual wanted branches and wanted tags appened to the wanted objects list
+        # A wanted object with name [vV][0-9] is automatically identified as a tag
+        - v6.1
+        # You can/need to set type for names that git-mirrorer can't guess their types
+        - linux-6.4.y:
+            type: branch
+        # You can also set HEAD explicitly, note for a repo without any wanted objects, HEAD is automatically added,
+        # but if there is any wanted object, HEAD will not be checked unless you specify it explicitly
+        - HEAD
+  # The powerfulness of git-mirrorer shines when you're mirroring a repo with submodules
+  # git-mirrorer will look into the commit tree of a wanted object, and if there is .gitmodules, it will also mirror
+  # those submodule repos. The submodule repos are virtually appended to the repos list and with at least the submodule
+  # commit as their wanted object
+  - https://github.com/7Ji/amlogic-s9xxx-archlinuxarm:
+      wanted:
+        - 20230502:
+            type: tag
+            # For a repo with submodules, the archives and checkouts created will include those submodules
+            # You can thus use git-mirrorer as a tool to create source tarboll for such repos
+            archive: yes
+            checkout: yes
