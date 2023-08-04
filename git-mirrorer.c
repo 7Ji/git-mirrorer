@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include <fcntl.h>
+#include <sys/stat.h>
 
 #include <getopt.h>
 
@@ -1244,6 +1245,99 @@ error:
     return -1;
 }
 
+int guarantee_symlink (
+    char const *const restrict symlink_path,
+    unsigned short const len_symlink_path,
+    char const *const restrict symlink_target
+) {
+    char path[PATH_MAX];
+    ssize_t len = readlink(symlink_path, path, PATH_MAX);
+    if (len < 0) {
+        switch (errno) {
+        case ENOENT:
+            break;
+        default:
+            pr_error_with_errno("Failed to read link at '%s'", symlink_path);
+            return -1;
+        }
+    } else {
+        path[len] = '\0';
+        if (strcmp(path, symlink_target)) {
+            pr_warn("Symlink at '%s' points to '%s' instead of '%s', "
+            "if you see this message for too many times, you've probably set "
+            "too many repos with same path but different schemes.\n",
+            symlink_path, path, symlink_target);
+            if (unlink(symlink_path) < 0) {
+                pr_error_with_errno("Faild to unlink '%s'", symlink_path);
+                return -1;
+            }
+        } else {
+            return 0;
+        }
+    }
+    if (symlink(symlink_target, symlink_path) < 0) {
+        switch (errno) {
+        case ENOENT:
+            break;
+        default:
+            pr_error_with_errno(
+                "Failed to create symlink '%s' pointing to '%s'",
+                symlink_path, symlink_target);
+            return -1;
+        }
+    } else {
+        pr_warn("Created symlink '%s' pointing to '%s'\n", 
+            symlink_path, symlink_target);
+        return 0;
+    }
+    char symlink_path_dup[PATH_MAX];
+    strncpy(symlink_path_dup, symlink_path, PATH_MAX);
+    unsigned short last_sep = 0;
+    for (unsigned short i = len_symlink_path; i > 0; --i) {
+        char *c = symlink_path_dup + i;
+        if (*c == '/') {
+            if (!last_sep) {
+                last_sep = i;
+            }
+            *c = '\0';
+            if (mkdir(symlink_path_dup, 0755)) {
+                if (errno != ENOENT) {
+                    pr_error_with_errno(
+                        "Failed to create folder '%s' as parent of symlink "
+                        "'%s' pointing to '%s'",
+                        symlink_path_dup, symlink_path, symlink_target);
+                    return -1;
+                }
+            } else {
+                for (unsigned short j = i; j < last_sep; ++j) {
+                    c = symlink_path_dup + j;
+                    if (*c == '\0') {
+                        *c = '/';
+                        if (mkdir(symlink_path_dup, 0755)) {
+                            pr_error_with_errno(
+                                "Failed to create folder '%s' as parent of "
+                                "symlink '%s' pointing to '%s'",
+                                symlink_path_dup, symlink_path, symlink_target);
+                            return -1;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+    if (symlink(symlink_target, symlink_path) < 0) {
+        pr_error_with_errno(
+            "Failed to create symlink '%s' pointing to '%s'",
+            symlink_path, symlink_target);
+        return -1;
+    }
+    pr_warn("Created symlink '%s' pointing to '%s'\n", 
+        symlink_path, symlink_target);
+    return 0;
+}
+
+
 int config_repo_generate_symlink(
     struct repo *const restrict repo,
     char const *const restrict dir_repos
@@ -1297,6 +1391,11 @@ int config_repo_generate_symlink(
     }
     symlink_target_current = stpcpy(symlink_target_current, repo->dir_name);
     *symlink_target_current = '\0';
+    if (guarantee_symlink(symlink_path, len_symlink_path, symlink_target)) {
+        pr_error("Failed to guarantee a symlink at '%s' pointing to '%s'\n",
+            symlink_path, symlink_target);
+        return -1;
+    }
     if ((repo->symlink_path = malloc(
         (repo->symlink_path_len = len_symlink_path) + 1)) == NULL) {
         pr_error("Failed to allocate memory for symlink path\n");
