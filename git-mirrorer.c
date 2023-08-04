@@ -147,6 +147,10 @@ struct repo {
     char *url;
     unsigned short url_len;
     XXH64_hash_t url_hash;
+    char *symlink_path;
+    unsigned short symlink_path_len;
+    char *symlink_target;
+    unsigned short symlink_target_len;
     char *dir_path;
     unsigned short dir_path_len;
     char dir_name[17];
@@ -1158,11 +1162,14 @@ void print_config_repo(struct repo const *const restrict repo) {
     fprintf(stderr,
         "|  - %s%s:\n"
         "|      hash: %016lx\n"
-        "|      dir: %s\n",
+        "|      dir: %s\n"
+        "|      link: %s -> %s\n",
         repo->url,
         repo->added_from ? " (added from submodule)" : "",
         repo->url_hash,
-        repo->dir_path);
+        repo->dir_path,
+        repo->symlink_path,
+        repo->symlink_target);
     if (repo->wanted_objects.objects_count) {
         fprintf(stderr,
         "|      wanted (%lu, %s):\n", 
@@ -1237,6 +1244,78 @@ error:
     return -1;
 }
 
+int config_repo_generate_symlink(
+    struct repo *const restrict repo,
+    char const *const restrict dir_repos
+) {
+    char symlink_path[PATH_MAX] = "";
+    char symlink_target[PATH_MAX] = "";
+    char const *url_no_scheme = repo->url;
+    unsigned short len_url_no_scheme = repo->url_len;
+    for (char const *c = repo->url; c; ++c) {
+        if (*c == ':' && *(c + 1) == '/' && *(c + 2) == '/') {
+            url_no_scheme = c + 3;
+            len_url_no_scheme -= (url_no_scheme - repo->url);
+            break;
+        }
+    }
+    if (len_url_no_scheme == 0) {
+        pr_error("URL '%s' without scheme's length is 0\n", repo->url);
+        return -1;
+    }
+    int r = snprintf(symlink_path, PATH_MAX, "%s/links/", dir_repos);
+    if (r < 0) {
+        pr_error_with_errno("Failed to pre-fill symlink path");
+        return -1;
+    } else if (r <= 6) {
+        pr_error("Impossible routine\n");
+        return -1;
+    }
+    unsigned short len_symlink_path = r;
+    unsigned short len_symlink_target = 3;
+    char *symlink_path_current = symlink_path + r;
+    char *symlink_target_current = stpcpy(symlink_target, "../");
+    for (char const *c = url_no_scheme; *c; ++c) {
+        if (++len_symlink_path >= PATH_MAX) {
+            pr_error("Symlink path too long\n");
+            return -1;
+        }
+        if (*c == '/') {
+            for (;*(c + 1) != '\0' && *(c + 1) == '/'; ++c);
+            if ((len_symlink_target += 3) >= PATH_MAX) {
+                pr_error("Symlink target too long\n");
+                return -1;
+            }
+            symlink_target_current = stpcpy(symlink_target_current, "../");
+        }
+        *(symlink_path_current++) = *c;
+    }
+    *symlink_path_current = '\0';
+    if ((len_symlink_target += (sizeof repo->dir_name - 1)) >= PATH_MAX) {
+        pr_error("Symlink target too long\n");
+        return -1;
+    }
+    symlink_target_current = stpcpy(symlink_target_current, repo->dir_name);
+    *symlink_target_current = '\0';
+    if ((repo->symlink_path = malloc(
+        (repo->symlink_path_len = len_symlink_path) + 1)) == NULL) {
+        pr_error("Failed to allocate memory for symlink path\n");
+        return -1;
+    }
+    if ((repo->symlink_target = malloc(
+        (repo->symlink_target_len = len_symlink_target) + 1)) == NULL) {
+        pr_error("Failed to allocate memory for symlink target\n");
+        free(repo->symlink_path);
+        repo->symlink_path = NULL;
+        return -1;
+    }
+    memcpy(repo->symlink_path, symlink_path, repo->symlink_path_len + 1);
+    memcpy(repo->symlink_target, symlink_target, repo->symlink_target_len + 1);
+    // pr_warn("Symlink for repo '%s' will be '%s' pointing to '%s'\n", 
+    //     repo->url, repo->symlink_path, repo->symlink_target);
+    return 0;
+}
+
 int config_repo_finish(
     struct repo *const restrict repo,
     char const *const restrict dir_repos,
@@ -1244,6 +1323,10 @@ int config_repo_finish(
 ) {
     if (repo == NULL || dir_repos == NULL || len_dir_repos == 0) {
         pr_error("Internal: invalid arguments\n");
+        return -1;
+    }
+    if (config_repo_generate_symlink(repo, dir_repos)) {
+        pr_error("Failed to generate symlinks for repo '%s'\n", repo->url);
         return -1;
     }
     if (repo->wanted_objects.objects_count == 0) {
@@ -1305,7 +1388,6 @@ int config_repo_finish(
         return -1;
     }
     pr_warn("Repo '%s' will be stored at '%s'\n", repo->url, repo->dir_path);
-    // repo->
     return 0;
 }
 
@@ -1345,6 +1427,7 @@ int config_finish(
         if (config_repo_finish(
             config->repos + i, config->dir_repos, config->len_dir_repos)) {
             pr_error("Failed to finish repo\n");
+            return -1;
         }
     }
     pr_warn("Finished config, config is as follows:\n");
@@ -1589,6 +1672,8 @@ int config_free(
             struct repo *const restrict repo = config->repos + i;
             if (repo->url) free (repo->url);
             if (repo->dir_path) free (repo->dir_path);
+            if (repo->symlink_path) free (repo->symlink_path);
+            if (repo->symlink_target) free (repo->symlink_target);
             if (repo->wanted_objects.objects_count) {
                 for (struct wanted_base *wanted_object = 
                     repo->wanted_objects.objects_head;
