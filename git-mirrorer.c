@@ -1698,18 +1698,19 @@ int update_repo(
     }
     pr_info("Begging fetching for '%s'\n", repo->url);
     config->fetch_options.proxy_opts.type = GIT_PROXY_NONE;
-    for (unsigned short try = 0; try <= config->proxy_after; ++try) {
+    for (unsigned short try = 0; try <= config->proxy_after + 3; ++try) {
         if (try == config->proxy_after) {
             if (try) 
                 pr_warn(
                     "Failed for %hu times, use proxy\n", config->proxy_after);
             config->fetch_options.proxy_opts.type = GIT_PROXY_SPECIFIED;
+            // config->fetch_options.proxy_opts.
         }
         r = git_remote_fetch(remote, NULL, &config->fetch_options, NULL);
         if (r) {
             pr_error(
                 "Failed to fetch, libgit return %d%s\n", 
-                r, try < config->proxy_after ? ", will retry" : "");
+                r, try < config->proxy_after + 3 ? ", will retry" : "");
         } else {
             break;
         }
