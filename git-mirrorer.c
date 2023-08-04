@@ -1823,7 +1823,6 @@ int mirror_repo_add_submodule_to_wanted_commit(
     char const *const restrict url,
     unsigned short len_url
 ) {
-    // (void )len_path;
     if (wanted_commit->submodules == NULL) {
         if ((wanted_commit->submodules = malloc(
             sizeof *wanted_commit->submodules * (
@@ -2242,7 +2241,7 @@ int mirror_repo_ensure_wanted_commit(
             pr_error(
                 "Failed to lookup commit '%s' in repo '%s' "
                 "even after updating the repo, libgit return %d, "
-                "consider failure\n",r = git_repository_set_head(repo, head->symref_target)
+                "consider failure\n",
                 wanted_commit->id_hex_string, repo->url, r);
             return -1;
         }
@@ -2350,11 +2349,10 @@ int mirror_repo_ensure_wanted_head(
     switch (r) {
     case GIT_OK:
         break;
-    case GIT_EUNBORNBRANCH: {
+    case GIT_EUNBORNBRANCH:
         pr_error("Failed to resolve head, HEAD points to a non-"
             "existing branch\n");        
         return -1;
-    }
     case GIT_ENOTFOUND:
         pr_error("Failed to resolve head, HEAD is missing\n");
         return -1;
