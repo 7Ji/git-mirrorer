@@ -35,7 +35,10 @@
     pr_error(format", errno: %d, error: %s\n", ##arg, errno, strerror(errno))
 
 #define pr_warn(format, arg...) \
-    printf("[WARN] %s:%d: "format, __FUNCTION__, __LINE__, ##arg)
+    printf("[WARN] "format, ##arg)
+
+#define pr_info(format, arg...) \
+    printf("[INFO] "format, ##arg)
 
 #ifdef DEBUGGING
 #define pr_debug(format, arg...) \
@@ -397,7 +400,6 @@ int config_add_repo_and_init_with_url(
     char const *const restrict url,
     unsigned short const len_url
 ) {
-    // pr_warn("Adding\n");
     if (config == NULL || url == NULL || len_url == 0) {
         pr_error("Internal: invalid argument\n");
         return -1;
@@ -1233,11 +1235,6 @@ int config_from_yaml(
     } while (event_type != YAML_STREAM_END_EVENT);
 
     yaml_parser_delete(&parser);
-
-#ifdef DEBUGGING
-    pr_warn("Config is as follows:\n");
-    print_config(config);
-#endif
     return 0;
 
 error:
@@ -1286,7 +1283,7 @@ int guarantee_symlink (
             return -1;
         }
     } else {
-        pr_warn("Created symlink '%s' pointing to '%s'\n", 
+        pr_info("Created symlink '%s' pointing to '%s'\n", 
             symlink_path, symlink_target);
         return 0;
     }
@@ -1332,7 +1329,7 @@ int guarantee_symlink (
             symlink_path, symlink_target);
         return -1;
     }
-    pr_warn("Created symlink '%s' pointing to '%s'\n", 
+    pr_info("Created symlink '%s' pointing to '%s'\n", 
         symlink_path, symlink_target);
     return 0;
 }
@@ -1410,8 +1407,6 @@ int config_repo_generate_symlink(
     }
     memcpy(repo->symlink_path, symlink_path, repo->symlink_path_len + 1);
     memcpy(repo->symlink_target, symlink_target, repo->symlink_target_len + 1);
-    // pr_warn("Symlink for repo '%s' will be '%s' pointing to '%s'\n", 
-    //     repo->url, repo->symlink_path, repo->symlink_target);
     return 0;
 }
 
@@ -1486,7 +1481,7 @@ int config_repo_finish(
             repo->url);
         return -1;
     }
-    pr_warn("Repo '%s' will be stored at '%s'\n", repo->url, repo->dir_path);
+    pr_info("Repo '%s' will be stored at '%s'\n", repo->url, repo->dir_path);
     return 0;
 }
 
@@ -1529,7 +1524,7 @@ int config_finish(
             return -1;
         }
     }
-    pr_warn("Finished config, config is as follows:\n");
+    pr_info("Finished config, config is as follows:\n");
     print_config(config);
     return 0;
 }
@@ -1540,13 +1535,13 @@ int config_read(
 ) {
     int config_fd = STDIN_FILENO;
     if (config_path && strcmp(config_path, "-")) {
-        pr_warn("Using '%s' as config file\n", config_path);
+        pr_info("Using '%s' as config file\n", config_path);
         if ((config_fd = open(config_path, O_RDONLY)) < 0) {
             pr_error_with_errno("Failed to open config file '%s'", config_path);
             return -1;
         }
     } else {
-        pr_warn("Reading config from stdin\n");
+        pr_info("Reading config from stdin\n");
         if (isatty(STDIN_FILENO)) {
             pr_warn(
                 "Standard input (stdin) is connected to a terminal, "
@@ -1591,7 +1586,7 @@ int repo_open_or_init_bare(
     int r = git_repository_open_bare(&repo->repository, repo->dir_path);
     switch (r) {
     case GIT_OK:
-        pr_warn(
+        pr_info(
             "Opened existing bare repository '%s' for repo '%s'\n",
             repo->dir_path, repo->url);
         return 0;
@@ -1660,7 +1655,7 @@ int update_repo(
     unsigned long const repo_id
 ) {
     struct repo *const restrict repo = config->repos + repo_id;
-    pr_warn("Updating repo '%s'...\n", repo->url);
+    pr_info("Updating repo '%s'...\n", repo->url);
     git_remote *remote;
     int r = git_remote_lookup(&remote, repo->repository, MIRROR_REMOTE) < 0;
     if (r) {
@@ -1701,7 +1696,7 @@ int update_repo(
         r = -1;
         goto free_strarray;
     }
-    pr_warn("Begging fetching for '%s'\n", repo->url);
+    pr_info("Begging fetching for '%s'\n", repo->url);
     config->fetch_options.proxy_opts.type = GIT_PROXY_NONE;
     for (unsigned short try = 0; try <= config->proxy_after; ++try) {
         if (try == config->proxy_after) {
@@ -1724,7 +1719,7 @@ int update_repo(
         r = -1;
         goto free_strarray;
     }
-    pr_warn("Ending fetching for '%s'\n", repo->url);
+    pr_info("Ending fetching for '%s'\n", repo->url);
     repo->updated = true;
     r = 0;
 free_strarray:
@@ -1891,7 +1886,7 @@ int mirror_repo_parse_parse_submodule_in_tree(
         pr_error("Failed to format commit id into hex string\n");
         goto free_entry;
     }
-    pr_warn(
+    pr_info(
         "Specific commit '%s' is needed for submodule at path '%s' "
         "with url '%s'\n", wanted_commit_submodule->id_hex_string, path, url);
     bool commit_added = false;
@@ -1988,7 +1983,7 @@ int mirror_repo_parse_parse_submodule_in_tree(
             }
         }
         if (wanted_commit_submodule->repo_id >= repo_id) {
-            pr_warn("Added commit '%s' as wanted to repo '%s', will handle "
+            pr_info("Added commit '%s' as wanted to repo '%s', will handle "
                 "that repo later\n", wanted_commit_in_target_repo->base.name, 
                                      repo_target->url);
 
@@ -2119,7 +2114,7 @@ int mirror_repo_parse_gitmodules_blob(
                     submodule_value[*len_submodule_value] = '\0';
                     if (submodule_path[0] != '\0' && 
                         submodule_url[0] != '\0') {
-                        pr_warn(
+                        pr_info(
                             "Submodule '%s', path '%s', url '%s'\n", 
                             submodule_name, submodule_path, submodule_url);
                         if (mirror_repo_parse_parse_submodule_in_tree(
@@ -2254,7 +2249,7 @@ int mirror_repo_ensure_wanted_commit(
             goto free_commit;
         }
     }
-    pr_warn("Ensured existence of commit '%s' in repo '%s'\n",
+    pr_info("Ensured existence of commit '%s' in repo '%s'\n",
         wanted_commit->id_hex_string, repo->url);
     r = 0;
 free_commit:
@@ -2293,7 +2288,7 @@ int mirror_repo_ensure_wanted_reference_common(
         return -1;
     }
     git_object_free(object);
-    pr_warn("Resolved reference '%s' of repo '%s' to commit '%s', "
+    pr_info("Resolved reference '%s' of repo '%s' to commit '%s', "
         "working on that commit instead\n",
         reference_name, repo->url, 
         wanted_reference->commit.id_hex_string);
@@ -2308,7 +2303,7 @@ int mirror_repo_ensure_wanted_reference_common(
             repo->url);
         return -1;
     }
-    pr_warn("Ensured existence and robust of reference '%s' in repo '%s'\n",
+    pr_info("Ensured existence and robust of reference '%s' in repo '%s'\n",
         reference_name, repo->url);
     return 0;
 }
@@ -2361,7 +2356,7 @@ int mirror_repo_ensure_wanted_head(
         repo->wanted_objects.objects_tail = (struct wanted_base *) wanted_main;
         ++repo->wanted_objects.objects_count;
         repo->wanted_objects.dynamic = true;
-        pr_warn("Added branch 'main' as wanted, will handle that later\n");
+        pr_info("Added branch 'main' as wanted, will handle that later\n");
         return 0;
 #endif
     }
@@ -2534,7 +2529,7 @@ int repo_add_wanted_reference(
     wanted_reference->commit.base.previous = 
         wanted_objects->objects_tail;
     wanted_objects->objects_tail = (struct wanted_base *) wanted_reference;
-    pr_warn("Added wanted reference '%s' to repo '%s'\n", 
+    pr_info("Added wanted reference '%s' to repo '%s'\n", 
         wanted_reference->commit.base.name, repo->url);
     return 0;
 }
@@ -2559,13 +2554,13 @@ int mirror_repo_ensure_all_branches(
     }
     git_reference *reference;
     git_branch_t branch_t;
-    pr_warn(
+    pr_info(
         "Looping through all branches to create "
         "individual wanted references\n");
     while ((r = git_branch_next(
         &reference, &branch_t, branch_iterator)) == GIT_OK) {
         char const *const reference_name = git_reference_name(reference);
-        pr_warn("Found branch '%s'\n", reference_name);
+        pr_info("Found branch '%s'\n", reference_name);
         if (branch_t != GIT_BRANCH_LOCAL) {
             pr_error("Found branch is not a local branch\n");
             return -1;
@@ -2636,7 +2631,7 @@ int mirror_repo_ensure_all_tags(
             .archive = wanted_all_tags->archive,
             .checkout = wanted_all_tags->checkout,
         };
-    pr_warn(
+    pr_info(
         "Looping through all tags to create individual wanted references\n");
     if ((r = git_tag_foreach(
         repo->repository, mirror_repo_ensure_all_tags_foreach_callback,
@@ -2657,7 +2652,7 @@ int mirror_repo(
         pr_error("Failed to ensure repo '%s' is opened\n", repo->url);
         return -1;
     }
-    pr_warn("Mirroring repo '%s'\n", repo->url);
+    pr_info("Mirroring repo '%s'\n", repo->url);
     r = -1;
     for (struct wanted_base *wanted_object = repo->wanted_objects.objects_head;
         wanted_object != NULL;
@@ -2783,7 +2778,7 @@ int mirror_repo(
             return -1;
         }
     }
-    pr_warn("Finished mirroring repo '%s'\n", repo->url);
+    pr_info("Finished mirroring repo '%s'\n", repo->url);
     return 0;
 }
 
@@ -2796,7 +2791,7 @@ int mirror_all_repos(
             return -1;
         }
     }
-    pr_warn("Finished mirroring all repos\n");
+    pr_info("Finished mirroring all repos\n");
     return 0;
 }
 
@@ -2804,7 +2799,7 @@ int treewalk_callback(
 	const char *root, const git_tree_entry *entry, void *payload) {
     (void) payload;
     git_object_t type = git_tree_entry_type(entry);
-    pr_warn("Root: %s, entry: %s, type: %d (%s)\n", root, 
+    pr_info("Root: %s, entry: %s, type: %d (%s)\n", root, 
             git_tree_entry_name(entry), type,
     git_object_type2string(type));
     return 0;
@@ -2814,7 +2809,7 @@ int export_all_repos(
     struct config const *const restrict config
 ) {
     if (config->export_threads <= 1) {
-        pr_warn("Single threaded exporting repos\n");
+        pr_info("Single threaded exporting repos\n");
     }
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         struct repo const *const repo = config->repos + i;
@@ -2862,7 +2857,7 @@ int export_all_repos(
                     snprintf(path, PATH_MAX, "%s/%s.tar.gz", 
                         config->dir_archives,
                         wanted_commit->id_hex_string);
-                    pr_warn(
+                    pr_info(
                         "Exporting wanted object '%s' of repo '%s' "
                         "to %s\n",
                         wanted_object->name, repo->url, path);
@@ -2870,7 +2865,7 @@ int export_all_repos(
                 if (wanted_object->checkout) {
                     snprintf(path, PATH_MAX, "%s/%s", config->dir_checkouts,
                         wanted_commit->id_hex_string);
-                    pr_warn(
+                    pr_info(
                         "Exporting wanted object '%s' of repo '%s' "
                         "to %s\n",
                         wanted_object->name, repo->url, path);
@@ -2925,7 +2920,7 @@ int main(int const argc, char *argv[]) {
         pr_warn("No repos defined, early quit\n");
         return 0;
     }
-    pr_warn("Initializing libgit2\n");
+    pr_info("Initializing libgit2\n");
     git_libgit2_init();
     int r = mirror_all_repos(&config);
     if (r) {
@@ -2937,10 +2932,10 @@ int main(int const argc, char *argv[]) {
         goto shutdown;
     }
 shutdown:
-    pr_warn("Current config before shutting down:\n");
+    pr_info("Current config before shutting down:\n");
     print_config(&config);
     config_free(&config);
-    pr_warn("Shutting down libgit2\n");
+    pr_info("Shutting down libgit2\n");
     git_libgit2_shutdown();
     return r;
 }
