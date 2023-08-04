@@ -29,17 +29,17 @@
 #define ALLOC_MULTIPLY 2
 
 #define pr_error(format, arg...) \
-    fprintf(stderr, "%s:%d(error): "format, __FUNCTION__, __LINE__, ##arg)
+    printf("%s:%d(error): "format, __FUNCTION__, __LINE__, ##arg)
 
 #define pr_error_with_errno(format, arg...) \
     pr_error(format", errno: %d, error: %s\n", ##arg, errno, strerror(errno))
 
 #define pr_warn(format, arg...) \
-    fprintf(stderr, "%s:%d(warn): "format, __FUNCTION__, __LINE__, ##arg)
+    printf("%s:%d(warn): "format, __FUNCTION__, __LINE__, ##arg)
 
 #ifdef DEBUGGING
 #define pr_debug(format, arg...) \
-    fprintf(stderr, "%s:%d(debug): "format, __FUNCTION__, __LINE__, ##arg)
+    printf("%s:%d(debug): "format, __FUNCTION__, __LINE__, ##arg)
 #else
 #define pr_debug(format, arg...)
 #endif
@@ -278,7 +278,7 @@ int mirror_repo_ensure_wanted_commit(
 
 int sideband_progress(char const *string, int len, void *payload) {
 	(void)payload; /* unused */
-    fprintf(stderr, "remote: %.*s", len, string);
+    printf("remote: %.*s", len, string);
 	return 0;
 }
 
@@ -296,12 +296,11 @@ static inline void print_progress(
 
 	if (stats->total_objects &&
 		stats->received_objects == stats->total_objects) {
-		fprintf(stderr, "Resolving deltas %u/%u\r",
+		printf("Resolving deltas %u/%u\r",
 		       stats->indexed_deltas,
 		       stats->total_deltas);
 	} else {
-		fprintf(stderr, 
-           "net %3d%% (%4zu  kb, %5u/%5u)  /  idx %3d%% (%5u/%5u)\r",
+		printf("net %3d%% (%4zu  kb, %5u/%5u)  /  idx %3d%% (%5u/%5u)\r",
 		   network_percent, kbytes,
 		   stats->received_objects, stats->total_objects,
 		   index_percent, stats->indexed_objects, stats->total_objects);
@@ -1106,7 +1105,7 @@ void print_config_repo_wanted(
     struct wanted_objects const *const restrict wanted_objects) {
     for (struct wanted_base *wanted_object = wanted_objects->objects_head;
         wanted_object; wanted_object = wanted_object->next) {
-        fprintf(stderr,
+        printf(
             "|        - %s:\n"
             "|            type: %d (%s)\n"
             "|            archive: %s\n"
@@ -1125,7 +1124,7 @@ void print_config_repo_wanted(
             struct wanted_reference *wanted_reference = 
                 (struct wanted_reference *) wanted_object;
             if (wanted_reference->commit_resolved) {
-                fprintf(stderr,
+                printf(
                     "|            commit: %s\n",
                     wanted_reference->commit.id_hex_string);
             }
@@ -1134,7 +1133,7 @@ void print_config_repo_wanted(
             struct wanted_commit *wanted_commit = 
                 (struct wanted_commit *) wanted_object;
             if (wanted_commit->submodules_count) {
-                fprintf(stderr,
+                printf(
                     "|            submodules:\n");
             }
             for (unsigned long i = 0; 
@@ -1142,7 +1141,7 @@ void print_config_repo_wanted(
                 ++i) {
                 struct wanted_commit_submodule * wanted_commit_submodule =
                     wanted_commit->submodules + i;
-                fprintf(stderr,
+                printf(
                     "|              - path: %s\n"
                     "|                url: %s\n"
                     "|                repo_id: %lu\n"
@@ -1161,7 +1160,7 @@ void print_config_repo_wanted(
 }
 
 void print_config_repo(struct repo const *const restrict repo) {
-    fprintf(stderr,
+    printf(
         "|  - %s%s:\n"
         "|      hash: %016lx\n"
         "|      dir: %s\n"
@@ -1173,7 +1172,7 @@ void print_config_repo(struct repo const *const restrict repo) {
         repo->symlink_path,
         repo->symlink_target);
     if (repo->wanted_objects.objects_count) {
-        fprintf(stderr,
+        printf(
         "|      wanted (%lu, %s):\n", 
             repo->wanted_objects.objects_count,
             repo->wanted_objects.dynamic ? "dynamic" : "static");
@@ -1182,7 +1181,7 @@ void print_config_repo(struct repo const *const restrict repo) {
 }
 
 void print_config(struct config const *const restrict config) {
-    fprintf(stderr,
+    printf(
         "| proxy: %s\n"
         "| proxy_after: %hu\n"
         "| dir_repos: %s\n"
@@ -1194,7 +1193,7 @@ void print_config(struct config const *const restrict config) {
         config->dir_archives,
         config->dir_checkouts);
     if (config->repos_count) {
-        fprintf(stderr, "| repos (%lu): \n", config->repos_count);
+        printf("| repos (%lu): \n", config->repos_count);
         for (unsigned long i = 0; i < config->repos_count; ++i) {
             print_config_repo(config->repos + i);
         }
