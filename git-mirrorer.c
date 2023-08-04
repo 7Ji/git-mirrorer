@@ -300,7 +300,7 @@ static inline void print_progress(
 		       stats->indexed_deltas,
 		       stats->total_deltas);
 	} else {
-		fprintf(stderr, "net %3d%% (%4zu  kb, %5u/%5u)  /  idx %3d%% (%5u/%5u)\n",
+		fprintf(stderr, "net %3d%% (%4zu  kb, %5u/%5u)  /  idx %3d%% (%5u/%5u)\r",
 		   network_percent, kbytes,
 		   stats->received_objects, stats->total_objects,
 		   index_percent, stats->indexed_objects, stats->total_objects);
