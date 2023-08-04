@@ -300,7 +300,8 @@ static inline void print_progress(
 		       stats->indexed_deltas,
 		       stats->total_deltas);
 	} else {
-		fprintf(stderr, "net %3d%% (%4zu  kb, %5u/%5u)  /  idx %3d%% (%5u/%5u)\r",
+		fprintf(stderr, 
+           "net %3d%% (%4zu  kb, %5u/%5u)  /  idx %3d%% (%5u/%5u)\r",
 		   network_percent, kbytes,
 		   stats->received_objects, stats->total_objects,
 		   index_percent, stats->indexed_objects, stats->total_objects);
@@ -2773,7 +2774,8 @@ int treewalk_callback(
 	const char *root, const git_tree_entry *entry, void *payload) {
     (void) payload;
     git_object_t type = git_tree_entry_type(entry);
-    pr_warn("Root: %s, entry: %s, type: %d (%s)\n", root, git_tree_entry_name(entry), type,
+    pr_warn("Root: %s, entry: %s, type: %d (%s)\n", root, 
+            git_tree_entry_name(entry), type,
     git_object_type2string(type));
     return 0;
 }
@@ -2808,7 +2810,8 @@ int export_all_repos(
                 if (!wanted_object->archive && !wanted_object->checkout)
                     break;
                 git_commit *commit;
-                if (git_commit_lookup(&commit, repo->repository, &wanted_commit->id)) {
+                if (git_commit_lookup(
+                        &commit, repo->repository, &wanted_commit->id)) {
                     pr_error("Failed to lookup commit\n");
                     goto error;
                 }
