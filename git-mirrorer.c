@@ -278,7 +278,7 @@ int mirror_repo_ensure_wanted_commit(
 
 int sideband_progress(char const *string, int len, void *payload) {
 	(void)payload; /* unused */
-    pr_warn("remote: %.*s", len, string);
+    fprintf(stderr, "remote: %.*s", len, string);
 	return 0;
 }
 
@@ -296,11 +296,11 @@ static inline void print_progress(
 
 	if (stats->total_objects &&
 		stats->received_objects == stats->total_objects) {
-		printf("Resolving deltas %u/%u\r",
+		fprintf(stderr, "Resolving deltas %u/%u\r",
 		       stats->indexed_deltas,
 		       stats->total_deltas);
 	} else {
-		printf("net %3d%% (%4zu  kb, %5u/%5u)  /  idx %3d%% (%5u/%5u)\n",
+		fprintf(stderr, "net %3d%% (%4zu  kb, %5u/%5u)  /  idx %3d%% (%5u/%5u)\n",
 		   network_percent, kbytes,
 		   stats->received_objects, stats->total_objects,
 		   index_percent, stats->indexed_objects, stats->total_objects);
