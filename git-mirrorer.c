@@ -2331,10 +2331,40 @@ int mirror_repo_ensure_wanted_head(
     switch (r) {
     case GIT_OK:
         break;
-    case GIT_EUNBORNBRANCH:
+    case GIT_EUNBORNBRANCH: {
+#ifdef STRICT_HEAD
         pr_error("Failed to resolve head, HEAD points to a non-"
-            "existing branch\n");
+            "existing branch\n");        
         return -1;
+#else
+        pr_warn("Failed to resolve head, HEAD points to a non-existing branch, "
+            "trying to add branch 'main' as wanted\n");
+        struct wanted_reference *wanted_main = malloc(sizeof *wanted_main);
+        if (wanted_main == NULL) {
+            pr_error("Failed to allocate memory for wanted main branch\n");
+            return -1;
+        }
+        *wanted_main = WANTED_BRANCH_INIT;
+        wanted_main->commit.base.archive = wanted_head->commit.base.archive;
+        wanted_main->commit.base.checkout = wanted_head->commit.base.checkout;
+        ;
+        if ((wanted_main->commit.base.name = malloc(
+            wanted_main->commit.base.name_len = 5)) == NULL) {
+            pr_error(
+                "Failed to allocate memory for added wanted main branch name");
+            free(wanted_main);
+            return -1;
+        }
+        strncpy(wanted_main->commit.base.name, "main", 5);
+        wanted_main->commit.base.previous = repo->wanted_objects.objects_tail;
+        repo->wanted_objects.objects_tail->next = 
+            (struct wanted_base *) wanted_main;
+        ++repo->wanted_objects.objects_count;
+        repo->wanted_objects.dynamic = true;
+        pr_warn("Added branch 'main' as wanted, will handle that later\n");
+        return 0;
+#endif
+    }
     case GIT_ENOTFOUND:
         pr_error("Failed to resolve head, HEAD is missing\n");
         return -1;
