@@ -29,17 +29,17 @@
 #define ALLOC_MULTIPLY 2
 
 #define pr_error(format, arg...) \
-    printf("%s:%d(error): "format, __FUNCTION__, __LINE__, ##arg)
+    printf("[ERROR] %s:%d: "format, __FUNCTION__, __LINE__, ##arg)
 
 #define pr_error_with_errno(format, arg...) \
     pr_error(format", errno: %d, error: %s\n", ##arg, errno, strerror(errno))
 
 #define pr_warn(format, arg...) \
-    printf("%s:%d(warn): "format, __FUNCTION__, __LINE__, ##arg)
+    printf("[WARN] %s:%d: "format, __FUNCTION__, __LINE__, ##arg)
 
 #ifdef DEBUGGING
 #define pr_debug(format, arg...) \
-    printf("%s:%d(debug): "format, __FUNCTION__, __LINE__, ##arg)
+    printf("[DEBUG] %s:%d: "format, __FUNCTION__, __LINE__, ##arg)
 #else
 #define pr_debug(format, arg...)
 #endif
