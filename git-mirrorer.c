@@ -2359,6 +2359,7 @@ int mirror_repo_ensure_wanted_head(
         wanted_main->commit.base.previous = repo->wanted_objects.objects_tail;
         repo->wanted_objects.objects_tail->next = 
             (struct wanted_base *) wanted_main;
+        repo->wanted_objects.objects_tail = (struct wanted_base *) wanted_main;
         ++repo->wanted_objects.objects_count;
         repo->wanted_objects.dynamic = true;
         pr_warn("Added branch 'main' as wanted, will handle that later\n");
@@ -2826,12 +2827,18 @@ int export_all_repos(
             case WANTED_TYPE_BRANCH:
             case WANTED_TYPE_TAG:
             case WANTED_TYPE_REFERENCE:
-            case WANTED_TYPE_HEAD:
                 if (!((struct wanted_reference const *)wanted_object)
                     ->commit_resolved) {
                     pr_error("Reference '%s' is not resolved into commit\n",
                             wanted_object->name);
                     goto error;
+                }
+                __attribute__((fallthrough));
+            case WANTED_TYPE_HEAD:
+                if (!((struct wanted_reference const *)wanted_object)
+                    ->commit_resolved) {
+                    pr_warn("Reference '%s' is not resolved into commit\n",
+                            wanted_object->name);
                 }
                 __attribute__((fallthrough));
             case WANTED_TYPE_COMMIT: {
