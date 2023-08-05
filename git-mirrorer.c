@@ -514,13 +514,10 @@ int config_add_repo_and_init_with_url(
     repo->url_no_scheme_sanitized_len = url_no_scheme_sanitized_len;
     repo->url_no_scheme_sanitized_hash = url_no_scheme_sanitized_hash;
     repo->url_no_scheme_sanitized_parts = url_no_scheme_sanitized_parts;
-    pr_info("Added repo '%s', hash '%016lx', no scheme sanitized url '%s', "
-        "hash '%016lx' parts %hu\n", 
+    pr_info("Added repo '%s', hash '%016lx', no scheme sanitized url '%s'\n", 
             repo->url,
             repo->url_hash,
-            repo->url_no_scheme_sanitized,
-            repo->url_no_scheme_sanitized_hash,
-            repo->url_no_scheme_sanitized_parts);
+            repo->url_no_scheme_sanitized);
     return 0;
 }
 
