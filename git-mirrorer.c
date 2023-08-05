@@ -400,6 +400,7 @@ free_buffer:
     return size_total;
 }
 
+// May re-allocate config->repos
 int config_add_repo_and_init_with_url(
     struct config *const restrict config,
     char const *const restrict url,
@@ -468,8 +469,8 @@ int config_add_repo_and_init_with_url(
                 url, repo_cmp->url, url_no_scheme_sanitized);
         }
     }
-    if (++config->repos_count >= config->repos_allocated) {
-        while (config->repos_count >= (
+    if (++config->repos_count > config->repos_allocated) {
+        while (config->repos_count > (
             config->repos_allocated *= ALLOC_MULTIPLY)) {
             if (config->repos_allocated == ULONG_MAX) {
                 pr_error("Impossible to allocate more memory\n");
