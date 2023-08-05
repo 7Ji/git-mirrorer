@@ -1770,6 +1770,10 @@ int update_repo(
         for (size_t i = 0; i < heads_count; ++i) {
             git_remote_head const *const head = heads[i];
             if (!strcmp(head->name, "HEAD")) {
+                if (head->symref_target == NULL) {
+                    pr_warn("Remote HEAD points to no branch\n");
+                    break;
+                }
                 pr_info("Remote HEAD points to '%s' now\n", head->symref_target);
                 if ((r = git_repository_set_head(
                         repo->repository, head->symref_target))) {
