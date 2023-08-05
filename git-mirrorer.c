@@ -2792,12 +2792,13 @@ int mirror_all_repos(
 
 struct treewalk_payload {
     struct config const *const restrict config;
-    struct wanted_commit const *restrict wanted_commit;
-    char submodule_path[PATH_MAX];
-    unsigned short submodule_path_len;
+    struct repo const *const restrict repo;
+    struct wanted_commit const *const restrict wanted_commit;
+    char *const restrict submodule_path;
+    unsigned short const submodule_path_len;
     bool const archive;
     bool const checkout;
-    char *dir_checkout;
+    char const *const restrict dir_checkout;
 };
 
 int treewalk_callback(
@@ -2824,15 +2825,69 @@ int treewalk_callback(
             return -1;
         }
         switch (type) {
-        case GIT_OBJECT_BLOB:
+        case GIT_OBJECT_BLOB: {
+            git_object *object;
+            int r = git_tree_entry_to_object(
+                &object, private_payload->repo->repository, entry);
+            if (r) {
+                pr_error(
+                    "Failed to convert entry to object, libgit return %d\n",
+                    r);
+                return -1;
+            }
+            int mode =
+                git_tree_entry_filemode(entry) == GIT_FILEMODE_BLOB_EXECUTABLE ?
+                0755 : 0644;
+            int blob_fd = open(path_checkout, O_WRONLY | O_CREAT, mode);
+            if (blob_fd < 0) {
+                pr_error("Failed to create file '%s' with mode 0o%o\n",
+                    path_checkout, mode);
+                git_object_free(object);
+                return -1;
+            }
+            git_blob *blob = (git_blob *)object;
+            git_object_size_t size_blob = git_blob_rawsize(blob);
+            if (size_blob) {
+                void const *ro_buffer = git_blob_rawcontent(blob);
+                git_object_size_t size_written = 0;
+                while (size_written < size_blob) {
+                    ssize_t size_written_this =
+                        write(blob_fd,
+                            ro_buffer + size_written, 
+                            size_blob - size_written);
+                    if (size_written_this < 0) {
+                        switch (errno) {
+                        case EAGAIN:
+#if (EAGAIN != EWOULDBLOCK)
+                        case EWOULDBLOCK:
+#endif
+                        case EINTR:
+                            break;
+                        default:
+                            pr_error_with_errno(
+                                "Failed to write %lu bytes to file '%s'",
+                                size_blob - size_written,
+                                path_checkout);
+                            close(blob_fd);
+                            git_object_free(object);
+                            return -1;
+                        }
+                    } else {
+                        size_written += size_written_this;
+                    }
+                }
+            }
+            close(blob_fd);
+            git_object_free(object);
             break;
+        }
         case GIT_OBJECT_TREE:
         case GIT_OBJECT_COMMIT:
-            // if (mkdir(path_checkout, 0755)) {
-            //     pr_error_with_errno("Failed to create folder '%s'", 
-            //         path_checkout);
-            //     return -1;
-            // }
+            if (mkdir(path_checkout, 0755)) {
+                pr_error_with_errno("Failed to create folder '%s'", 
+                    path_checkout);
+                return -1;
+            }
             break;
         default:
             pr_error("Impossible entry type\n");
@@ -2855,8 +2910,6 @@ int treewalk_callback(
             struct wanted_commit_submodule *submodule = 
                 private_payload->wanted_commit->submodules + i;
             if (!git_oid_cmp(&submodule->id, oid)) {
-                unsigned short submodule_path_len = 
-                    private_payload->submodule_path_len;
                 struct repo const *const restrict target_repo = 
                     private_payload->config->repos + submodule->repo_id;
                 struct wanted_commit *wanted_commit = NULL;
@@ -2877,13 +2930,16 @@ int treewalk_callback(
                 }
                 size_t len_name = strlen(name);
                 size_t len_root = strlen(root);
-                if ((private_payload->submodule_path_len += 
-                    len_name + len_root + 1) >= PATH_MAX) {
+                unsigned short submodule_path_len = 
+                    private_payload->submodule_path_len + 
+                        len_name + len_root + 1;
+                if (submodule_path_len >= PATH_MAX) {
                     pr_error("Path too long!\n");
                     return -1;
                 }
                 if (sprintf(
-                    private_payload->submodule_path + submodule_path_len, 
+                    private_payload->submodule_path + 
+                        private_payload->submodule_path_len, 
                     "%s%s/", root, name) < 0) {
                     pr_error_with_errno("Failed to format name");
                     return -1;
@@ -2899,20 +2955,26 @@ int treewalk_callback(
                     pr_error("Failed to get tree pointed by commit\n");
                     return -1;
                 }
-                struct wanted_commit const *const restrict old_wanted_commit = 
-                    private_payload->wanted_commit;
-                private_payload->wanted_commit = wanted_commit;
+                struct treewalk_payload submodule_payload = {
+                    .config = private_payload->config,
+                    .repo = target_repo,
+                    .wanted_commit = wanted_commit,
+                    .submodule_path = private_payload->submodule_path,
+                    .submodule_path_len = submodule_path_len,
+                    .archive = private_payload->archive,
+                    .checkout = private_payload->checkout,
+                    .dir_checkout = private_payload->dir_checkout
+                };
                 if (git_tree_walk(
-                    tree, GIT_TREEWALK_PRE, treewalk_callback, payload)) {
+                    tree, GIT_TREEWALK_PRE, treewalk_callback, 
+                        &submodule_payload)) {
                     pr_error("Failed to walk tree recursively\n");
                     git_commit_free(commit);
                     return -1;
                 }
                 git_commit_free(commit);
-                private_payload->wanted_commit = old_wanted_commit;
                 private_payload->submodule_path[
-                    private_payload->submodule_path_len = 
-                        submodule_path_len] = '\0';
+                    private_payload->submodule_path_len] = '\0';
                 submodule_parsed = true;
                 break;
             }
@@ -3158,12 +3220,14 @@ int export_commit(
     }
     if (!archive && !checkout)
         return 0;
+    char submodule_path[PATH_MAX] = "";
     struct treewalk_payload treewalk_payload = {
         .config = config,
+        .repo = repo,
         .wanted_commit = wanted_commit,
         .archive = archive,
         .checkout = checkout,
-        .submodule_path = "",
+        .submodule_path = submodule_path,
         .submodule_path_len = 0,
         .dir_checkout = dir_checkout_work,
     };
