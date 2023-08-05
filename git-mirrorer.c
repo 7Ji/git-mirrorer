@@ -1875,9 +1875,9 @@ int mirror_repo_add_submodule_to_wanted_commit(
             goto error;
         }
     }
-    if (++wanted_commit->submodules_count >=
+    if (++wanted_commit->submodules_count >
         wanted_commit->submodules_allocated ) {
-        while (wanted_commit->submodules_count >= (
+        while (wanted_commit->submodules_count > (
             wanted_commit->submodules_allocated *= ALLOC_MULTIPLY
         )) {
             if (wanted_commit->submodules_allocated == ULONG_MAX) {
@@ -1886,7 +1886,15 @@ int mirror_repo_add_submodule_to_wanted_commit(
             } else if (wanted_commit->submodules_allocated >= ULONG_MAX / 2) {
                 wanted_commit->submodules_allocated = ULONG_MAX / 2;
             }
-        }   
+        }
+        struct wanted_commit_submodule *submodules_new = realloc(
+            wanted_commit->submodules,
+            sizeof *submodules_new * wanted_commit->submodules_allocated);
+        if (submodules_new == NULL) {
+            pr_error("Failed to re-allocate memory\n");
+            goto error;
+        }
+        wanted_commit->submodules = submodules_new;
     }
     struct wanted_commit_submodule *wanted_commit_submodule =
         wanted_commit->submodules + wanted_commit->submodules_count - 1;
