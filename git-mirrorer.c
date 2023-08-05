@@ -2828,11 +2828,11 @@ int treewalk_callback(
             break;
         case GIT_OBJECT_TREE:
         case GIT_OBJECT_COMMIT:
-            if (mkdir(path_checkout, 0755)) {
-                pr_error_with_errno("Failed to create folder '%s'", 
-                    path_checkout);
-                return -1;
-            }
+            // if (mkdir(path_checkout, 0755)) {
+            //     pr_error_with_errno("Failed to create folder '%s'", 
+            //         path_checkout);
+            //     return -1;
+            // }
             break;
         default:
             pr_error("Impossible entry type\n");
@@ -2938,6 +2938,15 @@ int remove_dir_recursively(
     errno = 0;
     int dir_fd = dirfd(dir_p);
     while ((entry = readdir(dir_p)) != NULL) {
+        if (entry->d_name[0] == '.') {
+            switch (entry->d_name[1]) {
+            case '\0':
+                continue;
+            case '.':
+                if (entry->d_name[2] == '\0') continue;
+                break;
+            }
+        }
         switch (entry->d_type) {
         case DT_REG:
             if (unlinkat(dir_fd, entry->d_name, 0)) {
@@ -2967,6 +2976,11 @@ int remove_dir_recursively(
                 return -1;
             }
             closedir(dir_p_r);
+            if (unlinkat(dir_fd, entry->d_name, AT_REMOVEDIR)) {
+                pr_error_with_errno(
+                    "Failed to rmdir '%s' recursively", entry->d_name);
+                return -1;
+            }
             break;
         }
         default:
@@ -3009,6 +3023,10 @@ int ensure_path_non_exist( // essentially rm -rf
             return -1;
         }
         closedir(dir_p);
+        if (rmdir(path)) {
+            pr_error_with_errno("Failed to rmdir '%s'", path);
+            return -1;
+        }
         break;
     }
     case S_IFREG:
@@ -3137,8 +3155,6 @@ int export_commit(
                 dir_checkout);
             return -1;
         }
-        pr_info("DIR checkout: %s\nDIR checkout work: %s\n",
-            dir_checkout, dir_checkout_work);
     }
     if (!archive && !checkout)
         return 0;
