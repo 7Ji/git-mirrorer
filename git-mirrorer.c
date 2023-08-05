@@ -1409,50 +1409,24 @@ int config_repo_generate_symlink(
 ) {
     char symlink_path[PATH_MAX] = "";
     char symlink_target[PATH_MAX] = "";
-    char const *url_no_scheme = repo->url;
-    unsigned short len_url_no_scheme = repo->url_len;
-    for (char const *c = repo->url; *c; ++c) {
-        if (*c == ':' && *(c + 1) == '/' && *(c + 2) == '/') {
-            url_no_scheme = c + 3;
-            len_url_no_scheme -= (url_no_scheme - repo->url);
-            break;
-        }
-    }
-    if (len_url_no_scheme == 0) {
-        pr_error("URL '%s' without scheme's length is 0\n", repo->url);
-        return -1;
-    }
-    int r = snprintf(symlink_path, PATH_MAX, "%s/links/", dir_repos);
+    int r = snprintf(symlink_path, PATH_MAX, "%s/links/%s", dir_repos, 
+                    repo->url_no_scheme_sanitized);
     if (r < 0) {
-        pr_error_with_errno("Failed to pre-fill symlink path");
+        pr_error_with_errno("Failed to fill symlink path");
         return -1;
     } else if (r <= 6) {
         pr_error("Impossible routine\n");
         return -1;
     }
-    unsigned short len_symlink_path = r;
-    unsigned short len_symlink_target = 3;
-    char *symlink_path_current = symlink_path + r;
-    char *symlink_target_current = stpcpy(symlink_target, "../");
-    for (char const *c = url_no_scheme; *c; ++c) {
-        if (++len_symlink_path >= PATH_MAX) {
-            pr_error("Symlink path too long\n");
-            return -1;
-        }
-        if (*c == '/') {
-            for (;*(c + 1) != '\0' && *(c + 1) == '/'; ++c);
-            if ((len_symlink_target += 3) >= PATH_MAX) {
-                pr_error("Symlink target too long\n");
-                return -1;
-            }
-            symlink_target_current = stpcpy(symlink_target_current, "../");
-        }
-        *(symlink_path_current++) = *c;
-    }
-    *symlink_path_current = '\0';
-    if ((len_symlink_target += (sizeof repo->dir_name - 1)) >= PATH_MAX) {
-        pr_error("Symlink target too long\n");
-        return -1;
+    unsigned short const len_symlink_path = r;
+    unsigned short const len_symlink_target = 
+        sizeof repo->dir_name - 1 + repo->url_no_scheme_sanitized_parts * 3;
+    char *symlink_target_current = symlink_target;
+    // Supposed sanitized url is github.com/7Ji/ampart.git, parts is 3
+    // Link would be created at repos/links/github.com/7Ji/ampart.git
+    // Target should be ../../../[hash]
+    for (unsigned short i = 0; i < repo->url_no_scheme_sanitized_parts; ++i) {
+        symlink_target_current = stpcpy(symlink_target_current, "../");
     }
     symlink_target_current = stpcpy(symlink_target_current, repo->dir_name);
     *symlink_target_current = '\0';
