@@ -149,9 +149,13 @@ enum repo_added_from {
 };
 
 struct repo {
-    char *url;
-    unsigned short url_len;
-    XXH64_hash_t url_hash;
+    char    *url,
+            *url_no_scheme_sanitized;
+    unsigned short  url_len,
+                    url_no_scheme_sanitized_len,
+                    url_no_scheme_sanitized_parts;
+    XXH64_hash_t    url_hash,
+                    url_no_scheme_sanitized_hash;
     char *symlink_path;
     unsigned short symlink_path_len;
     char *symlink_target;
@@ -412,13 +416,56 @@ int config_add_repo_and_init_with_url(
             return -1;
         }
     }
+    char url_no_scheme_sanitized[PATH_MAX];
+    unsigned short  url_no_scheme_sanitized_len = 0,
+                    url_no_scheme_sanitized_parts = 1;
+    char const *url_no_scheme = url;
+    for (char const *c = url; *c != '\0'; ++c) {
+        if (*c == ':' && *(c + 1) == '/' && *(c + 2) == '/') {
+            if (*(c + 3) == '\0') {
+                pr_error("Illegal URL '%s': ending with scheme\n",
+                    url);
+                return -1;
+            }
+            url_no_scheme = c + 3;
+            break;
+        }
+    }
+    for (char const *c = url_no_scheme; *c; ++c) {
+        if (*c == '/') {
+            // Skip all continous leading /
+            for (; *(c + 1) =='/'; ++c);
+            // When the above loop ends, we're at the last /
+            // of potentially a list of /
+            // In case url is like a/b/c/, ending with /,
+            // we don't want to copy the ending /
+            if (*(c + 1) == '\0') break;
+            ++url_no_scheme_sanitized_parts;
+        }
+        url_no_scheme_sanitized[url_no_scheme_sanitized_len++] = *c;
+    }
+    if (url_no_scheme_sanitized_len == 0) {
+        pr_error("Sanitized url for url '%s' is empty\n", url);
+        return -1;
+    }
+    url_no_scheme_sanitized[url_no_scheme_sanitized_len] = '\0';
     XXH64_hash_t url_hash = XXH3_64bits(url, len_url);
+    XXH64_hash_t url_no_scheme_sanitized_hash = XXH3_64bits(
+        url_no_scheme_sanitized, url_no_scheme_sanitized_len);
     for (unsigned long i = 0; i < config->repos_count; ++i) {
-        if (config->repos[i].url_hash == url_hash) {
+        struct repo const *const restrict repo_cmp = config->repos + i;
+        if (repo_cmp->url_hash == url_hash) {
             pr_error(
                 "Repo '%s' was already defined, duplication not allowed\n",
                  url);
             return -1;
+        }
+        if (repo_cmp->url_no_scheme_sanitized_hash == 
+                url_no_scheme_sanitized_hash) {
+            pr_warn("Repo '%s' and '%s' share the same no scheme sanitized "
+            "url '%s', this is not recommended and you should check upstream "
+            "if they are acutally the same repo\n",
+                url, repo_cmp->url, url_no_scheme_sanitized);
         }
     }
     if (++config->repos_count >= config->repos_allocated) {
@@ -452,10 +499,28 @@ int config_add_repo_and_init_with_url(
         --config->repos_count;
         return -1;
     }
-    memcpy(repo->url, url, len_url);
-    repo->url[len_url] = '\0';
+    if ((repo->url_no_scheme_sanitized = 
+        malloc(url_no_scheme_sanitized_len + 1)) == NULL) {
+        pr_error("Failed to allocate memory for no scheme sanitized url");
+        free(repo->url);
+        --config->repos_count;
+        return -1;
+    }
+    memcpy(repo->url, url, len_url + 1);
     repo->url_len = len_url;
     repo->url_hash = url_hash;
+    memcpy(repo->url_no_scheme_sanitized, url_no_scheme_sanitized, 
+        url_no_scheme_sanitized_len + 1);
+    repo->url_no_scheme_sanitized_len = url_no_scheme_sanitized_len;
+    repo->url_no_scheme_sanitized_hash = url_no_scheme_sanitized_hash;
+    repo->url_no_scheme_sanitized_parts = url_no_scheme_sanitized_parts;
+    pr_info("Added repo '%s', hash '%016lx', no scheme sanitized url '%s', "
+        "hash '%016lx' parts %hu\n", 
+            repo->url,
+            repo->url_hash,
+            repo->url_no_scheme_sanitized,
+            repo->url_no_scheme_sanitized_hash,
+            repo->url_no_scheme_sanitized_parts);
     return 0;
 }
 
@@ -1167,11 +1232,13 @@ void print_config_repo(struct repo const *const restrict repo) {
         "|  - %s%s:\n"
         "|      hash: %016lx\n"
         "|      dir: %s\n"
+        "|      sanitized: %s\n"
         "|      link: %s -> %s\n",
         repo->url,
         repo->added_from ? " (added from submodule)" : "",
         repo->url_hash,
         repo->dir_path,
+        repo->url_no_scheme_sanitized,
         repo->symlink_path,
         repo->symlink_target);
     if (repo->wanted_objects.objects_count) {
@@ -1344,7 +1411,7 @@ int config_repo_generate_symlink(
     char symlink_target[PATH_MAX] = "";
     char const *url_no_scheme = repo->url;
     unsigned short len_url_no_scheme = repo->url_len;
-    for (char const *c = repo->url; c; ++c) {
+    for (char const *c = repo->url; *c; ++c) {
         if (*c == ':' && *(c + 1) == '/' && *(c + 2) == '/') {
             url_no_scheme = c + 3;
             len_url_no_scheme -= (url_no_scheme - repo->url);
@@ -1792,6 +1859,8 @@ int config_free(
         for (unsigned long i = 0; i < config->repos_count; ++i) {
             struct repo *const restrict repo = config->repos + i;
             if (repo->url) free (repo->url);
+            if (repo->url_no_scheme_sanitized)
+                free(repo->url_no_scheme_sanitized);
             if (repo->dir_path) free (repo->dir_path);
             if (repo->symlink_path) free (repo->symlink_path);
             if (repo->symlink_target) free (repo->symlink_target);
