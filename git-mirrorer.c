@@ -2789,13 +2789,117 @@ int mirror_all_repos(
     return 0;
 }
 
+struct treewalk_payload {
+    struct config const *const restrict config;
+    struct wanted_commit const *restrict wanted_commit;
+    char submodule_path[PATH_MAX];
+    unsigned short submodule_path_len;
+    bool const archive;
+    bool const checkout;
+};
+
 int treewalk_callback(
-	const char *root, const git_tree_entry *entry, void *payload) {
-    (void) payload;
-    git_object_t type = git_tree_entry_type(entry);
-    pr_info("Root: %s, entry: %s, type: %d (%s)\n", root, 
-            git_tree_entry_name(entry), type,
-    git_object_type2string(type));
+	char const *const restrict root, 
+    git_tree_entry const *const restrict entry,
+    void *payload
+) {
+    struct treewalk_payload *const restrict private_payload =
+        (struct treewalk_payload *const restrict) payload;
+    git_object_t const type = git_tree_entry_type(entry);
+    char const *const name = git_tree_entry_name(entry);
+    git_oid const *const oid = git_tree_entry_id(entry);
+    switch (type) {
+    case GIT_OBJECT_BLOB:
+        pr_info("[BLOB] %s%s%s\n", private_payload->submodule_path,
+            root, name);
+        break;
+    case GIT_OBJECT_TREE:
+        pr_info("[TREE] %s%s%s\n", private_payload->submodule_path,
+            root, name);
+        break;
+    case GIT_OBJECT_COMMIT: {
+        pr_info("[SUBM] %s%s%s\n", private_payload->submodule_path,
+            root, name);
+        bool submodule_parsed = false;
+        for (unsigned long i = 0; 
+            i < private_payload->wanted_commit->submodules_count; 
+            ++i) {
+            struct wanted_commit_submodule *submodule = 
+                private_payload->wanted_commit->submodules + i;
+            if (!git_oid_cmp(&submodule->id, oid)) {
+                unsigned short submodule_path_len = 
+                    private_payload->submodule_path_len;
+                struct repo const *const restrict target_repo = 
+                    private_payload->config->repos + submodule->repo_id;
+                struct wanted_commit *wanted_commit = NULL;
+                for (wanted_commit = (struct wanted_commit *)
+                        target_repo->wanted_objects.objects_head;
+                    wanted_commit != NULL;
+                    wanted_commit = (struct wanted_commit *)
+                        wanted_commit->base.next) {
+                    if (wanted_commit->base.type == WANTED_TYPE_COMMIT &&
+                        !git_oid_cmp(&wanted_commit->id, oid)) {
+                        break;
+                    }
+                }
+                if (wanted_commit == NULL) {
+                    pr_error("Failed to find corresponding wanted commit in "
+                        "target repo\n");
+                    return -1;
+                }
+                size_t len_name = strlen(name);
+                size_t len_root = strlen(root);
+                if ((private_payload->submodule_path_len += 
+                    len_name + len_root + 1) >= PATH_MAX) {
+                    pr_error("Path too long!\n");
+                    return -1;
+                }
+                if (sprintf(
+                    private_payload->submodule_path + submodule_path_len, 
+                    "%s%s/", root, name) < 0) {
+                    pr_error_with_errno("Failed to format name");
+                    return -1;
+                }
+                
+                git_commit *commit;
+                if (git_commit_lookup(&commit, target_repo->repository, oid)) {
+                    pr_error("Failed to lookup commit\n");
+                    return -1;
+                }
+                git_tree *tree;
+                if (git_commit_tree(&tree, commit)) {
+                    pr_error("Failed to get tree pointed by commit\n");
+                    return -1;
+                }
+                struct wanted_commit const *const restrict old_wanted_commit = 
+                    private_payload->wanted_commit;
+                private_payload->wanted_commit = wanted_commit;
+                if (git_tree_walk(
+                    tree, GIT_TREEWALK_PRE, treewalk_callback, payload)) {
+                    pr_error("Failed to walk tree recursively\n");
+                    git_commit_free(commit);
+                    return -1;
+                }
+                git_commit_free(commit);
+                private_payload->wanted_commit = old_wanted_commit;
+                private_payload->submodule_path[
+                    private_payload->submodule_path_len = 
+                        submodule_path_len] = '\0';
+                submodule_parsed = true;
+                break;
+            }
+        }
+        if (!submodule_parsed) {
+            pr_error("Failed to parse submodule\n");
+            return -1;
+        }
+        break;
+    }
+    default:
+        pr_error("Unexpected tree entry type %d (%s)\n", 
+            type, git_object_type2string(type));
+        return -1;
+    }
     return 0;
 }
 
@@ -2819,7 +2923,7 @@ int export_all_repos(
                     ->commit_resolved) {
                     pr_error("Reference '%s' is not resolved into commit\n",
                             wanted_object->name);
-                    goto error;
+                    return -1;
                 }
                 __attribute__((fallthrough));
             case WANTED_TYPE_HEAD:
@@ -2827,6 +2931,7 @@ int export_all_repos(
                     ->commit_resolved) {
                     pr_warn("Reference '%s' is not resolved into commit\n",
                             wanted_object->name);
+                    break;
                 }
                 __attribute__((fallthrough));
             case WANTED_TYPE_COMMIT: {
@@ -2838,32 +2943,52 @@ int export_all_repos(
                 if (git_commit_lookup(
                         &commit, repo->repository, &wanted_commit->id)) {
                     pr_error("Failed to lookup commit\n");
-                    goto error;
+                    return -1;
                 }
                 git_tree *tree;
                 if (git_commit_tree(&tree, commit)) {
                     pr_error("Failed to get the tree pointed by commit\n");
-                    goto error;
+                    git_commit_free(commit);
+                    return -1;
                 }
-                git_tree_walk(tree, GIT_TREEWALK_PRE, treewalk_callback, NULL);
-                char path[PATH_MAX];
-                if (wanted_object->archive) {
-                    snprintf(path, PATH_MAX, "%s/%s.tar.gz", 
-                        config->dir_archives,
-                        wanted_commit->id_hex_string);
-                    pr_info(
-                        "Exporting wanted object '%s' of repo '%s' "
-                        "to %s\n",
-                        wanted_object->name, repo->url, path);
+                struct treewalk_payload treewalk_payload = {
+                    .config = config,
+                    .wanted_commit = wanted_commit,
+                    .archive = wanted_object->archive,
+                    .checkout = wanted_object->checkout,
+                    .submodule_path = "",
+                    .submodule_path_len = 0,
+                };
+                pr_info("Start tree walking of repo '%s' commit '%s'\n",
+                    repo->url, wanted_commit->id_hex_string);
+                if (git_tree_walk(
+                    tree, GIT_TREEWALK_PRE, treewalk_callback, 
+                    (void *)&treewalk_payload)) {
+                    pr_error("Failed to walk through tree\n");
+                    git_commit_free(commit);
+                    return -1;
                 }
-                if (wanted_object->checkout) {
-                    snprintf(path, PATH_MAX, "%s/%s", config->dir_checkouts,
-                        wanted_commit->id_hex_string);
-                    pr_info(
-                        "Exporting wanted object '%s' of repo '%s' "
-                        "to %s\n",
-                        wanted_object->name, repo->url, path);
-                }
+                git_commit_free(commit);
+                pr_info("Ended tree walking of repo '%s' commit '%s'\n",
+                    repo->url, wanted_commit->id_hex_string);
+                // char path[PATH_MAX];
+                // if (wanted_object->archive) {
+                //     snprintf(path, PATH_MAX, "%s/%s.tar.gz", 
+                //         config->dir_archives,
+                //         wanted_commit->id_hex_string);
+                //     pr_info(
+                //         "Exporting wanted object '%s' of repo '%s' "
+                //         "to %s\n",
+                //         wanted_object->name, repo->url, path);
+                // }
+                // if (wanted_object->checkout) {
+                //     snprintf(path, PATH_MAX, "%s/%s", config->dir_checkouts,
+                //         wanted_commit->id_hex_string);
+                //     pr_info(
+                //         "Exporting wanted object '%s' of repo '%s' "
+                //         "to %s\n",
+                //         wanted_object->name, repo->url, path);
+                // }
                 break;
             }
             default:
@@ -2872,8 +2997,6 @@ int export_all_repos(
         }
     }
     return 0;
-error:
-    return -1;
 }
 
 int main(int const argc, char *argv[]) {
