@@ -1735,7 +1735,7 @@ int update_repo(
         r = -1;
         goto free_strarray;
     }
-    pr_info("Beginning fetching for '%s'\n", repo->url);
+    pr_info("Beginning fetching from '%s'\n", repo->url);
     config->fetch_options.proxy_opts.type = GIT_PROXY_NONE;
     for (unsigned short try = 0; try <= config->proxy_after + 3; ++try) {
         if (try == config->proxy_after) {
@@ -1769,7 +1769,7 @@ int update_repo(
         for (size_t i = 0; i < heads_count; ++i) {
             git_remote_head const *const head = heads[i];
             if (!strcmp(head->name, "HEAD")) {
-                pr_info("Remote HEAD points to %s\n", head->symref_target);
+                pr_info("Remote HEAD points to '%s' now\n", head->symref_target);
                 if ((r = git_repository_set_head(
                         repo->repository, head->symref_target))) {
                     pr_error("Failed to update repo '%s' HEAD to '%s'\n",
@@ -1784,7 +1784,7 @@ int update_repo(
         }
     }
 
-    pr_info("Ending fetching for '%s'\n", repo->url);
+    pr_info("Ending fetching from '%s'\n", repo->url);
     repo->updated = true;
     r = 0;
 free_strarray:
