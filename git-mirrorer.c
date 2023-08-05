@@ -2879,6 +2879,21 @@ int treewalk_callback(
         }
         switch (type) {
         case GIT_OBJECT_BLOB: {
+            int mode = 0;
+            switch (git_tree_entry_filemode(entry)) {
+            case GIT_FILEMODE_BLOB:
+                mode = 0644;
+                break;
+            case GIT_FILEMODE_BLOB_EXECUTABLE:
+                mode = 0755;
+                break;
+            case GIT_FILEMODE_LINK:
+                mode = -1;
+                break;
+            default:
+                pr_error("Impossible tree entry filemode\n");
+                return -1;
+            }
             git_object *object;
             int r = git_tree_entry_to_object(
                 &object, private_payload->repo->repository, entry);
@@ -2888,49 +2903,57 @@ int treewalk_callback(
                     r);
                 return -1;
             }
-            int mode =
-                git_tree_entry_filemode(entry) == GIT_FILEMODE_BLOB_EXECUTABLE ?
-                0755 : 0644;
-            int blob_fd = open(path_checkout, O_WRONLY | O_CREAT, mode);
-            if (blob_fd < 0) {
-                pr_error("Failed to create file '%s' with mode 0o%o\n",
-                    path_checkout, mode);
-                git_object_free(object);
-                return -1;
-            }
             git_blob *blob = (git_blob *)object;
-            git_object_size_t size_blob = git_blob_rawsize(blob);
-            if (size_blob) {
-                void const *ro_buffer = git_blob_rawcontent(blob);
-                git_object_size_t size_written = 0;
-                while (size_written < size_blob) {
-                    ssize_t size_written_this =
-                        write(blob_fd,
-                            ro_buffer + size_written, 
-                            size_blob - size_written);
-                    if (size_written_this < 0) {
-                        switch (errno) {
-                        case EAGAIN:
+            if (mode > 0) {
+                int blob_fd = open(path_checkout, O_WRONLY | O_CREAT, mode);
+                if (blob_fd < 0) {
+                    pr_error("Failed to create file '%s' with mode 0o%o\n",
+                        path_checkout, mode);
+                    git_object_free(object);
+                    return -1;
+                }
+                git_object_size_t size_blob = git_blob_rawsize(blob);
+                if (size_blob) {
+                    void const *ro_buffer = git_blob_rawcontent(blob);
+                    git_object_size_t size_written = 0;
+                    while (size_written < size_blob) {
+                        ssize_t size_written_this =
+                            write(blob_fd,
+                                ro_buffer + size_written, 
+                                size_blob - size_written);
+                        if (size_written_this < 0) {
+                            switch (errno) {
+                            case EAGAIN:
 #if (EAGAIN != EWOULDBLOCK)
-                        case EWOULDBLOCK:
+                            case EWOULDBLOCK:
 #endif
-                        case EINTR:
-                            break;
-                        default:
-                            pr_error_with_errno(
-                                "Failed to write %lu bytes to file '%s'",
-                                size_blob - size_written,
-                                path_checkout);
-                            close(blob_fd);
-                            git_object_free(object);
-                            return -1;
+                            case EINTR:
+                                break;
+                            default:
+                                pr_error_with_errno(
+                                    "Failed to write %lu bytes to file '%s'",
+                                    size_blob - size_written,
+                                    path_checkout);
+                                close(blob_fd);
+                                git_object_free(object);
+                                return -1;
+                            }
+                        } else {
+                            size_written += size_written_this;
                         }
-                    } else {
-                        size_written += size_written_this;
                     }
                 }
+                close(blob_fd);
+            } else {
+                void const *ro_buffer = git_blob_rawcontent(blob);
+                if (symlink(ro_buffer, path_checkout)) {
+                    pr_error_with_errno(
+                        "Failed to create symlink at '%s' pointing to '%s'\n",
+                        path_checkout, (char const *)ro_buffer);
+                    git_object_free(object);
+                    return -1;
+                }
             }
-            close(blob_fd);
             git_object_free(object);
             break;
         }
