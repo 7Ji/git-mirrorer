@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 
 #include <getopt.h>
+#include <dirent.h>
 
 #include <xxh3.h>
 #include <git2.h>
@@ -2796,6 +2797,7 @@ struct treewalk_payload {
     unsigned short submodule_path_len;
     bool const archive;
     bool const checkout;
+    char *dir_checkout;
 };
 
 int treewalk_callback(
@@ -2808,18 +2810,44 @@ int treewalk_callback(
     git_object_t const type = git_tree_entry_type(entry);
     char const *const name = git_tree_entry_name(entry);
     git_oid const *const oid = git_tree_entry_id(entry);
+    char path[PATH_MAX];
+    if (snprintf(path, PATH_MAX, "%s%s%s", private_payload->submodule_path,
+        root, name) < 0) {
+        pr_error("Failed to format entry name\n");
+        return -1;
+    }
+    if (private_payload->checkout) {
+        char path_checkout[PATH_MAX];
+        if (snprintf(path_checkout, PATH_MAX, "%s/%s", 
+            private_payload->dir_checkout, path) < 0) {
+            pr_error("Failed to format checkout path\n");
+            return -1;
+        }
+        switch (type) {
+        case GIT_OBJECT_BLOB:
+            break;
+        case GIT_OBJECT_TREE:
+        case GIT_OBJECT_COMMIT:
+            if (mkdir(path_checkout, 0755)) {
+                pr_error_with_errno("Failed to create folder '%s'", 
+                    path_checkout);
+                return -1;
+            }
+            break;
+        default:
+            pr_error("Impossible entry type\n");
+            return -1;
+        }
+    }
     switch (type) {
     case GIT_OBJECT_BLOB:
-        pr_info("[BLOB] %s%s%s\n", private_payload->submodule_path,
-            root, name);
+        pr_info("[BLOB] %s\n", path);
         break;
     case GIT_OBJECT_TREE:
-        pr_info("[TREE] %s%s%s\n", private_payload->submodule_path,
-            root, name);
+        pr_info("[TREE] %s\n", path);
         break;
     case GIT_OBJECT_COMMIT: {
-        pr_info("[SUBM] %s%s%s\n", private_payload->submodule_path,
-            root, name);
+        pr_info("[SUBM] %s\n", path);
         bool submodule_parsed = false;
         for (unsigned long i = 0; 
             i < private_payload->wanted_commit->submodules_count; 
@@ -2903,6 +2931,260 @@ int treewalk_callback(
     return 0;
 }
 
+int remove_dir_recursively(
+    DIR * const restrict dir_p
+) {
+    struct dirent *entry;
+    errno = 0;
+    int dir_fd = dirfd(dir_p);
+    while ((entry = readdir(dir_p)) != NULL) {
+        switch (entry->d_type) {
+        case DT_REG:
+            if (unlinkat(dir_fd, entry->d_name, 0)) {
+                pr_error_with_errno(
+                    "Failed to delete '%s' recursively", entry->d_name);
+                return -1;
+            }
+            break;
+        case DT_DIR: {
+            int dir_fd_r = openat(dir_fd, entry->d_name, O_RDONLY);
+            if (dir_fd_r < 0) {
+                pr_error_with_errno(
+                    "Failed to open dir entry '%s'", entry->d_name);
+                return -1;
+            }
+            DIR *dir_p_r = fdopendir(dir_fd_r);
+            if (dir_p_r == NULL) {
+                pr_error_with_errno(
+                    "Failed to open '%s' as subdir", entry->d_name);
+                close(dir_fd_r);
+                return -1;
+            }
+            if (remove_dir_recursively(dir_p_r)) {
+                pr_error("Failed to remove dir '%s' recursively\n",
+                    entry->d_name);
+                closedir(dir_p_r);
+                return -1;
+            }
+            closedir(dir_p_r);
+            break;
+        }
+        default:
+            pr_error("Unsupported file type %d\n", entry->d_type);
+            return -1;
+        }
+
+    }
+    if (errno) {
+        pr_error_with_errno("Failed to read dir\n");
+        return -1;
+    }
+    return 0;
+}
+
+int ensure_path_non_exist( // essentially rm -rf
+    char const *const restrict path
+) {
+    struct stat stat_buffer;
+    if (stat(path, &stat_buffer)) {
+        switch(errno) {
+        case ENOENT:
+            return 0;
+        default:
+            pr_error_with_errno("Failed to get stat of path '%s'", path);
+            return -1;
+        }
+    }
+    mode_t mode = stat_buffer.st_mode & S_IFMT;
+    switch (mode) {
+    case S_IFDIR: {
+        DIR *const restrict dir_p = opendir(path);
+        if (dir_p == NULL) {
+            pr_error_with_errno("Failed to opendir '%s'", path);
+            return -1;
+        }
+        if (remove_dir_recursively(dir_p)) {
+            pr_error("Failed to remove '%s' recursively\n", path);
+            closedir(dir_p);
+            return -1;
+        }
+        closedir(dir_p);
+        break;
+    }
+    case S_IFREG:
+        if (unlink(path)) {
+            pr_error_with_errno("Failed to remove regular file '%s'", path);
+            return -1;
+        }
+        break;
+    default:
+        pr_error("Cannot remove existing '%s' with type %d\n", path, mode);
+        return -1;
+    }
+    return 0;
+}
+
+int mkdir_allow_existing(
+    char *const restrict path
+) {
+    if (mkdir(path, 0755)) {
+        if (errno == EEXIST) {
+            struct stat stat_buffer;
+            if (stat(path, &stat_buffer)) {
+                pr_error_with_errno("Failed to stat '%s'", path);
+                return -1;
+            }
+            if ((stat_buffer.st_mode & S_IFMT) == S_IFDIR) {
+                return 0;
+            } else {
+                pr_error("Exisitng '%s' is not a folder\n", path);
+                return -1;
+            }
+        } else {
+            pr_error_with_errno("Failed to mkdir '%s'", path);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int mkdir_recursively(
+    char *const restrict path
+) {
+    for (char *c = path; ; ++c) {
+        switch (*c) {
+        case '\0':
+            return mkdir_allow_existing(path);
+        case '/':
+            *c = '\0';
+            if (mkdir_allow_existing(path)) {
+                pr_error("Failed to mkdir recursively '%s'\n", path);
+                return -1;
+            }   
+            *c = '/';
+            break;
+        default:
+            break;
+        }
+    }
+
+}
+
+int export_commit(
+    struct config const *const restrict config,
+    struct repo const *const restrict repo,
+    struct wanted_commit const *const restrict wanted_commit
+) {
+    bool archive = wanted_commit->base.archive;
+    bool checkout = wanted_commit->base.checkout;
+    char dir_checkout[PATH_MAX];
+    char dir_checkout_work[PATH_MAX];
+    int r;
+    struct stat stat_buffer;
+    if (checkout) {
+        r = snprintf(
+            dir_checkout, PATH_MAX, "%s/%s", 
+            config->dir_checkouts, wanted_commit->id_hex_string);
+        if (r < 0) {
+            pr_error_with_errno("Failed to format checkout dir");
+            return -1;
+        } else if (r >= PATH_MAX - 6) {
+            pr_error("Dir checkout path '%s' too long\n", 
+            dir_checkout);
+            return -1;
+        }
+        pr_info(
+            "Will checkout repo '%s' commit '%s' to '%s'\n",
+            repo->url, wanted_commit->id_hex_string, 
+            dir_checkout);
+        if (stat(dir_checkout, &stat_buffer)) {
+            switch (errno) {
+            case ENOENT:
+                break;
+            default:
+                pr_error_with_errno(
+                    "Failed to check stat of existing '%s'", dir_checkout);
+                return -1;
+            }
+        } else {
+            if ((stat_buffer.st_mode & S_IFMT) == S_IFDIR) {
+                pr_warn("Already checked out to '%s', no neeed to "
+                    "checkout for this run\n", dir_checkout);
+                checkout = false;
+            } else {
+                if (unlink(dir_checkout)) {
+                    pr_error_with_errno(
+                        "Failed to remove existing non-folder '%s'",
+                        dir_checkout);
+                    return -1;
+                }
+            }
+        }
+    };
+    if (checkout) {
+        r = snprintf(dir_checkout_work, PATH_MAX, "%s.work", dir_checkout);
+        if (r < 0) {
+            pr_error_with_errno("Failed to format work dir");
+            return -1;
+        }
+        if (ensure_path_non_exist(dir_checkout_work)) {
+            pr_error_with_errno("Failed to ensure '%s' non-exist", 
+                dir_checkout_work);
+            return -1;
+        }
+        if (mkdir_recursively(dir_checkout_work)) {
+            pr_error("Failed to mkdir work folder '%s.work'\n",
+                dir_checkout);
+            return -1;
+        }
+        pr_info("DIR checkout: %s\nDIR checkout work: %s\n",
+            dir_checkout, dir_checkout_work);
+    }
+    if (!archive && !checkout)
+        return 0;
+    struct treewalk_payload treewalk_payload = {
+        .config = config,
+        .wanted_commit = wanted_commit,
+        .archive = archive,
+        .checkout = checkout,
+        .submodule_path = "",
+        .submodule_path_len = 0,
+        .dir_checkout = dir_checkout_work,
+    };
+    git_commit *commit;
+    if (git_commit_lookup(
+            &commit, repo->repository, &wanted_commit->id)) {
+        pr_error("Failed to lookup commit\n");
+        return -1;
+    }
+    git_tree *tree;
+    if (git_commit_tree(&tree, commit)) {
+        pr_error("Failed to get the tree pointed by commit\n");
+        git_commit_free(commit);
+        return -1;
+    }
+    pr_info("Started exporting repo '%s' commit '%s'\n",
+        repo->url, wanted_commit->id_hex_string);
+    if (git_tree_walk(
+        tree, GIT_TREEWALK_PRE, treewalk_callback, 
+        (void *)&treewalk_payload)) {
+        pr_error("Failed to walk through tree\n");
+        git_commit_free(commit);
+        return -1;
+    }
+    git_commit_free(commit);
+    pr_info("Ended exporting repo '%s' commit '%s'\n",
+        repo->url, wanted_commit->id_hex_string);
+    if (checkout) {
+        if (rename(dir_checkout_work, dir_checkout)) {
+            pr_error("Failed to move '%s' to '%s'\n", dir_checkout_work,
+                dir_checkout);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 int export_all_repos(
     struct config const *const restrict config
 ) {
@@ -2937,58 +3219,11 @@ int export_all_repos(
             case WANTED_TYPE_COMMIT: {
                 struct wanted_commit const * const wanted_commit = 
                     (struct wanted_commit const *const)wanted_object;
-                if (!wanted_object->archive && !wanted_object->checkout)
-                    break;
-                git_commit *commit;
-                if (git_commit_lookup(
-                        &commit, repo->repository, &wanted_commit->id)) {
-                    pr_error("Failed to lookup commit\n");
+                if (export_commit(config, repo, wanted_commit)) {
+                    pr_error("Failed to export commit '%s' of repo '%s'\n",
+                        wanted_commit->id_hex_string, repo->url);
                     return -1;
                 }
-                git_tree *tree;
-                if (git_commit_tree(&tree, commit)) {
-                    pr_error("Failed to get the tree pointed by commit\n");
-                    git_commit_free(commit);
-                    return -1;
-                }
-                struct treewalk_payload treewalk_payload = {
-                    .config = config,
-                    .wanted_commit = wanted_commit,
-                    .archive = wanted_object->archive,
-                    .checkout = wanted_object->checkout,
-                    .submodule_path = "",
-                    .submodule_path_len = 0,
-                };
-                pr_info("Start tree walking of repo '%s' commit '%s'\n",
-                    repo->url, wanted_commit->id_hex_string);
-                if (git_tree_walk(
-                    tree, GIT_TREEWALK_PRE, treewalk_callback, 
-                    (void *)&treewalk_payload)) {
-                    pr_error("Failed to walk through tree\n");
-                    git_commit_free(commit);
-                    return -1;
-                }
-                git_commit_free(commit);
-                pr_info("Ended tree walking of repo '%s' commit '%s'\n",
-                    repo->url, wanted_commit->id_hex_string);
-                // char path[PATH_MAX];
-                // if (wanted_object->archive) {
-                //     snprintf(path, PATH_MAX, "%s/%s.tar.gz", 
-                //         config->dir_archives,
-                //         wanted_commit->id_hex_string);
-                //     pr_info(
-                //         "Exporting wanted object '%s' of repo '%s' "
-                //         "to %s\n",
-                //         wanted_object->name, repo->url, path);
-                // }
-                // if (wanted_object->checkout) {
-                //     snprintf(path, PATH_MAX, "%s/%s", config->dir_checkouts,
-                //         wanted_commit->id_hex_string);
-                //     pr_info(
-                //         "Exporting wanted object '%s' of repo '%s' "
-                //         "to %s\n",
-                //         wanted_object->name, repo->url, path);
-                // }
                 break;
             }
             default:
