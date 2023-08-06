@@ -52,6 +52,57 @@
 #define VERSION "unknown"
 #endif
 
+struct tar_posix_header { /* byte offset */
+    char name[100];               /*   0 */
+    char mode[8];                 /* 100 octal mode string */
+    char uid[8];                  /* 108 octal uid string */
+    char gid[8];                  /* 116 octal gid string */
+    char size[12];                /* 124 octal size */
+    char mtime[12];               /* 136 octal mtime string */
+    char chksum[8];               /* 148 octal checksum string */
+    char typeflag;                /* 156 either TAR_{REG,LINK,DIR}TYPE */
+    char linkname[100];           /* 157 symlink target */
+    char magic[6];                /* 257 ustar\0 */
+    char version[2];              /* 263 \0 0*/
+    char uname[32];               /* 265 uname + padding \0 */
+    char gname[32];               /* 297 gname + padding \0 */
+    char devmajor[8];             /* 329 all 0 */
+    char devminor[8];             /* 337 all 0 */
+    char prefix[155];             /* 345 */
+                                  /* 500 */
+};
+
+#define TAR_MAGIC   "ustar"        /* ustar and a null */
+#define TAR_MAGIC_LEN  6
+#define TAR_VERSION "00"           /* 00 and no null */
+#define TAR_VERSLEN 2
+
+/* Values used in typeflag field.  */
+#define TAR_REGTYPE  '0'            /* regular file */
+#define TAR_LNKTYPE  '1'            /* link */
+#define TAR_DIRTYPE  '5'            /* directory */
+
+struct tar_posix_header const TAR_POSIX_HEADER_FILE_REG_INIT = {
+    .mode = "0000644",
+    .uid = "0000000",
+    .gid = "0000000",
+
+};
+
+struct tar_posix_header const TAR_POSIX_HEADER_FILE_EXE_INIT = {
+    .mode = "0000755",
+    .uid = "0000000",
+    .gid = "0000000",
+
+};
+
+struct tar_posix_header const TAR_POSIX_HEADER_FOLDER_INIT = {
+    .mode = "0000755",
+    .uid = "0000000",
+    .gid = "0000000",
+
+};
+
 enum wanted_type {
     WANTED_TYPE_UNKNOWN,
     WANTED_TYPE_ALL_BRANCHES,
@@ -384,6 +435,32 @@ int mkdir_recursively(
             break;
         }
     }
+}
+
+static inline unsigned int 
+    tar_header_checksum(struct tar_posix_header *header) {
+    unsigned int checksum = 0;
+    for (unsigned i = 0; i < sizeof *header; ++i) {
+        switch (i) {
+        case 148 ... 155:
+            checksum += ' ';
+            break;
+        default:
+            checksum += ((unsigned char *)header)[i];
+            break;
+        }
+    }
+    return checksum;
+}
+
+int tar_header_checksum_self(struct tar_posix_header *header) {
+    if (snprintf(header->chksum, sizeof header->chksum - 1, "%06o", 
+        tar_header_checksum(header)) < 0) {
+        pr_error_with_errno("Failed to format header checksum");
+        return -1;
+    }
+    header->chksum[sizeof header->chksum - 1] = ' ';
+    return 0;
 }
 
 // Read from fd until EOF, 
@@ -2989,8 +3066,9 @@ int treewalk_callback(
             git_object_type2string(type));
         return -1;
     }
+    char path_checkout[PATH_MAX];
+    struct tar_posix_header tar_posix_header;
     if (private_payload->checkout) {
-        char path_checkout[PATH_MAX];
         if (snprintf(path_checkout, PATH_MAX, "%s/%s", 
             private_payload->dir_checkout, path) < 0) {
             pr_error("Failed to format checkout path\n");
