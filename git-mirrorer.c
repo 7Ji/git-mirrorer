@@ -499,7 +499,9 @@ int config_add_repo_and_init_with_url(
     XXH64_hash_t url_hash = XXH3_64bits(url, len_url);
     XXH64_hash_t url_no_scheme_sanitized_hash = XXH3_64bits(
         url_no_scheme_sanitized, url_no_scheme_sanitized_len);
+#ifdef PRE_CREATE_SANITIZED_DIRS
     bool sanitized_duplicated = false;
+#endif
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         struct repo const *const restrict repo_cmp = config->repos + i;
         if (repo_cmp->url_hash == url_hash) {
@@ -514,15 +516,19 @@ int config_add_repo_and_init_with_url(
             "url '%s', this is not recommended and you should check upstream "
             "if they are acutally the same repo\n",
                 url, repo_cmp->url, url_no_scheme_sanitized);
+#ifdef PRE_CREATE_SANITIZED_DIRS
             sanitized_duplicated = true;
+#endif
         }
     }
+#ifdef PRE_CREATE_SANITIZED_DIRS
     if (!sanitized_duplicated) {
         char dir_sanitized_link[PATH_MAX];
         char const *dirs[] = {
             config->dir_archives, config->dir_checkouts
         };
         for (unsigned short i = 0; i < sizeof dirs / sizeof *dirs; ++i) {
+            if (dirs[i] == NULL) continue;
             if (snprintf(dir_sanitized_link, PATH_MAX, "%s/links/%s", 
                 dirs[i], url_no_scheme_sanitized) < 0) {
                 pr_error_with_errno(
@@ -536,6 +542,7 @@ int config_add_repo_and_init_with_url(
             }
         }
     }
+#endif
     if (++config->repos_count > config->repos_allocated) {
         while (config->repos_count > (
             config->repos_allocated *= ALLOC_MULTIPLY)) {
