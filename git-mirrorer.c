@@ -340,6 +340,52 @@ static inline void version() {
         stderr);
 }
 
+int mkdir_allow_existing(
+    char *const restrict path
+) {
+    if (mkdir(path, 0755)) {
+        if (errno == EEXIST) {
+            struct stat stat_buffer;
+            if (stat(path, &stat_buffer)) {
+                pr_error_with_errno("Failed to stat '%s'", path);
+                return -1;
+            }
+            if ((stat_buffer.st_mode & S_IFMT) == S_IFDIR) {
+                return 0;
+            } else {
+                pr_error("Exisitng '%s' is not a folder\n", path);
+                return -1;
+            }
+        } else {
+            pr_error_with_errno("Failed to mkdir '%s'", path);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int mkdir_recursively(
+    char *const restrict path
+) {
+    for (char *c = path; ; ++c) {
+        switch (*c) {
+        case '\0':
+            return mkdir_allow_existing(path);
+        case '/':
+            *c = '\0';
+            if (mkdir_allow_existing(path)) {
+                *c = '/';
+                pr_error("Failed to mkdir recursively '%s'\n", path);
+                return -1;
+            }   
+            *c = '/';
+            break;
+        default:
+            break;
+        }
+    }
+}
+
 // Read from fd until EOF, 
 // return the size being read, or -1 if failed, 
 // the pointer should be free'd by caller
@@ -453,6 +499,7 @@ int config_add_repo_and_init_with_url(
     XXH64_hash_t url_hash = XXH3_64bits(url, len_url);
     XXH64_hash_t url_no_scheme_sanitized_hash = XXH3_64bits(
         url_no_scheme_sanitized, url_no_scheme_sanitized_len);
+    bool sanitized_duplicated = false;
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         struct repo const *const restrict repo_cmp = config->repos + i;
         if (repo_cmp->url_hash == url_hash) {
@@ -467,6 +514,26 @@ int config_add_repo_and_init_with_url(
             "url '%s', this is not recommended and you should check upstream "
             "if they are acutally the same repo\n",
                 url, repo_cmp->url, url_no_scheme_sanitized);
+            sanitized_duplicated = true;
+        }
+    }
+    if (!sanitized_duplicated) {
+        char dir_sanitized_link[PATH_MAX];
+        char const *dirs[] = {
+            config->dir_archives, config->dir_checkouts
+        };
+        for (unsigned short i = 0; i < sizeof dirs / sizeof *dirs; ++i) {
+            if (snprintf(dir_sanitized_link, PATH_MAX, "%s/links/%s", 
+                dirs[i], url_no_scheme_sanitized) < 0) {
+                pr_error_with_errno(
+                    "Failed to format sanitized link dir for '%s'", dirs[i]);
+                return -1;
+            }
+            if (mkdir_recursively(dir_sanitized_link)) {
+                pr_error("Failed to mkdir '%s' recursively\n", 
+                        dir_sanitized_link);
+                return -1;
+            }
         }
     }
     if (++config->repos_count > config->repos_allocated) {
@@ -1536,6 +1603,7 @@ int config_finish(
         memcpy(config->dir_repos, DIR_REPOS, sizeof(DIR_REPOS));
         config->len_dir_repos = sizeof(DIR_REPOS) - 1;
     }
+    pr_info("Repos will be stored in '%s'\n", config->dir_repos);
     if (config->dir_archives == NULL) {
         if ((config->dir_archives = malloc(sizeof(DIR_ARCHIVES))) == NULL) {
             return -1;
@@ -1543,6 +1611,7 @@ int config_finish(
         memcpy(config->dir_archives, DIR_ARCHIVES, sizeof(DIR_ARCHIVES));
         config->len_dir_archives = sizeof(DIR_ARCHIVES) - 1;
     }
+    pr_info("Archives will be stored in '%s'\n", config->dir_archives);
     if (config->dir_checkouts == NULL) {
         if ((config->dir_checkouts = malloc(sizeof(DIR_CHECKOUTS))) == NULL) {
             return -1;
@@ -1550,7 +1619,31 @@ int config_finish(
         memcpy(config->dir_checkouts, DIR_CHECKOUTS, sizeof(DIR_CHECKOUTS));
         config->len_dir_checkouts = sizeof(DIR_CHECKOUTS) - 1;
     }
+    pr_info("Checkouts will be stored in '%s'\n", config->dir_checkouts);
+    char path[PATH_MAX];
+    char const *dirs[] = {
+        config->dir_repos,
+        config->dir_checkouts,
+        config->dir_archives,
+    };
+    for (unsigned short i = 0; i < sizeof dirs / sizeof *dirs; ++i) {
+        if (snprintf(path, PATH_MAX, "%s/links", dirs[i]) < 0) {
+            pr_error_with_errno(
+                "Failed to format links dir for '%s'", dirs[i]);
+            return -1;
+        }
+        if (mkdir_recursively(path)) {
+            pr_error("Failed to mkdir '%s' recursively\n", path);
+            return -1;
+        }
+    }
     if (config->proxy_url && config->proxy_url[0] != '\0') {
+        if (config->proxy_after) {
+            pr_info("Will use proxy '%s' after %hu failed fetches\n", 
+                config->proxy_url, config->proxy_after);
+        } else {
+            pr_info("Will use proxy '%s'\n", config->proxy_url);
+        }
         config->fetch_options.proxy_opts.url = config->proxy_url;
     } else if (config->proxy_after) {
         pr_warn(
@@ -2855,6 +2948,7 @@ struct treewalk_payload {
     bool const archive;
     bool const checkout;
     char const *const restrict dir_checkout;
+    int const fd_archive;
 };
 
 int treewalk_callback(
@@ -3189,52 +3283,6 @@ int ensure_path_non_exist( // essentially rm -rf
     return 0;
 }
 
-int mkdir_allow_existing(
-    char *const restrict path
-) {
-    if (mkdir(path, 0755)) {
-        if (errno == EEXIST) {
-            struct stat stat_buffer;
-            if (stat(path, &stat_buffer)) {
-                pr_error_with_errno("Failed to stat '%s'", path);
-                return -1;
-            }
-            if ((stat_buffer.st_mode & S_IFMT) == S_IFDIR) {
-                return 0;
-            } else {
-                pr_error("Exisitng '%s' is not a folder\n", path);
-                return -1;
-            }
-        } else {
-            pr_error_with_errno("Failed to mkdir '%s'", path);
-            return -1;
-        }
-    }
-    return 0;
-}
-
-int mkdir_recursively(
-    char *const restrict path
-) {
-    for (char *c = path; ; ++c) {
-        switch (*c) {
-        case '\0':
-            return mkdir_allow_existing(path);
-        case '/':
-            *c = '\0';
-            if (mkdir_allow_existing(path)) {
-                pr_error("Failed to mkdir recursively '%s'\n", path);
-                return -1;
-            }   
-            *c = '/';
-            break;
-        default:
-            break;
-        }
-    }
-
-}
-
 int export_commit(
     struct config const *const restrict config,
     struct repo const *const restrict repo,
@@ -3244,6 +3292,9 @@ int export_commit(
     bool checkout = wanted_commit->base.checkout;
     char dir_checkout[PATH_MAX];
     char dir_checkout_work[PATH_MAX];
+    char file_archive[PATH_MAX];
+    char file_archive_work[PATH_MAX];
+    int fd_archive = -1;
     int r;
     struct stat stat_buffer;
     if (checkout) {
@@ -3277,7 +3328,7 @@ int export_commit(
                     "checkout for this run\n", dir_checkout);
                 checkout = false;
             } else {
-                if (unlink(dir_checkout)) {
+                if (ensure_path_non_exist(dir_checkout)) {
                     pr_error_with_errno(
                         "Failed to remove existing non-folder '%s'",
                         dir_checkout);
@@ -3286,6 +3337,47 @@ int export_commit(
             }
         }
     };
+    if (archive) {
+        r = snprintf(
+            file_archive, PATH_MAX, "%s/%s.tar", 
+            config->dir_archives, wanted_commit->id_hex_string);
+        if (r < 0) {
+            pr_error_with_errno("Failed to format archive file");
+            return -1;
+        } else if (r >= PATH_MAX - 6) {
+            pr_error("Archive file path '%s' too long\n", 
+            file_archive);
+            return -1;
+        }
+        pr_info(
+            "Will archive repo '%s' commit '%s' into '%s'\n",
+            repo->url, wanted_commit->id_hex_string, 
+            file_archive);
+        if (stat(file_archive, &stat_buffer)) {
+            switch (errno) {
+            case ENOENT:
+                break;
+            default:
+                pr_error_with_errno(
+                    "Failed to check stat of existing '%s'", file_archive);
+                return -1;
+            }
+        } else {
+            if ((stat_buffer.st_mode & S_IFMT) == S_IFREG) {
+                pr_warn("Already archived '%s', no neeed to "
+                    "archive for this run\n", file_archive);
+                archive = false;
+            } else {
+                if (ensure_path_non_exist(file_archive)) {
+                    pr_error_with_errno(
+                        "Failed to remove existing '%s'",
+                        file_archive);
+                    return -1;
+                }
+            }
+        }
+
+    }
     if (checkout) {
         r = snprintf(dir_checkout_work, PATH_MAX, "%s.work", dir_checkout);
         if (r < 0) {
@@ -3303,8 +3395,29 @@ int export_commit(
             return -1;
         }
     }
-    if (!archive && !checkout)
+    if (archive) {
+        r = snprintf(file_archive_work, PATH_MAX, "%s.work", file_archive);
+        if (r < 0) {
+            pr_error_with_errno("Failed to format archive work file");
+            return -1;
+        }
+        if (ensure_path_non_exist(file_archive_work)) {
+            pr_error_with_errno("Failed to ensure '%s' non-exist", 
+                file_archive_work);
+            return -1;
+        }
+        fd_archive = open(file_archive_work, O_WRONLY | O_CREAT, 0644);
+        if (fd_archive < 0) {
+            pr_error_with_errno(
+                "Failed to create file '%s.work' and open it as write-only",
+                file_archive_work);
+            return -1;
+        }
+    }
+    if (!archive && !checkout) {
+        if (fd_archive >= 0) close(fd_archive);
         return 0;
+    }
     char submodule_path[PATH_MAX] = "";
     struct treewalk_payload treewalk_payload = {
         .config = config,
@@ -3315,17 +3428,20 @@ int export_commit(
         .submodule_path = submodule_path,
         .submodule_path_len = 0,
         .dir_checkout = dir_checkout_work,
+        .fd_archive = fd_archive,
     };
     git_commit *commit;
     if (git_commit_lookup(
             &commit, repo->repository, &wanted_commit->id)) {
         pr_error("Failed to lookup commit\n");
+        if (fd_archive >= 0) close(fd_archive);
         return -1;
     }
     git_tree *tree;
     if (git_commit_tree(&tree, commit)) {
         pr_error("Failed to get the tree pointed by commit\n");
         git_commit_free(commit);
+        if (fd_archive >= 0) close(fd_archive);
         return -1;
     }
     pr_info("Started exporting repo '%s' commit '%s'\n",
@@ -3335,9 +3451,11 @@ int export_commit(
         (void *)&treewalk_payload)) {
         pr_error("Failed to walk through tree\n");
         git_commit_free(commit);
+        if (fd_archive >= 0) close(fd_archive);
         return -1;
     }
     git_commit_free(commit);
+    if (fd_archive >= 0) close(fd_archive);
     pr_info("Ended exporting repo '%s' commit '%s'\n",
         repo->url, wanted_commit->id_hex_string);
     if (checkout) {
@@ -3348,6 +3466,14 @@ int export_commit(
         }
         pr_info("Atomic checkout finish, '%s' <- '%s'\n", 
                 dir_checkout, dir_checkout_work);
+    }
+    if (archive) {
+        if (rename(file_archive_work, file_archive)) {
+            pr_error("Failed to move '%s' to '%s'\n", file_archive_work,
+                file_archive);
+        }
+        pr_info("Atomic archive finish, '%s' <- '%s'\n", 
+                file_archive, file_archive_work);
     }
     return 0;
 }
