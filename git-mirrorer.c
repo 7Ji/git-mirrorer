@@ -54,12 +54,12 @@
 
 struct tar_posix_header { /* byte offset */
     char name[100];               /*   0 */
-    char mode[8];                 /* 100 octal mode string */
-    char uid[8];                  /* 108 octal uid string */
-    char gid[8];                  /* 116 octal gid string */
-    char size[12];                /* 124 octal size */
-    char mtime[12];               /* 136 octal mtime string */
-    char chksum[8];               /* 148 octal checksum string */
+    char mode[8];                 /* 100 octal mode string %07o */
+    char uid[8];                  /* 108 octal uid string %07o */
+    char gid[8];                  /* 116 octal gid string %07o */
+    char size[12];                /* 124 octal size %011o */
+    char mtime[12];               /* 136 octal mtime string %011o */
+    char chksum[8];               /* 148 octal checksum string %06o + space */
     char typeflag;                /* 156 either TAR_{REG,LINK,DIR}TYPE */
     char linkname[100];           /* 157 symlink target */
     char magic[6];                /* 257 ustar\0 */
@@ -72,36 +72,82 @@ struct tar_posix_header { /* byte offset */
                                   /* 500 */
 };
 
-#define TAR_MAGIC   "ustar"        /* ustar and a null */
-#define TAR_MAGIC_LEN  6
-#define TAR_VERSION "00"           /* 00 and no null */
-#define TAR_VERSLEN 2
+#define TAR_POSIX_MAGIC   "ustar"        /* ustar and a null */
+#define TAR_POSIX_VERSION "00"           /* 00 and no null */
+#define TAR_GNU_MAGIC     "ustar "
+#define TAR_GNU_VERSION   " "
+#define TAR_MAGIC TAR_GNU_MAGIC
+#define TAR_VERSION TAR_GNU_VERSION
+// Basically, posix is "ustar\000", gnu is "ustar  \0"
 
 /* Values used in typeflag field.  */
 #define TAR_REGTYPE  '0'            /* regular file */
 #define TAR_LNKTYPE  '1'            /* link */
+#define TAR_SYMTYPE  '2'
 #define TAR_DIRTYPE  '5'            /* directory */
 
-struct tar_posix_header const TAR_POSIX_HEADER_FILE_REG_INIT = {
-    .mode = "0000644",
-    .uid = "0000000",
-    .gid = "0000000",
+#define GNUTAR_LONGLINK 'K'
+#define GNUTAR_LONGNAME 'L'
 
-};
+#define TAR_LONGLINKTYPE GNUTAR_LONGLINK
+#define TAR_LONGNAMETYPE GNUTAR_LONGNAME
 
-struct tar_posix_header const TAR_POSIX_HEADER_FILE_EXE_INIT = {
-    .mode = "0000755",
-    .uid = "0000000",
-    .gid = "0000000",
+#define GNUTAR_LONGLINK_NAME    "././@LongLink"
 
-};
+#define TAR_MODE(X)     "0000" #X
+#define TAR_MODE_644    TAR_MODE(644)
+#define TAR_MODE_755    TAR_MODE(755)
+#define TAR_MODE_777    TAR_MODE(777)
+#define TAR_HEADER_7_BYTE_0 "0000000"
+#define TAR_UID_ROOT    TAR_HEADER_7_BYTE_0
+#define TAR_GID_ROOT    TAR_HEADER_7_BYTE_0
+#define TAR_HEADER_11_BYTE_0 "00000000000"
+#define TAR_SIZE_0      TAR_HEADER_11_BYTE_0
+#define TAR_MTIME_0     TAR_HEADER_11_BYTE_0
+#define TAR_CHECKSUM_BLANK  "      "
+#define TAR_DEVMAJOR    TAR_HEADER_7_BYTE_0
+#define TAR_DEVMINOR    TAR_HEADER_7_BYTE_0
 
-struct tar_posix_header const TAR_POSIX_HEADER_FOLDER_INIT = {
-    .mode = "0000755",
-    .uid = "0000000",
-    .gid = "0000000",
+#define TAR_INIT(NAME, MODE, TYPEFLAG) {\
+    .name = NAME, \
+    .mode = TAR_MODE(MODE), \
+    .uid = TAR_UID_ROOT, \
+    .gid = TAR_GID_ROOT, \
+    .size = TAR_SIZE_0, \
+    .mtime = TAR_MTIME_0, \
+    .chksum = TAR_CHECKSUM_BLANK, \
+    .typeflag = TYPEFLAG, \
+    .linkname = "", \
+    .magic = TAR_MAGIC, \
+    .version =  TAR_VERSION, \
+    .uname = "root", \
+    .gname = "root", \
+    .devmajor = "", \
+    .devminor = "", \
+    .prefix = "" \
+}
 
-};
+#define TAR_POSIX_INIT(MODE, TYPEFLAG) TAR_INIT("", MODE, TYPEFLAG)
+
+struct tar_posix_header const TAR_POSIX_HEADER_FILE_REG_INIT = 
+    TAR_POSIX_INIT(644, TAR_REGTYPE);
+
+struct tar_posix_header const TAR_POSIX_HEADER_FILE_EXE_INIT = 
+    TAR_POSIX_INIT(755, TAR_REGTYPE);
+
+struct tar_posix_header const TAR_POSIX_HEADER_SYMLINK_INIT = 
+    TAR_POSIX_INIT(777, TAR_SYMTYPE);
+
+struct tar_posix_header const TAR_POSIX_HEADER_FOLDER_INIT = 
+    TAR_POSIX_INIT(755, TAR_DIRTYPE);
+
+struct tar_posix_header const TAR_POSIX_HEADER_GNU_LONGLINK_INIT = 
+    TAR_INIT(GNUTAR_LONGLINK_NAME, 644, TAR_LONGLINKTYPE);
+
+struct tar_posix_header const TAR_POSIX_HEADER_GNU_LONGNAME_INIT = 
+    TAR_INIT(GNUTAR_LONGLINK_NAME, 644, TAR_LONGNAMETYPE);
+
+// struct tar_posix_header const TAR_POSIX_HEADER_LONGLINK
 
 enum wanted_type {
     WANTED_TYPE_UNKNOWN,
@@ -3027,6 +3073,7 @@ struct treewalk_payload {
     struct config const *const restrict config;
     struct repo const *const restrict repo;
     struct wanted_commit const *const restrict wanted_commit;
+    git_time_t time;
     char *const restrict submodule_path;
     unsigned short const submodule_path_len;
     bool const archive;
@@ -3503,18 +3550,6 @@ int export_commit(
         if (fd_archive >= 0) close(fd_archive);
         return 0;
     }
-    char submodule_path[PATH_MAX] = "";
-    struct treewalk_payload treewalk_payload = {
-        .config = config,
-        .repo = repo,
-        .wanted_commit = wanted_commit,
-        .archive = archive,
-        .checkout = checkout,
-        .submodule_path = submodule_path,
-        .submodule_path_len = 0,
-        .dir_checkout = dir_checkout_work,
-        .fd_archive = fd_archive,
-    };
     git_commit *commit;
     if (git_commit_lookup(
             &commit, repo->repository, &wanted_commit->id)) {
@@ -3531,6 +3566,20 @@ int export_commit(
     }
     pr_info("Started exporting repo '%s' commit '%s'\n",
         repo->url, wanted_commit->id_hex_string);
+    char submodule_path[PATH_MAX] = "";
+    struct treewalk_payload treewalk_payload = {
+        .config = config,
+        .repo = repo,
+        .wanted_commit = wanted_commit,
+        .time = git_commit_time(commit), // second, 
+        // there's also git_commit_time_offset(commit), one offset for a minute
+        .archive = archive,
+        .checkout = checkout,
+        .submodule_path = submodule_path,
+        .submodule_path_len = 0,
+        .dir_checkout = dir_checkout_work,
+        .fd_archive = fd_archive,
+    };
     if (git_tree_walk(
         tree, GIT_TREEWALK_PRE, treewalk_callback, 
         (void *)&treewalk_payload)) {
