@@ -2873,6 +2873,21 @@ int treewalk_callback(
         pr_error("Failed to format entry name\n");
         return -1;
     }
+    switch (type) {
+    case GIT_OBJECT_BLOB:
+        pr_info("[B] '%s'\n", path);
+        break;
+    case GIT_OBJECT_TREE:
+        pr_info("[T] '%s'\n", path);
+        break;
+    case GIT_OBJECT_COMMIT:
+        pr_info("[S] '%s'\n", path);
+        break;
+    default:
+        pr_error("Impossible tree entry type %d (%s)\n", type, 
+            git_object_type2string(type));
+        return -1;
+    }
     if (private_payload->checkout) {
         char path_checkout[PATH_MAX];
         if (snprintf(path_checkout, PATH_MAX, "%s/%s", 
@@ -2882,21 +2897,6 @@ int treewalk_callback(
         }
         switch (type) {
         case GIT_OBJECT_BLOB: {
-            int mode = 0;
-            switch (git_tree_entry_filemode(entry)) {
-            case GIT_FILEMODE_BLOB:
-                mode = 0644;
-                break;
-            case GIT_FILEMODE_BLOB_EXECUTABLE:
-                mode = 0755;
-                break;
-            case GIT_FILEMODE_LINK:
-                mode = -1;
-                break;
-            default:
-                pr_error("Impossible tree entry filemode\n");
-                return -1;
-            }
             git_object *object;
             int r = git_tree_entry_to_object(
                 &object, private_payload->repo->repository, entry);
@@ -2907,6 +2907,27 @@ int treewalk_callback(
                 return -1;
             }
             git_blob *blob = (git_blob *)object;
+            void const *ro_buffer = git_blob_rawcontent(blob);
+            int mode = 0;
+            switch (git_tree_entry_filemode(entry)) {
+            case GIT_FILEMODE_BLOB:
+                pr_info("[F] => '%s'\n", path_checkout);
+                mode = 0644;
+                break;
+            case GIT_FILEMODE_BLOB_EXECUTABLE:
+                pr_info("[E] => '%s'\n", path_checkout);
+                mode = 0755;
+                break;
+            case GIT_FILEMODE_LINK:
+                pr_info("[L] => '%s' -> '%s'\n", path_checkout, 
+                    (char const *)ro_buffer);
+                mode = -1;
+                break;
+            default:
+                pr_error("Impossible tree entry filemode\n");
+                git_object_free(object);
+                return -1;
+            }
             if (mode > 0) {
                 int blob_fd = open(path_checkout, O_WRONLY | O_CREAT, mode);
                 if (blob_fd < 0) {
@@ -2917,7 +2938,6 @@ int treewalk_callback(
                 }
                 git_object_size_t size_blob = git_blob_rawsize(blob);
                 if (size_blob) {
-                    void const *ro_buffer = git_blob_rawcontent(blob);
                     git_object_size_t size_written = 0;
                     while (size_written < size_blob) {
                         ssize_t size_written_this =
@@ -2948,7 +2968,6 @@ int treewalk_callback(
                 }
                 close(blob_fd);
             } else {
-                void const *ro_buffer = git_blob_rawcontent(blob);
                 if (symlink(ro_buffer, path_checkout)) {
                     pr_error_with_errno(
                         "Failed to create symlink at '%s' pointing to '%s'\n",
@@ -2962,6 +2981,7 @@ int treewalk_callback(
         }
         case GIT_OBJECT_TREE:
         case GIT_OBJECT_COMMIT:
+            pr_info("[D] => '%s/'\n", path_checkout);
             if (mkdir(path_checkout, 0755)) {
                 pr_error_with_errno("Failed to create folder '%s'", 
                     path_checkout);
@@ -2973,15 +2993,7 @@ int treewalk_callback(
             return -1;
         }
     }
-    switch (type) {
-    case GIT_OBJECT_BLOB:
-        pr_info("[BLOB] %s\n", path);
-        break;
-    case GIT_OBJECT_TREE:
-        pr_info("[TREE] %s\n", path);
-        break;
-    case GIT_OBJECT_COMMIT: {
-        pr_info("[SUBM] %s\n", path);
+    if (type == GIT_OBJECT_COMMIT) {
         bool submodule_parsed = false;
         for (unsigned long i = 0; 
             i < private_payload->wanted_commit->submodules_count; 
@@ -3062,12 +3074,6 @@ int treewalk_callback(
             pr_error("Failed to parse submodule\n");
             return -1;
         }
-        break;
-    }
-    default:
-        pr_error("Unexpected tree entry type %d (%s)\n", 
-            type, git_object_type2string(type));
-        return -1;
     }
     return 0;
 }
@@ -3340,6 +3346,8 @@ int export_commit(
                 dir_checkout);
             return -1;
         }
+        pr_info("Checkout finished, '%s' <- '%s'\n", 
+                dir_checkout, dir_checkout_work);
     }
     return 0;
 }
