@@ -3719,6 +3719,13 @@ int export_commit_tree_entry_commit(
         pr_error("Failed to get tree pointed by commit\n");
         goto free_commit;
     }
+    char mtime_r[TAR_POSIX_HEADER_MTIME_LEN] = "";
+    if (snprintf(
+        mtime_r, TAR_POSIX_HEADER_MTIME_LEN, "%011lo", git_commit_time(commit)
+    ) < 0) {
+        pr_error("Failed to format mtime\n");
+        goto free_commit;
+    }
     struct export_commit_treewalk_payload submodule_payload = {
         .config = config,
         .repo = target_repo,
@@ -3726,7 +3733,7 @@ int export_commit_tree_entry_commit(
         .submodule_path = submodule_path,
         .submodule_path_len = submodule_path_len_r,
         .archive = archive,
-        .mtime = mtime,
+        .mtime = mtime_r,
         .fd_archive = fd_archive,
         .checkout = checkout,
         .dir_checkout = dir_checkout,
