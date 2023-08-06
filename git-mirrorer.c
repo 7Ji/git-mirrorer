@@ -188,14 +188,16 @@ char const *WANTED_TYPE_STRINGS[] = {
     "head"
 };
 
-struct wanted_base {
-    enum wanted_type type;
-    char *name;
-    unsigned short name_len;
-    bool archive;
-    bool checkout;
-    struct wanted_base *previous, *next;
-};
+#define WANTED_BASE_DECLARE {\
+    enum wanted_type type;\
+    char *name;\
+    unsigned short name_len;\
+    bool archive;\
+    bool checkout;\
+    struct wanted_base *previous, *next;\
+}
+
+struct wanted_base WANTED_BASE_DECLARE;
 
 struct wanted_base const WANTED_BASE_INIT = {0};
 
@@ -219,21 +221,38 @@ struct wanted_commit_submodule {
 struct wanted_commit_submodule const WANTED_COMMIT_SUBMODULE_INIT = {
     .repo_id = (unsigned long) -1, {{0}}};
 
-struct wanted_commit {
-    struct wanted_base base;
-    git_oid id;
-    char id_hex_string[GIT_OID_MAX_HEXSIZE + 1];
-    struct wanted_commit_submodule *submodules;
-    unsigned long submodules_count;
-    unsigned long submodules_allocated;
-};
+#define WANTED_COMMIT_DECLARE { \
+    union { \
+        struct wanted_base base; \
+        struct WANTED_BASE_DECLARE; \
+    }; \
+    git_oid id; \
+    char id_hex_string[GIT_OID_MAX_HEXSIZE + 1]; \
+    struct wanted_commit_submodule *submodules; \
+    unsigned long submodules_count; \
+    unsigned long submodules_allocated; \
+}
+
+struct wanted_commit WANTED_COMMIT_DECLARE;
 
 struct wanted_commit const WANTED_COMMIT_INIT = {
     .base.type = WANTED_TYPE_COMMIT, 0};
 
-struct wanted_reference {
-    struct wanted_commit commit;
-    bool commit_resolved;
+#define WANTED_REFERENCE_DECLARE { \
+    union { \
+        struct wanted_commit commit; \
+        struct WANTED_COMMIT_DECLARE; \
+    }; \
+    bool commit_resolved; \
+}
+
+struct wanted_reference WANTED_REFERENCE_DECLARE;
+
+struct wanted_any {
+    union {
+        struct wanted_reference reference;
+        struct WANTED_REFERENCE_DECLARE;
+    };
 };
 
 struct wanted_reference const WANTED_REFERENCE_INIT = {
