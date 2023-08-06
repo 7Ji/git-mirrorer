@@ -3152,8 +3152,9 @@ int tar_write_and_pad_to_512_block(
             size_written += size_written_this;
         }
     }
-    size_t padding = 512 - size % 512;
-    if (padding) {
+    size_t lone_bytes = size % 512;
+    if (lone_bytes) {
+        size_t padding = 512 - lone_bytes;
         size_written = 0;
         while (size_written < padding) {
             ssize_t size_written_this = write(
