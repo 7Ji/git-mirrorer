@@ -3346,7 +3346,7 @@ int export_commit(
                 dir_checkout);
             return -1;
         }
-        pr_info("Checkout finished, '%s' <- '%s'\n", 
+        pr_info("Atomic checkout finish, '%s' <- '%s'\n", 
                 dir_checkout, dir_checkout_work);
     }
     return 0;
