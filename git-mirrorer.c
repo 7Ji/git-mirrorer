@@ -1563,8 +1563,10 @@ int config_finish(
             return -1;
         }
     }
+#ifdef DEBUGGING
     pr_info("Finished config, config is as follows:\n");
     print_config(config);
+#endif
     return 0;
 }
 
@@ -3439,8 +3441,10 @@ int main(int const argc, char *argv[]) {
         goto shutdown;
     }
 shutdown:
+#ifdef DEBUGGING
     pr_info("Current config before shutting down:\n");
     print_config(&config);
+#endif
     config_free(&config);
     pr_info("Shutting down libgit2\n");
     git_libgit2_shutdown();
