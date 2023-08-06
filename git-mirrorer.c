@@ -3290,6 +3290,11 @@ int tar_append_regular_file(
         }
         break;
     };
+    if (snprintf(regular_file_header.size, sizeof regular_file_header.size, 
+                    "%011lo", size) < 0) {
+        pr_error("Failed to format long name size\n");
+        return -1;
+    }
     memcpy(regular_file_header.mtime, mtime, sizeof regular_file_header.mtime);
     memcpy(regular_file_header.name, name, 
         len_name > sizeof regular_file_header.name ?
