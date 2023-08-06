@@ -1334,6 +1334,8 @@ int guarantee_symlink (
                 return -1;
             }
         } else {
+            pr_info("Symlink '%s' -> '%s' already existing\n",
+                symlink_path, symlink_target);
             return 0;
         }
     }
@@ -1343,12 +1345,12 @@ int guarantee_symlink (
             break;
         default:
             pr_error_with_errno(
-                "Failed to create symlink '%s' pointing to '%s'",
+                "Failed to create symlink '%s' -> '%s'",
                 symlink_path, symlink_target);
             return -1;
         }
     } else {
-        pr_info("Created symlink '%s' pointing to '%s'\n", 
+        pr_info("Created symlink '%s' -> '%s'\n", 
             symlink_path, symlink_target);
         return 0;
     }
@@ -1366,7 +1368,7 @@ int guarantee_symlink (
                 if (errno != ENOENT) {
                     pr_error_with_errno(
                         "Failed to create folder '%s' as parent of symlink "
-                        "'%s' pointing to '%s'",
+                        "'%s' -> '%s'",
                         symlink_path_dup, symlink_path, symlink_target);
                     return -1;
                 }
@@ -1378,7 +1380,7 @@ int guarantee_symlink (
                         if (mkdir(symlink_path_dup, 0755)) {
                             pr_error_with_errno(
                                 "Failed to create folder '%s' as parent of "
-                                "symlink '%s' pointing to '%s'",
+                                "symlink '%s' -> '%s'",
                                 symlink_path_dup, symlink_path, symlink_target);
                             return -1;
                         }
@@ -1390,11 +1392,11 @@ int guarantee_symlink (
     }
     if (symlink(symlink_target, symlink_path) < 0) {
         pr_error_with_errno(
-            "Failed to create symlink '%s' pointing to '%s'",
+            "Failed to create symlink '%s' -> '%s'",
             symlink_path, symlink_target);
         return -1;
     }
-    pr_info("Created symlink '%s' pointing to '%s'\n", 
+    pr_info("Created symlink '%s' -> '%s'\n", 
         symlink_path, symlink_target);
     return 0;
 }
