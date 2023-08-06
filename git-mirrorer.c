@@ -52,6 +52,9 @@
 #define VERSION "unknown"
 #endif
 
+#define TAR_POSIX_HEADER_MTIME_LEN 12
+#define TAR_POSIX_HEADER_NAME_LEN 100
+
 #define TAR_POSIX_HEADER_DECLARE {/* byte offset */\
     char name[100];               /*   0 */\
     char mode[8];                 /* 100 octal mode string %07o */\
@@ -360,6 +363,25 @@ struct config const CONFIG_INIT = {
     .proxy_url = NULL,
     .proxy_after = 0,
 };
+
+struct export_commit_treewalk_payload {
+    struct config const *const restrict config;
+    struct repo const *const restrict repo;
+    struct wanted_commit const *const restrict wanted_commit;
+    char *const restrict submodule_path;
+    unsigned short const submodule_path_len;
+    bool const archive;
+    char const *const restrict mtime;
+    int const fd_archive;
+    bool const checkout;
+    char const *const restrict dir_checkout;
+};
+
+int export_commit_treewalk_callback(
+	char const *const restrict root, 
+    git_tree_entry const *const restrict entry,
+    void *payload
+);
 
 int wanted_compare_commit(
     struct wanted_commit const *const restrict a,
@@ -3145,9 +3167,10 @@ int tar_write_and_pad_to_512_block(
 int tar_append_longlink_optional(
     int const tar_fd,
     char const *const restrict link,
-    unsigned short len_link
+    unsigned short const len_link
 ) {
     struct tar_posix_header longlink_header;
+    if (len_link < sizeof longlink_header.linkname) return 0;
     longlink_header = TAR_POSIX_HEADER_GNU_LONGLINK_INIT;
     if (snprintf(longlink_header.size, sizeof longlink_header.size, 
                     "%011o", len_link + 1) < 0) {
@@ -3164,7 +3187,7 @@ int tar_append_longlink_optional(
         return -1;
     }
     if (tar_write_and_pad_to_512_block(tar_fd, link, len_link + 1)) {
-        pr_error("Failed to pad zero to tar\n");
+        pr_error("Failed to write longlink to tar\n");
         return -1;
     }
     return 0;
@@ -3173,9 +3196,10 @@ int tar_append_longlink_optional(
 int tar_append_longname_optional(
     int const tar_fd,
     char const *const restrict name,
-    unsigned short len_name
+    unsigned short const len_name
 ) {
     struct tar_posix_header longname_header;
+    if (len_name < sizeof longname_header.name) return 0;
     longname_header = TAR_POSIX_HEADER_GNU_LONGNAME_INIT;
     if (snprintf(longname_header.size, sizeof longname_header.size, 
                     "%011o", len_name + 1) < 0) {
@@ -3192,33 +3216,537 @@ int tar_append_longname_optional(
         return -1;
     }
     if (tar_write_and_pad_to_512_block(tar_fd, name, len_name + 1)) {
-        pr_error("Failed to pad zero to tar\n");
+        pr_error("Failed to write longname to tar\n");
+        return -1;
+    }
+    return 0;
+}
+
+int tar_append_symlink(
+    int const tar_fd,
+    char const *const restrict mtime,
+    char const *const restrict name,
+    unsigned short const len_name,
+    char const *const restrict link,
+    unsigned short const len_link
+) {
+    if (tar_append_longlink_optional(tar_fd, link, len_link)) {
+        pr_error("Failed to create longlink\n");
+        return -1;
+    }
+    if (tar_append_longname_optional(tar_fd, name, len_name)) {
+        pr_error("Failed to create longname\n");
+        return -1;
+    }
+    struct tar_posix_header symlink_header =
+        TAR_POSIX_HEADER_SYMLINK_INIT;
+    memcpy(symlink_header.mtime, mtime, sizeof symlink_header.mtime);
+    memcpy(symlink_header.name, name, 
+        len_name > sizeof symlink_header.name ? 
+            sizeof symlink_header.name : len_name);
+    memcpy(symlink_header.linkname, link, 
+        len_link > sizeof symlink_header.linkname ? 
+            sizeof symlink_header.linkname : len_link);
+    if (tar_header_checksum_self(&symlink_header)) {
+        pr_error("Failed to calculate header checksum\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(
+        tar_fd, &symlink_header, sizeof symlink_header)) {
+        pr_error("Failed to write data to tar\n");
+        return -1;
+    }
+    return 0;
+}
+
+int tar_append_regular_file(
+    int const tar_fd,
+    void const *const restrict ro_buffer,
+    git_object_size_t size,
+    char const *const restrict mtime,
+    char const *const restrict name,
+    unsigned short const len_name,
+    mode_t mode
+) {
+    if (tar_append_longname_optional(tar_fd, name, len_name)) {
+        pr_error("Failed to create longname\n");
+        return -1;
+    }
+    struct tar_posix_header regular_file_header;
+    switch (mode) {
+    case 0644:
+        regular_file_header = TAR_POSIX_HEADER_FILE_REG_INIT;
+        break;
+    case 0755:
+        regular_file_header = TAR_POSIX_HEADER_FILE_EXE_INIT;
+        break;
+    default:
+        pr_warn("%03o mode is not expected, but we accept it for now\n", mode);
+        regular_file_header = TAR_POSIX_HEADER_FILE_REG_INIT;
+        if (snprintf(regular_file_header.mode, sizeof regular_file_header.mode, 
+            "%07o", mode) < 0) {
+            pr_error("Failed to format mode string\n");
+            return -1;
+        }
+        break;
+    };
+    memcpy(regular_file_header.mtime, mtime, sizeof regular_file_header.mtime);
+    memcpy(regular_file_header.name, name, 
+        len_name > sizeof regular_file_header.name ?
+         sizeof regular_file_header.name : len_name);
+    if (tar_header_checksum_self(&regular_file_header)) {
+        pr_error("Failed to calculate header checksum\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(
+        tar_fd, &regular_file_header, sizeof regular_file_header)) {
+        pr_error("Failed to write regular file header to tar\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(tar_fd, ro_buffer, size)) {
+        pr_error("Failed to write file data to tar\n");
+        return -1;
+    }
+    return 0;
+}
+
+int tar_append_folder(
+    int const tar_fd,
+    char const *const restrict mtime,
+    char const *const restrict name,
+    unsigned short const len_name
+) {
+    if (tar_append_longname_optional(tar_fd, name, len_name)) {
+        pr_error("Failed to create longname\n");
+        return -1;
+    }
+    struct tar_posix_header folder_header = TAR_POSIX_HEADER_FOLDER_INIT;
+    memcpy(folder_header.mtime, mtime, sizeof folder_header.mtime);
+    memcpy(folder_header.name, name, 
+        len_name > sizeof folder_header.name ?
+         sizeof folder_header.name : len_name);
+    if (tar_header_checksum_self(&folder_header)) {
+        pr_error("Failed to calculate header checksum\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(
+        tar_fd, &folder_header, sizeof folder_header)) {
+        pr_error("Failed to write folder header to tar\n");
+        return -1;
+    }
+    return 0;
+}
+
+int tar_finish(
+    int const tar_fd
+) {
+    unsigned char const eof_marker[512 * 2] = {0};
+    if (tar_write_and_pad_to_512_block(tar_fd, eof_marker, 512 * 2)) {
+        pr_error("Failed to write EOF mark to tar file\n");
+        return -1;
+    }
+    return 0;
+}
+
+int export_commit_tree_entry_blob_file_regular_to_archive(
+    void const *const restrict ro_buffer,
+    git_object_size_t size,
+    char const *const restrict path,
+    unsigned short const len_path,
+    char const *const restrict mtime,
+    int const fd_archive,
+    mode_t mode
+){
+    if (tar_append_regular_file(
+        fd_archive, ro_buffer, size, mtime, path, len_path, mode)) {
+        pr_error("Failed to append regular file '%s' to archive\n", path);
+        return -1;
+    }
+    return 0;
+}
+
+int export_commit_tree_entry_blob_file_regular_to_checkout(
+    void const *const restrict ro_buffer,
+    git_object_size_t size,
+    char const *const restrict path,
+    char const *const restrict dir_checkout,
+    mode_t mode
+){
+    char path_checkout[PATH_MAX];
+    if (snprintf(path_checkout, PATH_MAX, "%s/%s", dir_checkout, path) < 0) {
+        pr_error_with_errno("Failed to format checkout name");
+        return -1;
+    }
+    int blob_fd = open(path_checkout, O_WRONLY | O_CREAT, mode);
+    if (blob_fd < 0) {
+        pr_error("Failed to create file '%s' with mode 0o%o\n",
+            path_checkout, mode);
+        return -1;
+    }
+    if (size) {
+        git_object_size_t size_written = 0;
+        while (size_written < size) {
+            ssize_t size_written_this =
+                write(blob_fd,
+                    ro_buffer + size_written, 
+                    size - size_written);
+            if (size_written_this < 0) {
+                switch (errno) {
+                case EAGAIN:
+#if (EAGAIN != EWOULDBLOCK)
+                case EWOULDBLOCK:
+#endif
+                case EINTR:
+                    break;
+                default:
+                    pr_error_with_errno(
+                        "Failed to write %lu bytes to file '%s'",
+                        size - size_written,
+                        path_checkout);
+                    close(blob_fd);
+                    return -1;
+                }
+            } else {
+                size_written += size_written_this;
+            }
+        }
+    }
+    close(blob_fd);
+    return 0;
+}
+
+int export_commit_tree_entry_blob_file_regular(
+    void const *const restrict ro_buffer,
+    git_object_size_t size,
+    char const *const restrict path,
+    unsigned short const len_path,
+    bool const archive,
+    char const *const restrict mtime,
+    int const fd_archive,
+    bool const checkout,    
+    char const *const restrict dir_checkout,
+    mode_t mode
+) {
+    if (archive) {
+        if (export_commit_tree_entry_blob_file_regular_to_archive(
+            ro_buffer, size, path, len_path, mtime, fd_archive, mode)) {
+            pr_error("Failed to archive commit tree entry blob regular file "
+                "at '%s'\n", path);
+            return -1;
+        }
+    }
+    if (checkout) {
+        if (export_commit_tree_entry_blob_file_regular_to_checkout(
+            ro_buffer, size, path, dir_checkout, mode)) {
+            pr_error("Failed to checkout commit tree entry blob regular file "
+                "at '%s'\n", path);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int export_commit_tree_entry_blob_file_symlink_to_archive(
+    char const *const restrict ro_buffer,
+    char const *const restrict path,
+    unsigned short const len_path,
+    char const *const restrict mtime,
+    int const fd_archive
+) {
+    char link[PATH_MAX];
+    unsigned short len_link = 
+        stpncpy(link, ro_buffer, PATH_MAX) - link;
+    if (tar_append_symlink(
+        fd_archive, mtime, path, len_path, link, len_link)) {
+        pr_error("Failed to append symlink to archive\n");
         return -1;
     }
     return 0;
 }
 
 
-struct treewalk_payload {
-    struct config const *const restrict config;
-    struct repo const *const restrict repo;
-    struct wanted_commit const *const restrict wanted_commit;
-    git_time_t time;
-    char *const restrict submodule_path;
-    unsigned short const submodule_path_len;
-    bool const archive;
-    bool const checkout;
-    char const *const restrict dir_checkout;
-    int const fd_archive;
+int export_commit_tree_entry_blob_file_symlink_to_checkout(
+    char const *const restrict ro_buffer,
+    char const *const restrict path,
+    char const *const restrict dir_checkout
+) {
+    char path_checkout[PATH_MAX];
+    if (snprintf(path_checkout, PATH_MAX, "%s/%s", dir_checkout, path) < 0) {
+        pr_error_with_errno("Failed to format checkout name");
+        return -1;
+    }
+    if (symlink(ro_buffer, path_checkout) < 0) {
+        pr_error_with_errno("Failed to create symlink '%s' -> '%s'",
+            path_checkout, ro_buffer);
+        return -1;
+    }
+    return 0;
+}
+
+int export_commit_tree_entry_blob_file_symlink(
+    char const *const restrict ro_buffer,
+    char const *const restrict path,
+    unsigned short const len_path,
+    bool const archive,
+    char const *const restrict mtime,
+    int const fd_archive,
+    bool const checkout,    
+    char const *const restrict dir_checkout
+) {
+    if (archive) {
+        if (export_commit_tree_entry_blob_file_symlink_to_archive(
+            ro_buffer, path, len_path, mtime, fd_archive)) {
+            pr_error("Failed to archive commit tree entry blob file symlink "
+                "at '%s'\n", path);
+            return -1;
+        }
+    }
+    if (checkout) {
+        if (export_commit_tree_entry_blob_file_symlink_to_checkout(
+            ro_buffer, path, dir_checkout)) {
+            pr_error("Failed to checkout commit tree entry blob file symlink "
+                "at '%s'\n", path);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int export_commit_tree_entry_blob(
+    git_tree_entry const *const restrict entry,
+    char const *const restrict path,
+    unsigned short const len_path,
+    struct repo const *const restrict repo,
+    bool const archive,
+    char const *const restrict mtime,
+    int const fd_archive,
+    bool const checkout,    
+    char const *const restrict dir_checkout
+) {
+    git_object *object;
+    int r = git_tree_entry_to_object(
+        &object, repo->repository, entry);
+    if (r) {
+        pr_error(
+            "Failed to convert entry to object, libgit return %d\n",
+            r);
+        return -1;
+    }
+    void const *const restrict ro_buffer = 
+        git_blob_rawcontent((git_blob *)object);
+    switch (git_tree_entry_filemode(entry)) {
+    case GIT_FILEMODE_BLOB:
+        r = export_commit_tree_entry_blob_file_regular(
+            ro_buffer,
+            git_blob_rawsize((git_blob *)object),
+            path, len_path, 
+            archive, mtime, fd_archive, 
+            checkout, dir_checkout, 
+            0644);
+        break;
+    case GIT_FILEMODE_BLOB_EXECUTABLE:
+        r = export_commit_tree_entry_blob_file_regular(
+            ro_buffer, 
+            git_blob_rawsize((git_blob *)object), 
+            path, len_path, 
+            archive, mtime, fd_archive, 
+            checkout, dir_checkout, 
+            0755);
+        break;
+    case GIT_FILEMODE_LINK:
+        r = export_commit_tree_entry_blob_file_symlink(
+            ro_buffer, path, len_path, 
+            archive, mtime, fd_archive, checkout, dir_checkout);
+        break;
+    default:
+        pr_error("Impossible tree entry filemode %d\n", 
+                git_tree_entry_filemode(entry));
+        r = -1;
+        break;
+    }
+    free(object);
+    return r;
 };
 
-int treewalk_callback(
+int export_commit_tree_entry_tree_to_archive(
+    char const *const restrict path,
+    unsigned short const len_path,
+    char const *const restrict mtime,
+    int const fd_archive
+) {
+    char path_with_slash[PATH_MAX];
+    memcpy(path_with_slash, path, len_path);
+    path_with_slash[len_path] = '/';
+    path_with_slash[len_path + 1] = '\0';
+    if (tar_append_folder(fd_archive, mtime, path_with_slash, len_path + 1)) {
+        pr_error("Failed to append folder '%s' to archive\n", path);
+        return -1;
+    }
+    return 0;
+}
+
+int export_commit_tree_entry_tree_to_checkout(
+    char const *const restrict path,
+    char const *const restrict dir_checkout
+) {
+    char path_checkout[PATH_MAX];
+    if (snprintf(path_checkout, PATH_MAX, "%s/%s", dir_checkout, path) < 0) {
+        pr_error_with_errno("Failed to format checkout name");
+        return -1;
+    }
+    if (mkdir(path_checkout, 0755)) {
+        pr_error_with_errno("Failed to create folder '%s'", 
+            path_checkout);
+        return -1;
+    }
+    return 0;
+}
+
+
+int export_commit_tree_entry_tree(
+    char const *const restrict path,
+    unsigned short const len_path,
+    bool const archive,
+    char const *const restrict mtime,
+    int const fd_archive,
+    bool const checkout,    
+    char const *const restrict dir_checkout
+) {
+    if (archive) {
+        if (export_commit_tree_entry_tree_to_archive(
+            path, len_path, mtime, fd_archive)) {
+            pr_error("Failed to export '%s' to archive\n", path);
+            return -1;
+        }
+    }
+    if (checkout) {
+        if (export_commit_tree_entry_tree_to_checkout(path, dir_checkout)) {
+            pr_error("Failed to export '%s' to checkout\n", path);
+            return -1;
+        }
+    }
+    return 0;
+};
+
+int export_commit_tree_entry_commit(
+	char const *const restrict root,
+    git_tree_entry const *const restrict entry,
+    char const *const restrict path,
+    unsigned short const len_path,
+    struct config const *const restrict config,
+    // struct repo const *const restrict repo,
+    struct wanted_commit const *const restrict wanted_commit,
+    char *const restrict submodule_path,
+    unsigned short const submodule_path_len,
+    bool const archive,
+    char const *const restrict mtime,
+    int const fd_archive,
+    bool const checkout,    
+    char const *const restrict dir_checkout
+) {
+    // Export self as a tree (folder)
+    if (export_commit_tree_entry_tree(
+        path, len_path, 
+        archive, mtime, fd_archive, 
+        checkout, dir_checkout)) {
+        pr_error("Failed to export submodule '%s' as a tree\n", path);
+        return -1;
+    }
+
+    // Find which wanted submodule commit the entry is
+    git_oid const *const submodule_commit_id = git_tree_entry_id(entry);
+    struct wanted_commit_submodule *wanted_commit_submodule = NULL;
+    for (unsigned long i = 0; i < wanted_commit->submodules_count; ++i) {
+        if (!git_oid_cmp(
+            &wanted_commit->submodules[i].id, submodule_commit_id)) {
+            wanted_commit_submodule = wanted_commit->submodules + i;
+            break;
+        }
+    }
+    if (wanted_commit_submodule == NULL) {
+        pr_error("Failed to find corresponding wanted commit submodule\n");
+        return -1;
+    }
+
+    // Find that wanted commit in target repo
+    struct repo const *const restrict target_repo = 
+        config->repos + wanted_commit_submodule->repo_id;
+    struct wanted_commit const *restrict wanted_commit_in_target_repo = NULL;
+    for (wanted_commit_in_target_repo = (struct wanted_commit *)
+            target_repo->wanted_objects.objects_head;
+        wanted_commit_in_target_repo != NULL;
+        wanted_commit_in_target_repo = (struct wanted_commit *)
+            wanted_commit_in_target_repo->base.next) {
+        if (wanted_commit_in_target_repo->base.type == WANTED_TYPE_COMMIT &&
+            !git_oid_cmp(
+                &wanted_commit_in_target_repo->id, submodule_commit_id)) {
+            break;
+        }
+    }
+    if (wanted_commit_in_target_repo == NULL) {
+        pr_error("Failed to find corresponding wanted commit in target repo\n");
+        return -1;
+    }
+
+    // Recursively export
+    char const *const restrict name = git_tree_entry_name(entry);
+    unsigned short submodule_path_len_r = 
+        submodule_path_len + strlen(name) + strlen(root) + 1;
+    if (submodule_path_len_r >= PATH_MAX) {
+        pr_error("Path too long!\n");
+        return -1;
+    }
+    int r = -1;
+    if (sprintf(submodule_path + submodule_path_len, 
+        "%s%s/", root, name) < 0) {
+        pr_error_with_errno("Failed to format name");
+        goto revert_submodule_path;
+    }
+    
+    git_commit *commit;
+    if (git_commit_lookup(
+        &commit, target_repo->repository, submodule_commit_id)) {
+        pr_error("Failed to lookup commit\n");
+        goto revert_submodule_path;
+    }
+    git_tree *tree;
+    if (git_commit_tree(&tree, commit)) {
+        pr_error("Failed to get tree pointed by commit\n");
+        goto free_commit;
+    }
+    struct export_commit_treewalk_payload submodule_payload = {
+        .config = config,
+        .repo = target_repo,
+        .wanted_commit = wanted_commit_in_target_repo,
+        .submodule_path = submodule_path,
+        .submodule_path_len = submodule_path_len_r,
+        .archive = archive,
+        .mtime = mtime,
+        .fd_archive = fd_archive,
+        .checkout = checkout,
+        .dir_checkout = dir_checkout,
+    };
+    if (git_tree_walk(
+        tree, GIT_TREEWALK_PRE, export_commit_treewalk_callback, 
+            &submodule_payload)) {
+        pr_error("Failed to walk tree recursively\n");
+        goto free_commit;
+    }
+    r = 0;
+free_commit:
+    git_commit_free(commit);
+revert_submodule_path:
+    submodule_path[submodule_path_len] = '\0';
+    return r;
+};
+
+int export_commit_treewalk_callback(
 	char const *const restrict root, 
     git_tree_entry const *const restrict entry,
     void *payload
 ) {
-    struct treewalk_payload *const restrict private_payload =
-        (struct treewalk_payload *const restrict) payload;
+    struct export_commit_treewalk_payload *const restrict private_payload =
+        (struct export_commit_treewalk_payload *const restrict) payload;
     bool const archive = private_payload->archive;
     bool const checkout = private_payload->checkout;
     if (archive || checkout); 
@@ -3226,267 +3754,39 @@ int treewalk_callback(
         pr_error("Neither archive nor checkout needed\n");
         return -1;
     }
-    int const fd_archive = private_payload->fd_archive;
-    git_object_t const type = git_tree_entry_type(entry);
-    char const *const name = git_tree_entry_name(entry);
-    git_oid const *const oid = git_tree_entry_id(entry);
     char path[PATH_MAX];
-    if (snprintf(path, PATH_MAX, "%s%s%s", private_payload->submodule_path,
-        root, name) < 0) {
-        pr_error("Failed to format entry name\n");
+    int r = snprintf(
+        path, PATH_MAX, "%s%s%s", private_payload->submodule_path,
+        root, git_tree_entry_name(entry));
+    if (r < 0) {
+        pr_error("Failed to format entry path\n");
         return -1;
     }
-    char report_type_mark = 'X';
-    switch (type) {
+    unsigned short len_path = r;
+    char const *const restrict mtime = private_payload->mtime;
+    int const fd_archive = private_payload->fd_archive;
+    char const *const restrict dir_checkout = private_payload->dir_checkout;
+    switch (git_tree_entry_type(entry)) {
     case GIT_OBJECT_BLOB:
-        report_type_mark = 'B';
-        break;
+        return export_commit_tree_entry_blob(
+            entry, path, len_path, private_payload->repo, 
+            archive, mtime, fd_archive, 
+            checkout, dir_checkout);
     case GIT_OBJECT_TREE:
-        report_type_mark = 'T';
-        break;
+        return export_commit_tree_entry_tree(
+            path, len_path, 
+            archive, mtime, fd_archive,
+            checkout, dir_checkout);
     case GIT_OBJECT_COMMIT:
-        report_type_mark = 'S';
-        break;
+        return export_commit_tree_entry_commit(
+            root, entry, path, len_path, private_payload->config, 
+            private_payload->wanted_commit, private_payload->submodule_path,
+            private_payload->submodule_path_len, archive, mtime, fd_archive,
+            checkout, dir_checkout);
     default:
-        pr_error("Impossible tree entry type %d (%s)\n", type, 
-            git_object_type2string(type));
+        pr_error("Impossible tree entry type %d\n", git_tree_entry_type(entry));
         return -1;
     }
-    pr_info("[%c] '%s'\n", report_type_mark, path);
-    char path_checkout[PATH_MAX];
-    char name_archive_entry[PATH_MAX];
-    unsigned short len_name_archive_entry = 0;
-    struct tar_posix_header header;
-    if (checkout) {
-        if (snprintf(path_checkout, PATH_MAX, "%s/%s", 
-            private_payload->dir_checkout, path) < 0) {
-            pr_error("Failed to format checkout path\n");
-            return -1;
-        }
-    }
-    if (archive) {
-        char *name_archive_entry_end = stpcpy(name_archive_entry, path);
-        if (type != GIT_OBJECT_BLOB) {
-            *name_archive_entry_end = '/';
-            *(++name_archive_entry_end) = '\0';
-        }
-        len_name_archive_entry = name_archive_entry_end - name_archive_entry;
-    }
-    char link_target[PATH_MAX];
-    link_target[0] = '\0';
-    unsigned short len_link_target = 0;
-    switch (type) {
-    case GIT_OBJECT_BLOB: {
-        git_object *object;
-        int r = git_tree_entry_to_object(
-            &object, private_payload->repo->repository, entry);
-        if (r) {
-            pr_error(
-                "Failed to convert entry to object, libgit return %d\n",
-                r);
-            return -1;
-        }
-        git_blob *blob = (git_blob *)object;
-        void const *ro_buffer = git_blob_rawcontent(blob);
-        int mode = 0;
-        switch (git_tree_entry_filemode(entry)) {
-        case GIT_FILEMODE_BLOB:
-            report_type_mark = 'F';
-            mode = 0644;
-            break;
-        case GIT_FILEMODE_BLOB_EXECUTABLE:
-            report_type_mark = 'E';
-            mode = 0755;
-            break;
-        case GIT_FILEMODE_LINK:
-            report_type_mark = 'L';
-            len_link_target = 
-                stpncpy(link_target, (char const *)ro_buffer, PATH_MAX)
-                    - link_target;
-            if (len_link_target >= PATH_MAX) {
-                pr_error("Link target path '%s' too long\n", link_target);
-                return -1;
-            }
-            mode = -1;
-            break;
-        default:
-            pr_error("Impossible tree entry filemode\n");
-            git_object_free(object);
-            return -1;
-        }
-        if (report_type_mark == 'L') {
-            pr_info("[C:%c] => '%s' -> '%s'\n", 
-                report_type_mark, path_checkout, link_target);
-            pr_info("[A:%c] => '%s' -> '%s'\n", 
-                report_type_mark, name_archive_entry, link_target);
-            if (archive) {
-                if (len_link_target >= sizeof header.linkname &&
-                    tar_append_longlink_optional(
-                        fd_archive,  link_target, len_link_target)) {
-                    pr_error("Failed to append long link to tar\n");
-                    return -1;
-                }
-            }
-        } else {
-            pr_info("[C:%c] => '%s'\n", report_type_mark, path_checkout);
-            pr_info("[A:%c] => '%s'\n", report_type_mark, name_archive_entry);
-        }
-        if (archive) {
-            if (len_name_archive_entry >= sizeof header.name &&
-                tar_append_longname_optional(fd_archive, 
-                    name_archive_entry, len_name_archive_entry)) {
-                pr_error("Failed to append long name to tar\n");
-                return -1;
-            }
-        }
-        if (mode > 0) {
-            int blob_fd = open(path_checkout, O_WRONLY | O_CREAT, mode);
-            if (blob_fd < 0) {
-                pr_error("Failed to create file '%s' with mode 0o%o\n",
-                    path_checkout, mode);
-                git_object_free(object);
-                return -1;
-            }
-            git_object_size_t size_blob = git_blob_rawsize(blob);
-            if (size_blob) {
-                git_object_size_t size_written = 0;
-                while (size_written < size_blob) {
-                    ssize_t size_written_this =
-                        write(blob_fd,
-                            ro_buffer + size_written, 
-                            size_blob - size_written);
-                    if (size_written_this < 0) {
-                        switch (errno) {
-                        case EAGAIN:
-#if (EAGAIN != EWOULDBLOCK)
-                        case EWOULDBLOCK:
-#endif
-                        case EINTR:
-                            break;
-                        default:
-                            pr_error_with_errno(
-                                "Failed to write %lu bytes to file '%s'",
-                                size_blob - size_written,
-                                path_checkout);
-                            close(blob_fd);
-                            git_object_free(object);
-                            return -1;
-                        }
-                    } else {
-                        size_written += size_written_this;
-                    }
-                }
-            }
-            close(blob_fd);
-        } else {
-            if (symlink(ro_buffer, path_checkout)) {
-                pr_error_with_errno(
-                    "Failed to create symlink at '%s' pointing to '%s'\n",
-                    path_checkout, (char const *)ro_buffer);
-                git_object_free(object);
-                return -1;
-            }
-        }
-        git_object_free(object);
-        break;
-    }
-    case GIT_OBJECT_TREE:
-    case GIT_OBJECT_COMMIT:
-        pr_info("[C:D] => '%s/'\n", path_checkout);
-        pr_info("[A:D] => '%s'\n", name_archive_entry);
-        if (mkdir(path_checkout, 0755)) {
-            pr_error_with_errno("Failed to create folder '%s'", 
-                path_checkout);
-            return -1;
-        }
-        break;
-    default:
-        pr_error("Impossible entry type\n");
-        return -1;
-    }
-    if (type == GIT_OBJECT_COMMIT) {
-        bool submodule_parsed = false;
-        for (unsigned long i = 0; 
-            i < private_payload->wanted_commit->submodules_count; 
-            ++i) {
-            struct wanted_commit_submodule *submodule = 
-                private_payload->wanted_commit->submodules + i;
-            if (!git_oid_cmp(&submodule->id, oid)) {
-                struct repo const *const restrict target_repo = 
-                    private_payload->config->repos + submodule->repo_id;
-                struct wanted_commit *wanted_commit = NULL;
-                for (wanted_commit = (struct wanted_commit *)
-                        target_repo->wanted_objects.objects_head;
-                    wanted_commit != NULL;
-                    wanted_commit = (struct wanted_commit *)
-                        wanted_commit->base.next) {
-                    if (wanted_commit->base.type == WANTED_TYPE_COMMIT &&
-                        !git_oid_cmp(&wanted_commit->id, oid)) {
-                        break;
-                    }
-                }
-                if (wanted_commit == NULL) {
-                    pr_error("Failed to find corresponding wanted commit in "
-                        "target repo\n");
-                    return -1;
-                }
-                size_t len_name = strlen(name);
-                size_t len_root = strlen(root);
-                unsigned short submodule_path_len = 
-                    private_payload->submodule_path_len + 
-                        len_name + len_root + 1;
-                if (submodule_path_len >= PATH_MAX) {
-                    pr_error("Path too long!\n");
-                    return -1;
-                }
-                if (sprintf(
-                    private_payload->submodule_path + 
-                        private_payload->submodule_path_len, 
-                    "%s%s/", root, name) < 0) {
-                    pr_error_with_errno("Failed to format name");
-                    return -1;
-                }
-                
-                git_commit *commit;
-                if (git_commit_lookup(&commit, target_repo->repository, oid)) {
-                    pr_error("Failed to lookup commit\n");
-                    return -1;
-                }
-                git_tree *tree;
-                if (git_commit_tree(&tree, commit)) {
-                    pr_error("Failed to get tree pointed by commit\n");
-                    return -1;
-                }
-                struct treewalk_payload submodule_payload = {
-                    .config = private_payload->config,
-                    .repo = target_repo,
-                    .wanted_commit = wanted_commit,
-                    .submodule_path = private_payload->submodule_path,
-                    .submodule_path_len = submodule_path_len,
-                    .archive = private_payload->archive,
-                    .checkout = private_payload->checkout,
-                    .dir_checkout = private_payload->dir_checkout
-                };
-                if (git_tree_walk(
-                    tree, GIT_TREEWALK_PRE, treewalk_callback, 
-                        &submodule_payload)) {
-                    pr_error("Failed to walk tree recursively\n");
-                    git_commit_free(commit);
-                    return -1;
-                }
-                git_commit_free(commit);
-                private_payload->submodule_path[
-                    private_payload->submodule_path_len] = '\0';
-                submodule_parsed = true;
-                break;
-            }
-        }
-        if (!submodule_parsed) {
-            pr_error("Failed to parse submodule\n");
-            return -1;
-        }
-    }
-    return 0;
 }
 
 int remove_dir_recursively(
@@ -3752,29 +4052,37 @@ int export_commit(
     pr_info("Started exporting repo '%s' commit '%s'\n",
         repo->url, wanted_commit->id_hex_string);
     char submodule_path[PATH_MAX] = "";
-    struct treewalk_payload treewalk_payload = {
+    char mtime[TAR_POSIX_HEADER_MTIME_LEN] = "";
+    if (snprintf(
+        mtime, TAR_POSIX_HEADER_MTIME_LEN, "%011lo", git_commit_time(commit)
+    ) < 0) {
+        pr_error("Failed to format mtime\n");
+        git_commit_free(commit);
+        if (fd_archive >= 0) close(fd_archive);
+        return -1;
+    }
+    struct export_commit_treewalk_payload export_commit_treewalk_payload = {
         .config = config,
         .repo = repo,
         .wanted_commit = wanted_commit,
-        .time = git_commit_time(commit), // second, 
-        // there's also git_commit_time_offset(commit), one offset for a minute
-        .archive = archive,
-        .checkout = checkout,
         .submodule_path = submodule_path,
         .submodule_path_len = 0,
-        .dir_checkout = dir_checkout_work,
+        .archive = archive,
+        .mtime = mtime, // second, 
+        // there's also git_commit_time_offset(commit), one offset for a minute
         .fd_archive = fd_archive,
+        .checkout = checkout,
+        .dir_checkout = dir_checkout_work,
     };
     if (git_tree_walk(
-        tree, GIT_TREEWALK_PRE, treewalk_callback, 
-        (void *)&treewalk_payload)) {
+        tree, GIT_TREEWALK_PRE, export_commit_treewalk_callback, 
+        (void *)&export_commit_treewalk_payload)) {
         pr_error("Failed to walk through tree\n");
         git_commit_free(commit);
         if (fd_archive >= 0) close(fd_archive);
         return -1;
     }
     git_commit_free(commit);
-    if (fd_archive >= 0) close(fd_archive);
     pr_info("Ended exporting repo '%s' commit '%s'\n",
         repo->url, wanted_commit->id_hex_string);
     if (checkout) {
@@ -3787,6 +4095,12 @@ int export_commit(
                 dir_checkout, dir_checkout_work);
     }
     if (archive) {
+        if (tar_finish(fd_archive)) {
+            pr_error("Failed to finish tar\n");
+            close (fd_archive);
+            return -1;
+        }
+        close(fd_archive);
         if (rename(file_archive_work, file_archive)) {
             pr_error("Failed to move '%s' to '%s'\n", file_archive_work,
                 file_archive);
