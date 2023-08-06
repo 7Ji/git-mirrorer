@@ -52,25 +52,37 @@
 #define VERSION "unknown"
 #endif
 
-struct tar_posix_header { /* byte offset */
-    char name[100];               /*   0 */
-    char mode[8];                 /* 100 octal mode string %07o */
-    char uid[8];                  /* 108 octal uid string %07o */
-    char gid[8];                  /* 116 octal gid string %07o */
-    char size[12];                /* 124 octal size %011o */
-    char mtime[12];               /* 136 octal mtime string %011o */
-    char chksum[8];               /* 148 octal checksum string %06o + space */
-    char typeflag;                /* 156 either TAR_{REG,LINK,DIR}TYPE */
-    char linkname[100];           /* 157 symlink target */
-    char magic[6];                /* 257 ustar\0 */
-    char version[2];              /* 263 \0 0*/
-    char uname[32];               /* 265 uname + padding \0 */
-    char gname[32];               /* 297 gname + padding \0 */
-    char devmajor[8];             /* 329 all 0 */
-    char devminor[8];             /* 337 all 0 */
-    char prefix[155];             /* 345 */
-                                  /* 500 */
+#define TAR_POSIX_HEADER_DECLARE {/* byte offset */\
+    char name[100];               /*   0 */\
+    char mode[8];                 /* 100 octal mode string %07o */\
+    char uid[8];                  /* 108 octal uid string %07o */\
+    char gid[8];                  /* 116 octal gid string %07o */\
+    char size[12];                /* 124 octal size %011o */\
+    char mtime[12];               /* 136 octal mtime string %011o */\
+    char chksum[8];               /* 148 octal checksum string %06o + space */\
+    char typeflag;                /* 156 either TAR_{REG,LINK,DIR}TYPE */\
+    char linkname[100];           /* 157 symlink target */\
+    char magic[6];                /* 257 ustar\0 */\
+    char version[2];              /* 263 \0 0*/\
+    char uname[32];               /* 265 uname + padding \0 */\
+    char gname[32];               /* 297 gname + padding \0 */\
+    char devmajor[8];             /* 329 all 0 */\
+    char devminor[8];             /* 337 all 0 */\
+    char prefix[155];             /* 345 all 0 */\
+                                  /* 500 */\
+}
+
+struct tar_posix_header TAR_POSIX_HEADER_DECLARE;
+
+struct tar_posix_header_512_block {
+    union {
+        struct tar_posix_header header;
+        struct TAR_POSIX_HEADER_DECLARE;
+    };
+    unsigned char padding[12];
 };
+
+unsigned char const EMPTY_512_BLOCK[512] = {0};
 
 #define TAR_POSIX_MAGIC   "ustar"        /* ustar and a null */
 #define TAR_POSIX_VERSION "00"           /* 00 and no null */
@@ -3069,6 +3081,124 @@ int mirror_all_repos(
     return 0;
 }
 
+int tar_write_and_pad_to_512_block(
+    int const tar_fd,
+    void const *const restrict data,
+    size_t const size
+) {
+    if (lseek(tar_fd, 0, SEEK_CUR) % 512) {
+        pr_error("Tar not at 512 offset\n");
+        return -1;
+    }
+    size_t size_written = 0;
+    while (size_written < size) {
+        ssize_t size_written_this = write(
+            tar_fd, data + size_written, size - size_written);
+        if (size_written_this < 0) {
+             switch (errno) {
+            case EAGAIN:
+#if (EAGAIN != EWOULDBLOCK)
+            case EWOULDBLOCK:
+#endif
+            case EINTR:
+                break;
+            default:
+                pr_error_with_errno(
+                    "Failed to write %lu bytes to tar", size - size_written);
+                return -1;
+            }
+        } else {
+            size_written += size_written_this;
+        }
+    }
+    size_t padding = 512 - size % 512;
+    if (padding) {
+        size_written = 0;
+        while (size_written < padding) {
+            ssize_t size_written_this = write(
+                tar_fd, EMPTY_512_BLOCK, padding - size_written);
+            if (size_written_this < 0) {
+                switch (errno) {
+                case EAGAIN:
+#if (EAGAIN != EWOULDBLOCK)
+                case EWOULDBLOCK:
+#endif
+                case EINTR:
+                    break;
+                default:
+                    pr_error_with_errno(
+                        "Failed to pad %lu bytes to tar", size - size_written);
+                    return -1;
+                }
+            } else {
+                size_written += size_written_this;
+            }
+        }
+    }
+    if (lseek(tar_fd, 0, SEEK_CUR) % 512) {
+        pr_error("Tar not at 512 offset\n");
+        return -1;
+    }
+    return 0;
+}
+
+int tar_append_longlink_optional(
+    int const tar_fd,
+    char const *const restrict link,
+    unsigned short len_link
+) {
+    struct tar_posix_header longlink_header;
+    longlink_header = TAR_POSIX_HEADER_GNU_LONGLINK_INIT;
+    if (snprintf(longlink_header.size, sizeof longlink_header.size, 
+                    "%011o", len_link + 1) < 0) {
+        pr_error("Failed to format long link size\n");
+        return -1;
+    }
+    if (tar_header_checksum_self(&longlink_header)) {
+        pr_error("Failed to calculate header checksum\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(
+        tar_fd, &longlink_header, sizeof longlink_header)) {
+        pr_error("Failed to write data to tar\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(tar_fd, link, len_link + 1)) {
+        pr_error("Failed to pad zero to tar\n");
+        return -1;
+    }
+    return 0;
+}
+
+int tar_append_longname_optional(
+    int const tar_fd,
+    char const *const restrict name,
+    unsigned short len_name
+) {
+    struct tar_posix_header longname_header;
+    longname_header = TAR_POSIX_HEADER_GNU_LONGNAME_INIT;
+    if (snprintf(longname_header.size, sizeof longname_header.size, 
+                    "%011o", len_name + 1) < 0) {
+        pr_error("Failed to format long name size\n");
+        return -1;
+    }
+    if (tar_header_checksum_self(&longname_header)) {
+        pr_error("Failed to calculate header checksum\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(
+        tar_fd, &longname_header, sizeof longname_header)) {
+        pr_error("Failed to write data to tar\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(tar_fd, name, len_name + 1)) {
+        pr_error("Failed to pad zero to tar\n");
+        return -1;
+    }
+    return 0;
+}
+
+
 struct treewalk_payload {
     struct config const *const restrict config;
     struct repo const *const restrict repo;
@@ -3089,6 +3219,14 @@ int treewalk_callback(
 ) {
     struct treewalk_payload *const restrict private_payload =
         (struct treewalk_payload *const restrict) payload;
+    bool const archive = private_payload->archive;
+    bool const checkout = private_payload->checkout;
+    if (archive || checkout); 
+    else {
+        pr_error("Neither archive nor checkout needed\n");
+        return -1;
+    }
+    int const fd_archive = private_payload->fd_archive;
     git_object_t const type = git_tree_entry_type(entry);
     char const *const name = git_tree_entry_name(entry);
     git_oid const *const oid = git_tree_entry_id(entry);
@@ -3098,126 +3236,173 @@ int treewalk_callback(
         pr_error("Failed to format entry name\n");
         return -1;
     }
+    char report_type_mark = 'X';
     switch (type) {
     case GIT_OBJECT_BLOB:
-        pr_info("[B] '%s'\n", path);
+        report_type_mark = 'B';
         break;
     case GIT_OBJECT_TREE:
-        pr_info("[T] '%s'\n", path);
+        report_type_mark = 'T';
         break;
     case GIT_OBJECT_COMMIT:
-        pr_info("[S] '%s'\n", path);
+        report_type_mark = 'S';
         break;
     default:
         pr_error("Impossible tree entry type %d (%s)\n", type, 
             git_object_type2string(type));
         return -1;
     }
+    pr_info("[%c] '%s'\n", report_type_mark, path);
     char path_checkout[PATH_MAX];
-    struct tar_posix_header tar_posix_header;
-    if (private_payload->checkout) {
+    char name_archive_entry[PATH_MAX];
+    unsigned short len_name_archive_entry = 0;
+    struct tar_posix_header header;
+    if (checkout) {
         if (snprintf(path_checkout, PATH_MAX, "%s/%s", 
             private_payload->dir_checkout, path) < 0) {
             pr_error("Failed to format checkout path\n");
             return -1;
         }
-        switch (type) {
-        case GIT_OBJECT_BLOB: {
-            git_object *object;
-            int r = git_tree_entry_to_object(
-                &object, private_payload->repo->repository, entry);
-            if (r) {
-                pr_error(
-                    "Failed to convert entry to object, libgit return %d\n",
-                    r);
+    }
+    if (archive) {
+        char *name_archive_entry_end = stpcpy(name_archive_entry, path);
+        if (type != GIT_OBJECT_BLOB) {
+            *name_archive_entry_end = '/';
+            *(++name_archive_entry_end) = '\0';
+        }
+        len_name_archive_entry = name_archive_entry_end - name_archive_entry;
+    }
+    char link_target[PATH_MAX];
+    link_target[0] = '\0';
+    unsigned short len_link_target = 0;
+    switch (type) {
+    case GIT_OBJECT_BLOB: {
+        git_object *object;
+        int r = git_tree_entry_to_object(
+            &object, private_payload->repo->repository, entry);
+        if (r) {
+            pr_error(
+                "Failed to convert entry to object, libgit return %d\n",
+                r);
+            return -1;
+        }
+        git_blob *blob = (git_blob *)object;
+        void const *ro_buffer = git_blob_rawcontent(blob);
+        int mode = 0;
+        switch (git_tree_entry_filemode(entry)) {
+        case GIT_FILEMODE_BLOB:
+            report_type_mark = 'F';
+            mode = 0644;
+            break;
+        case GIT_FILEMODE_BLOB_EXECUTABLE:
+            report_type_mark = 'E';
+            mode = 0755;
+            break;
+        case GIT_FILEMODE_LINK:
+            report_type_mark = 'L';
+            len_link_target = 
+                stpncpy(link_target, (char const *)ro_buffer, PATH_MAX)
+                    - link_target;
+            if (len_link_target >= PATH_MAX) {
+                pr_error("Link target path '%s' too long\n", link_target);
                 return -1;
             }
-            git_blob *blob = (git_blob *)object;
-            void const *ro_buffer = git_blob_rawcontent(blob);
-            int mode = 0;
-            switch (git_tree_entry_filemode(entry)) {
-            case GIT_FILEMODE_BLOB:
-                pr_info("[F] => '%s'\n", path_checkout);
-                mode = 0644;
-                break;
-            case GIT_FILEMODE_BLOB_EXECUTABLE:
-                pr_info("[E] => '%s'\n", path_checkout);
-                mode = 0755;
-                break;
-            case GIT_FILEMODE_LINK:
-                pr_info("[L] => '%s' -> '%s'\n", path_checkout, 
-                    (char const *)ro_buffer);
-                mode = -1;
-                break;
-            default:
-                pr_error("Impossible tree entry filemode\n");
+            mode = -1;
+            break;
+        default:
+            pr_error("Impossible tree entry filemode\n");
+            git_object_free(object);
+            return -1;
+        }
+        if (report_type_mark == 'L') {
+            pr_info("[C:%c] => '%s' -> '%s'\n", 
+                report_type_mark, path_checkout, link_target);
+            pr_info("[A:%c] => '%s' -> '%s'\n", 
+                report_type_mark, name_archive_entry, link_target);
+            if (archive) {
+                if (len_link_target >= sizeof header.linkname &&
+                    tar_append_longlink_optional(
+                        fd_archive,  link_target, len_link_target)) {
+                    pr_error("Failed to append long link to tar\n");
+                    return -1;
+                }
+            }
+        } else {
+            pr_info("[C:%c] => '%s'\n", report_type_mark, path_checkout);
+            pr_info("[A:%c] => '%s'\n", report_type_mark, name_archive_entry);
+        }
+        if (archive) {
+            if (len_name_archive_entry >= sizeof header.name &&
+                tar_append_longname_optional(fd_archive, 
+                    name_archive_entry, len_name_archive_entry)) {
+                pr_error("Failed to append long name to tar\n");
+                return -1;
+            }
+        }
+        if (mode > 0) {
+            int blob_fd = open(path_checkout, O_WRONLY | O_CREAT, mode);
+            if (blob_fd < 0) {
+                pr_error("Failed to create file '%s' with mode 0o%o\n",
+                    path_checkout, mode);
                 git_object_free(object);
                 return -1;
             }
-            if (mode > 0) {
-                int blob_fd = open(path_checkout, O_WRONLY | O_CREAT, mode);
-                if (blob_fd < 0) {
-                    pr_error("Failed to create file '%s' with mode 0o%o\n",
-                        path_checkout, mode);
-                    git_object_free(object);
-                    return -1;
-                }
-                git_object_size_t size_blob = git_blob_rawsize(blob);
-                if (size_blob) {
-                    git_object_size_t size_written = 0;
-                    while (size_written < size_blob) {
-                        ssize_t size_written_this =
-                            write(blob_fd,
-                                ro_buffer + size_written, 
-                                size_blob - size_written);
-                        if (size_written_this < 0) {
-                            switch (errno) {
-                            case EAGAIN:
+            git_object_size_t size_blob = git_blob_rawsize(blob);
+            if (size_blob) {
+                git_object_size_t size_written = 0;
+                while (size_written < size_blob) {
+                    ssize_t size_written_this =
+                        write(blob_fd,
+                            ro_buffer + size_written, 
+                            size_blob - size_written);
+                    if (size_written_this < 0) {
+                        switch (errno) {
+                        case EAGAIN:
 #if (EAGAIN != EWOULDBLOCK)
-                            case EWOULDBLOCK:
+                        case EWOULDBLOCK:
 #endif
-                            case EINTR:
-                                break;
-                            default:
-                                pr_error_with_errno(
-                                    "Failed to write %lu bytes to file '%s'",
-                                    size_blob - size_written,
-                                    path_checkout);
-                                close(blob_fd);
-                                git_object_free(object);
-                                return -1;
-                            }
-                        } else {
-                            size_written += size_written_this;
+                        case EINTR:
+                            break;
+                        default:
+                            pr_error_with_errno(
+                                "Failed to write %lu bytes to file '%s'",
+                                size_blob - size_written,
+                                path_checkout);
+                            close(blob_fd);
+                            git_object_free(object);
+                            return -1;
                         }
+                    } else {
+                        size_written += size_written_this;
                     }
                 }
-                close(blob_fd);
-            } else {
-                if (symlink(ro_buffer, path_checkout)) {
-                    pr_error_with_errno(
-                        "Failed to create symlink at '%s' pointing to '%s'\n",
-                        path_checkout, (char const *)ro_buffer);
-                    git_object_free(object);
-                    return -1;
-                }
             }
-            git_object_free(object);
-            break;
-        }
-        case GIT_OBJECT_TREE:
-        case GIT_OBJECT_COMMIT:
-            pr_info("[D] => '%s/'\n", path_checkout);
-            if (mkdir(path_checkout, 0755)) {
-                pr_error_with_errno("Failed to create folder '%s'", 
-                    path_checkout);
+            close(blob_fd);
+        } else {
+            if (symlink(ro_buffer, path_checkout)) {
+                pr_error_with_errno(
+                    "Failed to create symlink at '%s' pointing to '%s'\n",
+                    path_checkout, (char const *)ro_buffer);
+                git_object_free(object);
                 return -1;
             }
-            break;
-        default:
-            pr_error("Impossible entry type\n");
+        }
+        git_object_free(object);
+        break;
+    }
+    case GIT_OBJECT_TREE:
+    case GIT_OBJECT_COMMIT:
+        pr_info("[C:D] => '%s/'\n", path_checkout);
+        pr_info("[A:D] => '%s'\n", name_archive_entry);
+        if (mkdir(path_checkout, 0755)) {
+            pr_error_with_errno("Failed to create folder '%s'", 
+                path_checkout);
             return -1;
         }
+        break;
+    default:
+        pr_error("Impossible entry type\n");
+        return -1;
     }
     if (type == GIT_OBJECT_COMMIT) {
         bool submodule_parsed = false;
