@@ -1231,14 +1231,13 @@ void print_config_repo(struct repo const *const restrict repo) {
         "|      hash: %016lx\n"
         "|      dir: %s\n"
         "|      sanitized: %s\n"
-        "|      link: %s -> %s\n",
+        "|      symlink: %s\n",
         repo->url,
         repo->added_from ? " (added from submodule)" : "",
         repo->url_hash,
         repo->dir_path,
         repo->url_no_scheme_sanitized,
-        repo->symlink_path,
-        repo->symlink_target);
+        repo->symlink_path);
     if (repo->wanted_objects.objects_count) {
         printf(
         "|      wanted (%lu, %s):\n", 
