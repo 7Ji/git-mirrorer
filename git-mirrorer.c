@@ -1717,6 +1717,32 @@ int repo_finish(
     return 0;
 }
 
+int repo_finish_bare(
+    struct repo *const restrict repo,
+    char const *const restrict dir_repos,
+    unsigned short len_dir_repos
+) {
+    if (repo == NULL || dir_repos == NULL || len_dir_repos == 0 || 
+        repo->wanted_objects_count > 0) {
+        pr_error("Internal: invalid arguments\n");
+        return -1;
+    }
+    if (repo_guarantee_symlink(repo, dir_repos)) {
+        pr_error("Failed to generate symlinks for repo '%s'\n", repo->url);
+        return -1;
+    }
+    repo->dir_path_len = len_dir_repos + HASH_STRING_LEN + 1;
+    if (snprintf(repo->dir_path, repo->dir_path_len + 1, "%s/"HASH_FORMAT, 
+        dir_repos, repo->url_hash) < 0) {
+        pr_error_with_errno(
+            "Failed to format dir path of repo '%s'\n",
+            repo->url);
+        return -1;
+    }
+    pr_info("Repo '%s' will be stored at '%s'\n", repo->url, repo->dir_path);
+    return 0;
+}
+
 int config_finish(
     struct config *const restrict config
 ) {
@@ -2227,6 +2253,11 @@ int repo_parse_commit_submodule_in_tree(
         }
         repo = config->repos + repo_id;
         submodule->target_repo_id = config->repos_count - 1;
+        if (repo_finish_bare(
+            get_last(config->repos), config->dir_repos, config->len_dir_repos)){
+            pr_error("Failed to finish bare repo\n");
+            return -1;
+        }
     }
     if (submodule->target_repo_id == (unsigned long) -1) {
         pr_error("Submodule '%s' with url '%s' for commmit '%s' of repo '%s' "
