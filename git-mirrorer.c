@@ -315,6 +315,7 @@ struct repo {
     struct parsed_commit *parsed_commits;
     unsigned long   wanted_objects_count,
                     wanted_objects_allocated,
+                    wanted_objects_count_original,
                     parsed_commits_count,
                     parsed_commits_allocated;
     enum repo_added_from added_from;
@@ -421,6 +422,54 @@ int export_commit_treewalk_callback(
     git_tree_entry const *const restrict entry,
     void *payload
 );
+
+#define declare_func_add_object_and_realloc_if_necessary_no_init( \
+        PARENT, STRUCT_CHILD, CHILD) \
+int PARENT##_add_##CHILD##_no_init( \
+    struct PARENT *const restrict PARENT \
+) { \
+    if (PARENT->CHILD##s == NULL) { \
+        if ((PARENT->CHILD##s = malloc( \
+            sizeof *PARENT->CHILD##s * ALLOC_BASE)) == NULL) { \
+            pr_error("Failed to allocate memory\n"); \
+            return -1; \
+        } \
+        PARENT->CHILD##s_allocated = ALLOC_BASE; \
+    } \
+    if (++PARENT->CHILD##s_count > PARENT->CHILD##s_allocated) { \
+        while (PARENT->CHILD##s_count > ( \
+            PARENT->CHILD##s_allocated *= 2)) { \
+            if (PARENT->CHILD##s_allocated == ULONG_MAX) { \
+                pr_error( \
+                    "Impossible to allocate more, how is this possible?\n"); \
+                return -1; \
+            } else if (PARENT->CHILD##s_allocated >= \
+                    ULONG_MAX / ALLOC_MULTIPLY) { \
+                PARENT->CHILD##s_allocated = ULONG_MAX; \
+            } else { \
+                PARENT->CHILD##s_allocated *= 2; \
+            } \
+        } \
+        struct STRUCT_CHILD *CHILD##s_new = realloc( \
+            PARENT->CHILD##s, \
+            sizeof *CHILD##s_new * PARENT->CHILD##s_allocated \
+        ); \
+        if (CHILD##s_new == NULL) { \
+            pr_error("Failed to allocate memory\n"); \
+            return -1; \
+        } \
+        PARENT->CHILD##s = CHILD##s_new; \
+    } \
+    return 0; \
+}
+
+declare_func_add_object_and_realloc_if_necessary_no_init(
+    parsed_commit, parsed_commit_submodule, submodule)
+
+declare_func_add_object_and_realloc_if_necessary_no_init(
+    repo, wanted_object, wanted_object)
+
+#define get_last(x) x + x##_count - 1
 
 /*
 int wanted_compare_commit(
@@ -880,44 +929,6 @@ int wanted_object_complete(
     default:
         pr_error("Impossible routine\n");
         return -1;
-    }
-    return 0;
-}
-
-int repo_add_wanted_object_no_init(
-    struct repo *const restrict repo
-) {
-    if (repo->wanted_objects == NULL) {
-        if ((repo->wanted_objects = malloc(
-            sizeof *repo->wanted_objects * ALLOC_BASE)) == NULL) {
-            pr_error("Failed to allocate memory for wanted objects\n");
-            return -1;
-        }
-        repo->wanted_objects_allocated = ALLOC_BASE;
-    }
-    if (++repo->wanted_objects_count > repo->wanted_objects_allocated) {
-        while (repo->wanted_objects_count > (
-            repo->wanted_objects_allocated *= 2)) {
-            if (repo->wanted_objects_allocated == ULONG_MAX) {
-                pr_error(
-                    "Impossible to allocate more, how is this possible?\n");
-                return -1;
-            } else if (repo->wanted_objects_allocated >= 
-                    ULONG_MAX / ALLOC_MULTIPLY) {
-                repo->wanted_objects_allocated = ULONG_MAX;
-            } else {
-                repo->wanted_objects_allocated *= 2;
-            }
-        }
-        struct wanted_object *wanted_objects_new = realloc(
-            repo->wanted_objects, 
-            sizeof *wanted_objects_new * repo->wanted_objects_allocated
-        );
-        if (wanted_objects_new == NULL) {
-            pr_error("Failed to allocate memory\n");
-            return -1;
-        }
-        repo->wanted_objects = wanted_objects_new;
     }
     return 0;
 }
@@ -1667,6 +1678,7 @@ int repo_finish(
             return -1;
         }
     }
+    repo->wanted_objects_count_original = repo->wanted_objects_count;
     for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
         struct wanted_object const *const restrict wanted_object = 
             repo->wanted_objects + i;
@@ -1750,7 +1762,7 @@ int config_finish(
         config->proxy_after = 0;
     }
     for (unsigned long i = 0; i < config->repos_count; ++i) {
-        if (config_repo_finish(
+        if (repo_finish(
             config->repos + i, config->dir_repos, config->len_dir_repos)) {
             pr_error("Failed to finish repo\n");
             return -1;
@@ -1805,7 +1817,7 @@ free_config_buffer:
     if (config_buffer) free(config_buffer);
 close_config_fd:
     if (config_fd != STDIN_FILENO) close (config_fd);
-    return 0;
+    return r;
 }
 
 // 0 existing and opened, 1 does not exist but created, -1 error
@@ -1813,7 +1825,7 @@ int repo_open_or_init_bare(
     struct repo *const restrict repo
 ) {
     if (repo == NULL || repo->url[0] == '\0' || 
-        repo->dir_path == NULL || repo->dir_path[0] == '\0') {
+        repo->dir_path[0] == '\0') {
         pr_error("Internal: invalid argument\n");
         return -1;
     }
@@ -1888,7 +1900,7 @@ int repo_open_or_init_bare(
     return 0;
 }
 
-int update_repo(
+int repo_update(
     struct config *const restrict config,
     unsigned long const repo_id
 ) {
@@ -2012,7 +2024,7 @@ int repo_prepare_open_or_create_if_needed(
     case 1:
         pr_warn(
             "Repo '%s' just created locally, need to update\n", repo->url);
-        if (update_repo(config, repo_id)) {
+        if (repo_update(config, repo_id)) {
             pr_error(
                 "Failed to update freshly created repo '%s'\n", repo->url);
             return -1;
@@ -2037,68 +2049,36 @@ int config_free(
     return 0;
 }
 
-int mirror_repo_add_submodule_to_wanted_commit(
-    struct wanted_commit *const restrict wanted_commit,
+int parsed_commit_add_submodule_and_init_with_path_and_url(
+    struct parsed_commit *const restrict parsed_commit,
     char const *const restrict path,
     unsigned short len_path,
     char const *const restrict url,
     unsigned short len_url
 ) {
-    if (wanted_commit->submodules == NULL) {
-        if ((wanted_commit->submodules = malloc(
-            sizeof *wanted_commit->submodules * (
-                wanted_commit->submodules_allocated = ALLOC_BASE
-            ))) == NULL)  {
-            pr_error("Failed to allocate memory for submodules\n");
-            goto error;
-        }
+    if (parsed_commit_add_submodule_no_init(parsed_commit)) {
+        pr_error("Failed to add submodule to commit\n");
+        return -1;
     }
-    if (++wanted_commit->submodules_count >
-        wanted_commit->submodules_allocated ) {
-        while (wanted_commit->submodules_count > 
-                wanted_commit->submodules_allocated ) {
-            if (wanted_commit->submodules_allocated == ULONG_MAX) {
-                pr_error("Failed to allocate more memory for submodules\n");
-                goto error;
-            } else if (wanted_commit->submodules_allocated >= ULONG_MAX / 2) {
-                wanted_commit->submodules_allocated = ULONG_MAX / 2;
-            } else {
-                wanted_commit->submodules_allocated *= 2;
-            }
-        }
-        struct wanted_commit_submodule *submodules_new = realloc(
-            wanted_commit->submodules,
-            sizeof *submodules_new * wanted_commit->submodules_allocated);
-        if (submodules_new == NULL) {
-            pr_error("Failed to re-allocate memory\n");
-            goto error;
-        }
-        wanted_commit->submodules = submodules_new;
-    }
-    struct wanted_commit_submodule *wanted_commit_submodule =
-        wanted_commit->submodules + wanted_commit->submodules_count - 1;
-    *wanted_commit_submodule = WANTED_COMMIT_SUBMODULE_INIT;
-    if ((wanted_commit_submodule->path = malloc(len_path + 1)) == NULL) {
-        goto reduce_submodules_count;
-    }
-    if ((wanted_commit_submodule->url = malloc(len_url + 1)) == NULL) {
-        goto free_path;
-    }
-    wanted_commit_submodule->url_hash = XXH3_64bits(url, len_url);
-    memcpy(wanted_commit_submodule->path, path, len_path + 1);
-    memcpy(wanted_commit_submodule->url, url, len_url + 1);
-    wanted_commit_submodule->path_len = len_path;
-    wanted_commit_submodule->url_len = len_url;
+    struct parsed_commit_submodule *const restrict submodule =
+        parsed_commit->submodules + parsed_commit->submodules_count -1;
+    *submodule = PARSED_COMMIT_SUBMODULE_INIT;
+    memcpy(submodule->path, path, len_path + 1);
+    memcpy(submodule->url, url, len_url + 1);
+    submodule->path_len = len_path;
+    submodule->url_len = len_url;
+    submodule->url_hash = hash_calculate(submodule->url, submodule->url_len);
     return 0;
-free_path:
-    free(wanted_commit_submodule->path);
-reduce_submodules_count:
-    --wanted_commit->submodules_count;
-error:
-    return -1;
 }
 
 // May re-allocate the config->repos array, must re-assign repo after calling
+
+int parsed_commit_add_submodule_in_tree(
+
+) {
+
+}
+
 int mirror_repo_parse_parse_submodule_in_tree(
     struct config *const restrict config,
     unsigned long repo_id,
@@ -2266,10 +2246,10 @@ free_entry:
 }
 
 // May re-allocate the config->repos array, must re-assign repo after calling
-int mirror_repo_parse_gitmodules_blob(
+int parsed_commit_parse_gitmodules_blob(
     struct config *const restrict config,
     unsigned long repo_id,
-    struct wanted_commit *const restrict wanted_commit,
+    struct parsed_commit *const restrict parsed_commit,
     git_tree const *const tree,
     git_blob *const restrict blob_gitmodules
 ) {
@@ -2462,7 +2442,7 @@ int mirror_repo_ensure_wanted_commit(
             "but the repo is not updated yet, "
             "trying to update the repo before looking up the commit again\n", 
             wanted_commit->id_hex_string, repo->url, r);
-        if (update_repo(config, repo_id)) {
+        if (repo_update(config, repo_id)) {
             pr_error("Failed to update repo\n");
             return -1;
         }
@@ -2725,12 +2705,19 @@ int repo_add_wanted_reference(
         pr_error("Reference does not start with 'refs/'\n");
         return -1;
     }
-    struct wanted_reference *const restrict wanted_reference =
-        malloc(sizeof *wanted_reference);
-    if (wanted_reference == NULL) {
-        pr_error("Failed to allocate memory for more wanted references\n");
+    if (repo_add_wanted_object_and_init_with_name_no_complete(
+        repo, reference_name, strlen(reference_name))) {
         return -1;
+        
     }
+    struct wanted_object *const restrict wanted_object = 
+        get_last(repo->wanted_objects);
+    // struct wanted_reference *const restrict wanted_reference =
+    //     malloc(sizeof *wanted_reference);
+    // if (wanted_reference == NULL) {
+    //     pr_error("Failed to allocate memory for more wanted references\n");
+    //     return -1;
+    // }
     *wanted_reference = WANTED_REFERENCE_INIT;
     wanted_reference->commit.base.name_len = strlen(reference_name);
     wanted_reference->commit.base.name = 
@@ -2877,21 +2864,25 @@ int mirror_repo(
     }
     pr_info("Mirroring repo '%s'\n", repo->url);
     r = -1;
-    for (struct wanted_base *wanted_object = repo->wanted_objects.objects_head;
-        wanted_object != NULL;
-        wanted_object = wanted_object->next) {
-        if (repo->wanted_objects.dynamic && !repo->updated) {
+    for (unsigned i = 0; i < repo->wanted_objects_count;) {
+        if (repo->wanted_dynamic && !repo->updated) {
             pr_warn(
                 "Dynamic wanted objects set for repo '%s', need to update\n", 
                 repo->url);
-            if (update_repo(config, repo_id)) {
+            if (repo_update(config, repo_id)) {
                 pr_error(
                     "Failed to update repo '%s' to prepare for "
                     "dynamic wanted objects\n",
                     repo->url);
                 return -1;
             }
+            pr_warn("Repo updated, go back to first wanted object\n");
+            // Drop all wanted objects added later
+            repo->wanted_objects_count = repo->wanted_objects_count_original;
+            i = 0;
+            continue;
         }
+        struct wanted_object *wanted_object = repo->wanted_objects + i;
         switch (wanted_object->type) {
         case WANTED_TYPE_COMMIT:
             r = mirror_repo_ensure_wanted_commit(
@@ -2910,14 +2901,15 @@ int mirror_repo(
         case WANTED_TYPE_TAG:
         case WANTED_TYPE_REFERENCE:
         case WANTED_TYPE_HEAD:
-            if (!repo->updated) {
-                if (update_repo(config, repo_id)) {
-                    pr_error(
-                        "Failed to make sure repo '%s' is up-to-date before "
-                        "resolving reference\n", repo->url);
-                    return -1;
-                }
-            }
+            // if (!repo->updated) {
+            //     if (repo_update(config, repo_id)) {
+            //         pr_error(
+            //             "Failed to make sure repo '%s' is up-to-date before "
+            //             "resolving reference\n", repo->url);
+            //         return -1;
+            //     }
+            //     goto reset_loop;
+            // }
             switch (wanted_object->type) {
             case WANTED_TYPE_ALL_TAGS:
                 r = mirror_repo_ensure_all_tags(
@@ -3000,6 +2992,7 @@ int mirror_repo(
                 wanted_object->name, repo->url);
             return -1;
         }
+        ++i;
     }
     pr_info("Finished mirroring repo '%s'\n", repo->url);
     return 0;
@@ -3831,10 +3824,10 @@ int ensure_path_non_exist( // essentially rm -rf
 int export_commit(
     struct config const *const restrict config,
     struct repo const *const restrict repo,
-    struct wanted_commit const *const restrict wanted_commit
+    struct parsed_commit const *const restrict parsed_commit,
+    bool const archive,
+    bool const checkout
 ) {
-    bool archive = wanted_commit->base.archive;
-    bool checkout = wanted_commit->base.checkout;
     char dir_checkout[PATH_MAX];
     char dir_checkout_work[PATH_MAX];
     char file_archive[PATH_MAX];
@@ -4042,15 +4035,13 @@ int export_commit(
 int export_all_repos(
     struct config const *const restrict config
 ) {
-    if (config->export_threads <= 1) {
-        pr_info("Single threaded exporting repos\n");
-    }
     for (unsigned long i = 0; i < config->repos_count; ++i) {
-        struct repo const *const repo = config->repos + i;
-        for (struct wanted_base const *wanted_object = 
-            repo->wanted_objects.objects_head;
-            wanted_object != NULL;
-            wanted_object = wanted_object->next) {
+        struct repo const *const restrict repo = config->repos + i;
+        for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
+            struct wanted_object const *const restrict wanted_object = 
+                repo->wanted_objects + j;
+            if (wanted_object->archive || wanted_object->checkout);
+            else continue;
             switch (wanted_object->type) {
             case WANTED_TYPE_BRANCH:
             case WANTED_TYPE_TAG:
@@ -4071,11 +4062,16 @@ int export_all_repos(
                 }
                 __attribute__((fallthrough));
             case WANTED_TYPE_COMMIT: {
-                struct wanted_commit const * const wanted_commit = 
-                    (struct wanted_commit const *const)wanted_object;
-                if (export_commit(config, repo, wanted_commit)) {
+                if (wanted_object->parsed_commit_id == (unsigned long) -1) {
+                    pr_error("Commit '%s' is not parsed yet\n",
+                        wanted_object->id_hex_string);
+                    return -1;
+                }
+                if (export_commit(config, repo, 
+                    repo->parsed_commits + wanted_object->parsed_commit_id, 
+                    wanted_object->archive, wanted_object->checkout)) {
                     pr_error("Failed to export commit '%s' of repo '%s'\n",
-                        wanted_commit->id_hex_string, repo->url);
+                        wanted_object->id_hex_string, repo->url);
                     return -1;
                 }
                 break;
