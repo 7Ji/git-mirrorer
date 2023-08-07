@@ -2168,6 +2168,17 @@ int repo_add_parsed_commit(
     return 0;
 }
 
+// May re-allocate repo->parsed_commits
+// int repo_add_parsed_commit_optional(
+//     struct repo *const restrict repo,
+//     git_oid const *const restrict oid
+// ) {
+//     for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
+
+//     }
+//     return repo_add_parsed_commit(repo, oid);
+// }
+
 // May re-allocate config->repos
 int repo_parse_commit_submodule_in_tree(
     struct config *const restrict config,
@@ -2430,102 +2441,56 @@ free_object:
     free(object_gitmodules);
     return r;
 }
-/*
 
-// May re-allocate the config->repos array, must re-assign repo after calling
-int mirror_repo_ensure_wanted_commit(
-    struct config *const restrict config,
-    unsigned long const repo_id,
+// May re-allocate repo->parsed_commits
+int repo_parse_wanted_commit(
+    struct repo *const restrict repo,
     struct wanted_commit *const restrict wanted_commit
 ) {
-    struct repo *restrict repo = config->repos + repo_id;
-    int r = repo_prepare_open_or_create_if_needed(repo);
-    if (r) {
-        pr_error("Failed to ensure repo '%s' is opened\n", repo->url);
+    for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
+        if (!git_oid_cmp(&repo->parsed_commits[i].id, &wanted_commit->id)) {
+            wanted_commit->parsed_commit_id = i;
+            return 0;
+        }
+    }
+    if (repo_add_parsed_commit(repo, &wanted_commit->id)) {
+        pr_error("Failed to add parsed commit\n");
         return -1;
     }
-    git_commit *commit;
-    r = git_commit_lookup(&commit, repo->repository, &wanted_commit->id);
-    if (r) {
-        if (repo->updated) {
-            pr_error(
-                "Failed to lookup commit '%s' in repo '%s' "
-                "even it's up-to-date, "
-                "libgit return %d, consider failure\n", 
-                wanted_commit->id_hex_string, repo->url, r);
-            return -1;
-        }
-        pr_warn(
-            "Commit '%s' does not exist in repo '%s' (libgit return %d), "
-            "but the repo is not updated yet, "
-            "trying to update the repo before looking up the commit again\n", 
-            wanted_commit->id_hex_string, repo->url, r);
-        if (repo_update(repo)) {
-            pr_error("Failed to update repo\n");
-            return -1;
-        }
-        if ((r = git_commit_lookup(
-            &commit, repo->repository, &wanted_commit->id))) {
-            pr_error(
-                "Failed to lookup commit '%s' in repo '%s' "
-                "even after updating the repo, libgit return %d, "
-                "consider failure\n",
-                wanted_commit->id_hex_string, repo->url, r);
-            return -1;
-        }
-    }
-    git_tree *tree;
-    if ((r = git_commit_tree(&tree, commit))) {
-        pr_error(
-            "Failed to get the commit tree pointed by commit '%s' "
-            "in repo '%s', libgit return %d\n", 
-            wanted_commit->id_hex_string, repo->url, r);
-        r = -1;
-        goto free_commit;
-    }
-    git_tree_entry const *const entry_gitmodules = 
-        git_tree_entry_byname(tree, ".gitmodules");
-    if (entry_gitmodules != NULL) {
-        pr_warn(
-            "Found .gitmodules in commit tree of '%s' for repo '%s', "
-            "parsing submodules\n", wanted_commit->id_hex_string, repo->url);
-        r = mirror_repo_parse_submodules(
-            config, repo_id, wanted_commit, tree, entry_gitmodules);
-        repo = config->repos + repo_id;
-        if (r) {
-            pr_error(
-                "Failed to parse submodules in commit tree of '%s' "
-                "for repo '%s'\n", 
-                wanted_commit->id_hex_string, repo->url);
-            r = -1;
-            goto free_commit;
-        }
-    }
-    pr_info("Ensured existence of commit '%s' in repo '%s'\n",
-        wanted_commit->id_hex_string, repo->url);
-    r = 0;
-free_commit:
-    git_commit_free(commit);
-    return r;
+    wanted_commit->parsed_commit_id = repo->parsed_commits_count - 1;
+    return 0;
 }
 
-// May re-allocate the config->repos array, must re-assign repo after calling
-int mirror_repo_ensure_wanted_reference_common(
-    struct config *const restrict config,
-    unsigned long const repo_id,
+// May re-allocate repo->parsed_commits
+int repo_parse_wanted_reference_common(
+    struct repo *const restrict repo,
     struct wanted_reference *const restrict wanted_reference,
-    git_reference *reference
+    git_reference *reference,
+    git_fetch_options *const restrict fetch_options,
+    unsigned short const proxy_after
 ) {
-    struct repo *restrict repo = config->repos + repo_id;
-    char const *const reference_name = wanted_reference->commit.base.name;
     git_object *object;
     int r;
     if ((r = git_reference_peel(&object, reference, GIT_OBJECT_COMMIT))) {
-        pr_error(
-            "Failed to peel reference '%s' into a commit object, "
-            "libgit return %d\n",
-            reference_name, r);
-        return -1;
+        if (repo->updated) {
+            pr_error(
+                "Failed to peel reference '%s' into a commit object, "
+                "libgit return %d\n",
+                wanted_reference->name, r);
+            return -1;
+        }
+        pr_warn("Failed to peel reference '%s' into a commit object, "
+                "libgit return %d, but repo not updated yet, update to retry\n",
+                wanted_reference->name, r);
+        if (repo_update(repo, fetch_options, proxy_after)) {
+            pr_error("Failed to update\n");
+            return -1;
+        }
+        if ((r = git_reference_peel(&object, reference, GIT_OBJECT_COMMIT))) {
+            pr_error("Failed to peel reference '%s' into commit object even "
+            "after updating, libgit return %d\n", wanted_reference->name, r);
+            return -1;
+        }
     }
     git_commit *commit = (git_commit *)object;
     wanted_reference->commit_resolved = true;
@@ -2542,38 +2507,19 @@ int mirror_repo_ensure_wanted_reference_common(
     git_object_free(object);
     pr_info("Resolved reference '%s' of repo '%s' to commit '%s', "
         "working on that commit instead\n",
-        reference_name, repo->url, 
+        wanted_reference->name, repo->url, 
         wanted_reference->commit.id_hex_string);
-    r = mirror_repo_ensure_wanted_commit(
-        config, repo_id, &wanted_reference->commit);
-    repo = config->repos + repo_id;
-    if (r) {
-        pr_error("Failed to ensuring robust of commit '%s' resolved from "
-            "reference '%s' of repo '%s'\n", 
-            wanted_reference->commit.id_hex_string, 
-            reference_name,
-            repo->url);
-        return -1;
-    }
-    pr_info("Ensured existence and robust of reference '%s' in repo '%s'\n",
-        reference_name, repo->url);
-    return 0;
+    return repo_parse_wanted_commit(repo, 
+                                (struct wanted_commit *)wanted_reference);
 }
 
-// May re-allocate the config->repos array, must re-assign repo after calling
-int mirror_repo_ensure_wanted_head(
-    struct config *const restrict config,
-    unsigned long const repo_id,
+// May re-allocate repo->parsed_commits
+int repo_parse_wanted_head(
+    struct repo *const restrict repo,
     struct wanted_reference *const restrict wanted_head
 ) {
-    int r = repo_prepare_open_or_create_if_needed(config, repo_id);
-    struct repo *restrict repo = config->repos + repo_id;
-    if (r) {
-        pr_error("Failed to ensure repo '%s' is opened\n", repo->url);
-        return -1;
-    }
     git_reference *head;
-    r = git_repository_head(&head, repo->repository);
+    int r = git_repository_head(&head, repo->repository);
     switch (r) {
     case GIT_OK:
         break;
@@ -2869,7 +2815,7 @@ int mirror_repo_ensure_all_tags(
     }
     return 0;
 }
-*/
+
 
 // May re-allocate config->repos, and repo->parsed_commits
 int repo_lookup_commit_and_update_if_failed(
@@ -3056,138 +3002,89 @@ int mirror_repo(
         return -1;
     }
     pr_info("Mirroring repo '%s'\n", repo->url);
+    bool updated = repo->updated;
     for (unsigned i = 0; i < repo->wanted_objects_count;) {
-        /* TODO: Reduce assignment to r */
-        r = -1;
         if (repo->wanted_dynamic && !repo->updated) {
             pr_warn(
                 "Dynamic wanted objects set for repo '%s', need to update\n", 
                 repo->url);
-            if (repo_update(
-                repo, &config->fetch_options, config->proxy_after)) {
-                pr_error(
-                    "Failed to update repo '%s' to prepare for "
-                    "dynamic wanted objects\n",
-                    repo->url);
-                return -1;
-            }
-            if (repo->parsed_commits_count) {
-                pr_warn("Repo already has parsed commits, need to re-ensure "
-                "them as the updated repo might have different content\n");
-                r = repo_ensure_all_parsed_commits(config, repo_id);
-                repo = config->repos + repo_id;
-                if (r) {
-                    pr_error("Failed to ensure robustness of all existing "
-                    "parsed commits after updating the repo, upstream may have "
-                    "force pushed, refuse to continue for data integrity\n");
-                    return -1;
-                }
-            }
-            pr_warn("Repo updated, go back to first wanted object\n");
-            // Drop all wanted objects added later
-            repo->wanted_objects_count = repo->wanted_objects_count_original;
-            i = 0;
-            continue;
+            goto update;
         }
         struct wanted_object *wanted_object = repo->wanted_objects + i;
         switch (wanted_object->type) {
         case WANTED_TYPE_COMMIT:
-            r = mirror_repo_ensure_wanted_commit(
-                config, repo_id, (struct wanted_commit *)wanted_object);
+            if (repo_parse_wanted_commit(repo, 
+                (struct wanted_object *)wanted_object)) {
+                pr_error("Failed to parse wanted commit '%s' for repo '%s'\n",
+                        wanted_object->id_hex_string, repo->url);
+                return -1;
+            }
+            break;
+        case WANTED_TYPE_ALL_TAGS:
+            r = mirror_repo_ensure_all_tags(
+                config, repo_id, (struct wanted_base *)wanted_object);
             repo = config->repos + repo_id;
             if (r) {
                 pr_error(
-                    "Failed to ensure commit '%s' robust for repo '%s'",
-                    wanted_object->name, repo->url);
-                return -1;   
+                    "Failed to ensure all tags robust for repo '%s'\n",
+                    repo->url
+                );
+                return -1;
             }
             break;
         case WANTED_TYPE_ALL_BRANCHES:
-        case WANTED_TYPE_ALL_TAGS:
+            r = mirror_repo_ensure_all_branches(
+                config, repo_id, (struct wanted_base *)wanted_object);
+            repo = config->repos + repo_id;
+            if (r) {
+                pr_error(
+                    "Failed to ensure all branches robust for repo '%s'\n",
+                    repo->url
+                );
+                return -1;
+            }
+            break;
         case WANTED_TYPE_BRANCH:
+            r = mirror_repo_ensure_wanted_branch(
+                config, repo_id, (struct wanted_reference *)wanted_object);
+            repo = config->repos + repo_id;
+            if (r) {
+                pr_error(
+                    "Failed to ensure branch '%s' robust for repo '%s'\n",
+                    wanted_object->name, repo->url);
+                return -1;
+            }
+            break;
         case WANTED_TYPE_TAG:
+            r = mirror_repo_ensure_wanted_tag(
+                config, repo_id, (struct wanted_reference *)wanted_object);
+            repo = config->repos + repo_id;
+            if (r) {
+                pr_error(
+                    "Failed to ensure tag '%s' robust for repo '%s'\n",
+                    wanted_object->name, repo->url);
+                return -1;
+            }
+            break;
         case WANTED_TYPE_REFERENCE:
+            r = mirror_repo_ensure_wanted_reference(
+                config, repo_id, (struct wanted_reference *)wanted_object);
+            repo = config->repos + repo_id;
+            if (r) {
+                pr_error(
+                    "Failed to ensure reference '%s' robust "
+                    "for repo '%s'\n",
+                    wanted_object->name, repo->url);
+                return -1;
+            }
+            break;
         case WANTED_TYPE_HEAD:
-            // if (!repo->updated) {
-            //     if (repo_update(config, repo_id)) {
-            //         pr_error(
-            //             "Failed to make sure repo '%s' is up-to-date before "
-            //             "resolving reference\n", repo->url);
-            //         return -1;
-            //     }
-            //     goto reset_loop;
-            // }
-            switch (wanted_object->type) {
-            case WANTED_TYPE_ALL_TAGS:
-                r = mirror_repo_ensure_all_tags(
-                    config, repo_id, (struct wanted_base *)wanted_object);
-                repo = config->repos + repo_id;
-                if (r) {
-                    pr_error(
-                        "Failed to ensure all tags robust for repo '%s'\n",
-                        repo->url
-                    );
-                    return -1;
-                }
-                break;
-            case WANTED_TYPE_ALL_BRANCHES:
-                r = mirror_repo_ensure_all_branches(
-                    config, repo_id, (struct wanted_base *)wanted_object);
-                repo = config->repos + repo_id;
-                if (r) {
-                    pr_error(
-                        "Failed to ensure all branches robust for repo '%s'\n",
-                        repo->url
-                    );
-                    return -1;
-                }
-                break;
-            case WANTED_TYPE_BRANCH:
-                r = mirror_repo_ensure_wanted_branch(
-                    config, repo_id, (struct wanted_reference *)wanted_object);
-                repo = config->repos + repo_id;
-                if (r) {
-                    pr_error(
-                        "Failed to ensure branch '%s' robust for repo '%s'\n",
-                        wanted_object->name, repo->url);
-                    return -1;
-                }
-                break;
-            case WANTED_TYPE_TAG:
-                r = mirror_repo_ensure_wanted_tag(
-                    config, repo_id, (struct wanted_reference *)wanted_object);
-                repo = config->repos + repo_id;
-                if (r) {
-                    pr_error(
-                        "Failed to ensure tag '%s' robust for repo '%s'\n",
-                        wanted_object->name, repo->url);
-                    return -1;
-                }
-                break;
-            case WANTED_TYPE_REFERENCE:
-                r = mirror_repo_ensure_wanted_reference(
-                    config, repo_id, (struct wanted_reference *)wanted_object);
-                repo = config->repos + repo_id;
-                if (r) {
-                    pr_error(
-                        "Failed to ensure reference '%s' robust "
-                        "for repo '%s'\n",
-                        wanted_object->name, repo->url);
-                    return -1;
-                }
-                break;
-            case WANTED_TYPE_HEAD:
-                r = mirror_repo_ensure_wanted_head(
-                    config, repo_id, (struct wanted_reference *)wanted_object);
-                repo = config->repos + repo_id;
-                if (r) {
-                    pr_error("Failed to ensure HEAD robust for repo '%s'\n",
-                    repo->url);
-                    return -1;
-                }
-                break;
-            default:
-                pr_error("Impossible wanted object type\n");
+            r = mirror_repo_ensure_wanted_head(
+                config, repo_id, (struct wanted_reference *)wanted_object);
+            repo = config->repos + repo_id;
+            if (r) {
+                pr_error("Failed to ensure HEAD robust for repo '%s'\n",
+                repo->url);
                 return -1;
             }
             break;
@@ -3199,8 +3096,50 @@ int mirror_repo(
                 wanted_object->name, repo->url);
             return -1;
         }
+        if (repo->updated && !updated) {
+            pr_warn("Silent update happended during run, need to reset loop\n");
+            goto reset_loop_after_update;
+        }
         ++i;
+        continue;
+update:
+        if (repo_update(
+            repo, &config->fetch_options, config->proxy_after)) {
+            pr_error(
+                "Failed to update repo '%s' to prepare for "
+                "dynamic wanted objects\n",
+                repo->url);
+            return -1;
+        }
+reset_loop_after_update:
+        if (repo->parsed_commits_count) {
+            pr_warn("Repo already has parsed commits, need to re-ensure "
+            "them as the updated repo might have different content\n");
+            r = repo_ensure_all_parsed_commits(config, repo_id);
+            repo = config->repos + repo_id;
+            if (r) {
+                pr_error("Failed to ensure robustness of all existing "
+                "parsed commits after updating the repo, upstream may have "
+                "force pushed, refuse to continue for data integrity\n");
+                return -1;
+            }
+        }
+        // Drop all wanted objects added later
+        updated = repo->updated; // Technically they're both true
+        if (!updated) {
+            pr_error("Impossible value for update mark\n");
+            return -1;
+        }
+        repo->wanted_objects_count = repo->wanted_objects_count_original;
+        i = 0;
+        pr_warn("Repo updated, go back to first wanted object\n");
     }
+    
+    if (repo_ensure_all_parsed_commits(config, repo_id)) {
+        pr_error("Failed to ensure robustness of all parsed commits\n");
+        return -1;
+    }
+    repo = config->repos + repo_id;
     pr_info("Finished mirroring repo '%s'\n", repo->url);
     return 0;
 }
