@@ -190,11 +190,10 @@ char const *WANTED_TYPE_STRINGS[] = {
 
 #define WANTED_BASE_DECLARE {\
     enum wanted_type type;\
-    char *name;\
+    char name[NAME_MAX + 1];\
     unsigned short name_len;\
     bool archive;\
     bool checkout;\
-    struct wanted_base *previous, *next;\
 }
 
 struct wanted_base WANTED_BASE_DECLARE;
@@ -202,24 +201,10 @@ struct wanted_base WANTED_BASE_DECLARE;
 struct wanted_base const WANTED_BASE_INIT = {0};
 
 struct wanted_base const WANTED_ALL_BRANCHES_INIT = {
-    .type = WANTED_TYPE_ALL_BRANCHES, 0 };
+    .type = WANTED_TYPE_ALL_BRANCHES };
 
 struct wanted_base const WANTED_ALL_TAGS_INIT = {
-    .type = WANTED_TYPE_ALL_TAGS, 0 };
-
-struct wanted_commit_submodule {
-    char *path;
-    unsigned short path_len;
-    char *url;
-    unsigned short url_len;
-    XXH64_hash_t url_hash;
-    unsigned long repo_id;
-    git_oid id;
-    char id_hex_string[GIT_OID_MAX_HEXSIZE + 1];
-};
-
-struct wanted_commit_submodule const WANTED_COMMIT_SUBMODULE_INIT = {
-    .repo_id = (unsigned long) -1, {{0}}};
+    .type = WANTED_TYPE_ALL_TAGS };
 
 #define WANTED_COMMIT_DECLARE { \
     union { \
@@ -228,15 +213,13 @@ struct wanted_commit_submodule const WANTED_COMMIT_SUBMODULE_INIT = {
     }; \
     git_oid id; \
     char id_hex_string[GIT_OID_MAX_HEXSIZE + 1]; \
-    struct wanted_commit_submodule *submodules; \
-    unsigned long submodules_count; \
-    unsigned long submodules_allocated; \
+    unsigned long parsed_commit_id; \
 }
 
 struct wanted_commit WANTED_COMMIT_DECLARE;
 
 struct wanted_commit const WANTED_COMMIT_INIT = {
-    .base.type = WANTED_TYPE_COMMIT, 0};
+    .base.type = WANTED_TYPE_COMMIT, .parsed_commit_id = (unsigned long) -1};
 
 #define WANTED_REFERENCE_DECLARE { \
     union { \
@@ -248,76 +231,116 @@ struct wanted_commit const WANTED_COMMIT_INIT = {
 
 struct wanted_reference WANTED_REFERENCE_DECLARE;
 
-struct wanted_any {
+struct wanted_object {
     union {
         struct wanted_reference reference;
         struct WANTED_REFERENCE_DECLARE;
     };
 };
 
+struct wanted_object const WANTED_OBJECT_INIT = {
+    .type = WANTED_TYPE_UNKNOWN, .parsed_commit_id = (unsigned long) -1};
+
 struct wanted_reference const WANTED_REFERENCE_INIT = {
-    .commit.base.type = WANTED_TYPE_REFERENCE, 0};
+    .commit.base.type = WANTED_TYPE_REFERENCE, 
+    .parsed_commit_id = (unsigned long) -1};
 
 struct wanted_reference const WANTED_BRANCH_INIT = {
-    .commit.base.type = WANTED_TYPE_BRANCH, 0 };
+    .commit.base.type = WANTED_TYPE_BRANCH, 
+    .parsed_commit_id = (unsigned long) -1};
 
 struct wanted_reference const WANTED_TAG_INIT = {
-    .commit.base.type = WANTED_TYPE_TAG, 0 };
+    .commit.base.type = WANTED_TYPE_TAG, 
+    .parsed_commit_id = (unsigned long) -1};
 
 struct wanted_reference const WANTED_HEAD_INIT = {
-    .commit.base.type = WANTED_TYPE_HEAD, 0 };
+    .commit.base.type = WANTED_TYPE_HEAD, 
+    .parsed_commit_id = (unsigned long) -1};
 
-struct wanted_objects {
-    struct wanted_base *objects_head;
-    struct wanted_base *objects_tail;
-    unsigned long objects_count;
-    bool dynamic;
+
+struct parsed_commit_submodule {
+    git_oid id;
+    char    id_hex_string[GIT_OID_MAX_HEXSIZE + 1],
+            path[PATH_MAX],
+            url[PATH_MAX];
+    unsigned short  path_len,
+                    url_len;
+    XXH64_hash_t url_hash;
+    unsigned long   target_repo_id,
+                    target_commit_id;
 };
+
+struct parsed_commit_submodule const PARSED_COMMIT_SUBMODULE_INIT = {
+    .target_repo_id = (unsigned long) -1, 
+    .target_commit_id = (unsigned long) -1};
+
+struct parsed_commit {
+    git_oid id;
+    char id_hex_string[GIT_OID_MAX_HEXSIZE + 1];
+    struct parsed_commit_submodule *submodules;
+    unsigned long   submodules_count,
+                    submodules_allocated;
+};
+
+struct parsed_commit const PARSED_COMMIT_INIT = {0};
 
 enum repo_added_from {
     REPO_ADDED_FROM_CONFIG,
     RPEO_ADDED_FROM_SUBMODULES,
 };
 
+#define hash_type   XXH64_hash_t
+#define hash_calculate(data, size)  XXH3_64bits(data, size)
+#define HASH_NAME   "64bit xxh3 hash"
+#define HASH_FORMAT "%016lx"
+#define HASH_STRING_LEN  16
+
 struct repo {
-    char    *url,
-            *url_no_scheme_sanitized;
+    char    url[PATH_MAX],
+            url_no_scheme_sanitized[PATH_MAX],
+            // symlink_link[PATH_MAX],
+            // symlink_target[PATH_MAX],
+            dir_path[PATH_MAX];
+            // url_hash_string[17];
     unsigned short  url_len,
                     url_no_scheme_sanitized_len,
-                    url_no_scheme_sanitized_parts;
-    XXH64_hash_t    url_hash,
-                    url_no_scheme_sanitized_hash;
-    char *symlink_path;
-    unsigned short symlink_path_len;
-    char *symlink_target;
-    unsigned short symlink_target_len;
-    char *dir_path;
-    unsigned short dir_path_len;
-    char dir_name[17];
+                    url_no_scheme_sanitized_parts,
+                    // symlink_link_len,
+                    // symlink_target_len,
+                    dir_path_len;
+    hash_type   url_hash,
+                url_no_scheme_sanitized_hash;
     git_repository *repository;
-    struct wanted_objects wanted_objects;
+    struct wanted_object *wanted_objects;
+    struct parsed_commit *parsed_commits;
+    unsigned long   wanted_objects_count,
+                    wanted_objects_allocated,
+                    parsed_commits_count,
+                    parsed_commits_allocated;
     enum repo_added_from added_from;
+    bool wanted_dynamic;
     bool updated;
 };
+
+static const struct repo REPO_INIT = {0};
 
 struct config {
     struct repo *repos;
     unsigned long   repos_count,
                     repos_allocated;
     git_fetch_options fetch_options;
-    char    *proxy_url,
-            *dir_repos,
-            *dir_archives,
-            *dir_checkouts;
+    char    proxy_url[PATH_MAX],
+            dir_repos[PATH_MAX],
+            dir_archives[PATH_MAX],
+            dir_checkouts[PATH_MAX];
     unsigned short  proxy_after,
                     len_proxy_url,
                     len_dir_repos,
                     len_dir_archives,
-                    len_dir_checkouts,
-                    export_threads;
+                    len_dir_checkouts;
 };
 
-enum YAML_CONFIG_PARSING_STATUS {
+enum yaml_config_parsing_status {
     YAML_CONFIG_PARSING_STATUS_NONE,
     YAML_CONFIG_PARSING_STATUS_STREAM,
     YAML_CONFIG_PARSING_STATUS_DOCUMENT,
@@ -340,23 +363,20 @@ enum YAML_CONFIG_PARSING_STATUS {
     YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_TYPE,
     YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_ARCHIVE,
     YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_CHECKOUT,
-    // YAML_CONFIG_PARSING_STATUS_REPOS_URL_VALUES,
 };
 
-struct config_yaml_parse_state {
-    int level;
-    unsigned short 
-        stream_start,
-        stream_end,
-        document_start,
-        document_end,
-        global,
-        repos;
-    long repo_id;
-    enum YAML_CONFIG_PARSING_STATUS status;
-};
-
-static const struct repo REPO_INIT = {0};
+// struct config_yaml_parse_state {
+//     // int level;
+//     // unsigned short 
+//     //     stream_start,
+//     //     stream_end,
+//     //     document_start,
+//     //     document_end,
+//     //     global,
+//     //     repos;
+//     long repo_id;
+//     enum YAML_CONFIG_PARSING_STATUS status;
+// };
 
 int sideband_progress(char const *string, int len, void *payload);
 int fetch_progress(git_indexer_progress const *stats, void *payload);
@@ -379,14 +399,14 @@ struct config const CONFIG_INIT = {
         .proxy_opts = GIT_PROXY_OPTIONS_INIT,
         0,
     },
-    .proxy_url = NULL,
+    .proxy_url = "",
     .proxy_after = 0,
 };
 
 struct export_commit_treewalk_payload {
     struct config const *const restrict config;
     struct repo const *const restrict repo;
-    struct wanted_commit const *const restrict wanted_commit;
+    struct parsed_commit const *const restrict parsed_commit;
     char *const restrict submodule_path;
     unsigned short const submodule_path_len;
     bool const archive;
@@ -402,6 +422,7 @@ int export_commit_treewalk_callback(
     void *payload
 );
 
+/*
 int wanted_compare_commit(
     struct wanted_commit const *const restrict a,
     struct wanted_commit const *const restrict b
@@ -427,6 +448,7 @@ int wanted_compare_commit(
     }
     return 0;
 };
+*/
 
 int mirror_repo_ensure_wanted_commit(
     struct config *const restrict config,
@@ -672,12 +694,9 @@ int config_add_repo_and_init_with_url(
         return -1;
     }
     url_no_scheme_sanitized[url_no_scheme_sanitized_len] = '\0';
-    XXH64_hash_t url_hash = XXH3_64bits(url, len_url);
-    XXH64_hash_t url_no_scheme_sanitized_hash = XXH3_64bits(
+    hash_type url_hash = hash_calculate(url, len_url);
+    hash_type url_no_scheme_sanitized_hash = hash_calculate(
         url_no_scheme_sanitized, url_no_scheme_sanitized_len);
-#ifdef PRE_CREATE_SANITIZED_DIRS
-    bool sanitized_duplicated = false;
-#endif
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         struct repo const *const restrict repo_cmp = config->repos + i;
         if (repo_cmp->url_hash == url_hash) {
@@ -692,41 +711,17 @@ int config_add_repo_and_init_with_url(
             "url '%s', this is not recommended and you should check upstream "
             "if they are acutally the same repo\n",
                 url, repo_cmp->url, url_no_scheme_sanitized);
-#ifdef PRE_CREATE_SANITIZED_DIRS
-            sanitized_duplicated = true;
-#endif
         }
     }
-#ifdef PRE_CREATE_SANITIZED_DIRS
-    if (!sanitized_duplicated) {
-        char dir_sanitized_link[PATH_MAX];
-        char const *dirs[] = {
-            config->dir_archives, config->dir_checkouts
-        };
-        for (unsigned short i = 0; i < sizeof dirs / sizeof *dirs; ++i) {
-            if (dirs[i] == NULL) continue;
-            if (snprintf(dir_sanitized_link, PATH_MAX, "%s/links/%s", 
-                dirs[i], url_no_scheme_sanitized) < 0) {
-                pr_error_with_errno(
-                    "Failed to format sanitized link dir for '%s'", dirs[i]);
-                return -1;
-            }
-            if (mkdir_recursively(dir_sanitized_link)) {
-                pr_error("Failed to mkdir '%s' recursively\n", 
-                        dir_sanitized_link);
-                return -1;
-            }
-        }
-    }
-#endif
     if (++config->repos_count > config->repos_allocated) {
-        while (config->repos_count > (
-            config->repos_allocated *= ALLOC_MULTIPLY)) {
+        while (config->repos_count > config->repos_allocated) {
             if (config->repos_allocated == ULONG_MAX) {
                 pr_error("Impossible to allocate more memory\n");
                 return -1;
             } else if (config->repos_allocated >= ULONG_MAX / ALLOC_MULTIPLY) {
                 config->repos_allocated = ULONG_MAX;
+            } else {
+                config->repos_allocated *= ALLOC_MULTIPLY;
             }
         }
         struct repo *repos_new = realloc(config->repos, 
@@ -739,24 +734,6 @@ int config_add_repo_and_init_with_url(
     }
     struct repo *repo = config->repos + config->repos_count - 1;
     *repo = REPO_INIT;
-    if (snprintf(
-        repo->dir_name, sizeof repo->dir_name, "%016lx", url_hash) < 0) {
-        pr_error_with_errno("Failed to generate hashed dir name");
-        --config->repos_count;
-        return -1;
-    }
-    if ((repo->url = malloc(len_url + 1)) == NULL) {
-        pr_error("Failed to allocate memory for url\n");
-        --config->repos_count;
-        return -1;
-    }
-    if ((repo->url_no_scheme_sanitized = 
-        malloc(url_no_scheme_sanitized_len + 1)) == NULL) {
-        pr_error("Failed to allocate memory for no scheme sanitized url");
-        free(repo->url);
-        --config->repos_count;
-        return -1;
-    }
     memcpy(repo->url, url, len_url + 1);
     repo->url_len = len_url;
     repo->url_hash = url_hash;
@@ -765,7 +742,8 @@ int config_add_repo_and_init_with_url(
     repo->url_no_scheme_sanitized_len = url_no_scheme_sanitized_len;
     repo->url_no_scheme_sanitized_hash = url_no_scheme_sanitized_hash;
     repo->url_no_scheme_sanitized_parts = url_no_scheme_sanitized_parts;
-    pr_info("Added repo '%s', hash '%016lx', no scheme sanitized url '%s'\n", 
+    pr_info("Added repo '%s', "HASH_NAME" '"HASH_FORMAT"', "
+            "no scheme sanitized url '%s'\n", 
             repo->url,
             repo->url_hash,
             repo->url_no_scheme_sanitized);
@@ -788,38 +766,38 @@ static inline bool object_name_is_sha1(
     return true;
 }
 
-enum wanted_type wanted_object_guess_type(
-    char const *const restrict object,
-    unsigned short len_object
+enum wanted_type wanted_type_guess_from_name(
+    char const *const restrict name,
+    unsigned short len_name
 ) {
-    switch (len_object) {
+    switch (len_name) {
     case 3:
-        if (!strncasecmp(object, "dev", 3)) return WANTED_TYPE_BRANCH;
+        if (!strncasecmp(name, "dev", 3)) return WANTED_TYPE_BRANCH;
         break;
     case 4:
-        if (!strncmp(object, "HEAD", 4)) return WANTED_TYPE_HEAD;
-        else if (!strncasecmp(object, "main", 4)) return WANTED_TYPE_BRANCH;
+        if (!strncmp(name, "HEAD", 4)) return WANTED_TYPE_HEAD;
+        else if (!strncasecmp(name, "main", 4)) return WANTED_TYPE_BRANCH;
         break;
     case 6:
-        if (!strncasecmp(object, "master", 6)) return WANTED_TYPE_BRANCH;
+        if (!strncasecmp(name, "master", 6)) return WANTED_TYPE_BRANCH;
         break;
     case 8:
-        if (!strncasecmp(object, "all_tags", 8)) return WANTED_TYPE_ALL_TAGS;
+        if (!strncasecmp(name, "all_tags", 8)) return WANTED_TYPE_ALL_TAGS;
         break;
     case 12:
-        if (!strncasecmp(object, "all_branches", 12)) 
+        if (!strncasecmp(name, "all_branches", 12)) 
             return WANTED_TYPE_ALL_BRANCHES;
         break;
     case 40:
-        if (object_name_is_sha1(object)) return WANTED_TYPE_COMMIT;
+        if (object_name_is_sha1(name)) return WANTED_TYPE_COMMIT;
         break;
     default:
         break;
     }
-    switch (object[0]) {
+    switch (name[0]) {
     case 'v':
     case 'V':
-        switch (object[1]) {
+        switch (name[1]) {
         case '0'...'9':
             return WANTED_TYPE_TAG;
         default:
@@ -829,15 +807,15 @@ enum wanted_type wanted_object_guess_type(
     default:
         break;
     }
-    if (!strncmp(object, "refs/", 5)) return WANTED_TYPE_REFERENCE;
+    if (!strncmp(name, "refs/", 5)) return WANTED_TYPE_REFERENCE;
     pr_error("Failed to figure out the type of wanted object '%s', "
-        "try to set it explicitly e.g. type: branch\n", object);
+        "try to set it explicitly e.g. type: branch\n", name);
     return WANTED_TYPE_UNKNOWN;
 }
 
-int wanted_object_guess_type_self_optional(struct wanted_base *wanted_object) {
+int wanted_object_guess_type_self_optional(struct wanted_object *wanted_object) {
     if (wanted_object->type != WANTED_TYPE_UNKNOWN) return 0;
-    if ((wanted_object->type = wanted_object_guess_type(
+    if ((wanted_object->type = wanted_type_guess_from_name(
         wanted_object->name, wanted_object->name_len
     )) == WANTED_TYPE_UNKNOWN) {
         pr_error("Failed to guess type\n");
@@ -847,7 +825,7 @@ int wanted_object_guess_type_self_optional(struct wanted_base *wanted_object) {
 }
 
 int wanted_object_fill_type_from_string(
-    struct wanted_base *wanted_object,
+    struct wanted_object *wanted_object,
     char const *const restrict type
 ) {
     for (enum wanted_type i = 1; i <= WANTED_TYPE_MAX; ++i) {
@@ -859,88 +837,46 @@ int wanted_object_fill_type_from_string(
     return -1;
 }
 
-int wanted_object_complete_commit_from_base(
-    struct wanted_base **wanted_object
+int wanted_object_complete_commit(
+    struct wanted_commit *wanted_object
 ) {
-    git_oid oid;
-    if (git_oid_fromstr(&oid, (*wanted_object)->name)) {
+    if (git_oid_fromstr(&wanted_object->id, wanted_object->name)) {
         pr_error("Failed to resolve '%s' to a git object id\n",
-            (*wanted_object)->name);
+            wanted_object->name);
         return -1;
     }
-    struct wanted_commit *wanted_commit = malloc(sizeof *wanted_commit);
-    if (wanted_commit == NULL) {
-        pr_error("Failed to allocate memory\n");
-        return -1;
-    }
-    *wanted_commit = WANTED_COMMIT_INIT;
     if (git_oid_tostr(
-            wanted_commit->id_hex_string,
-            sizeof wanted_commit->id_hex_string, 
-            &oid
+            wanted_object->id_hex_string,
+            sizeof wanted_object->id_hex_string, 
+            &wanted_object->id
         )[0] == '\0') {
         pr_error("Failed to format git oid hex string\n");
-        free(wanted_commit);
         return -1;
     }
-    wanted_commit->base = **wanted_object;
-    wanted_commit->id = oid;
-    if ((*wanted_object)->previous) {
-        (*wanted_object)->previous->next = (struct wanted_base *)wanted_commit;
-        wanted_commit->base.previous = (*wanted_object)->previous;
-    }
-    if ((*wanted_object)->next) {
-        (*wanted_object)->next->previous = (struct wanted_base *)wanted_commit;
-        wanted_commit->base.next = (*wanted_object)->next;
-    }
-    free(*wanted_object);
-    *wanted_object = (struct wanted_base *)wanted_commit;
     return 0;
 }
 
-int wanted_object_complete_reference_from_base(
-    struct wanted_base **wanted_object
+int wanted_object_complete(
+    struct wanted_object *wanted_object
 ) {
-    struct wanted_reference *wanted_reference = 
-        malloc(sizeof *wanted_reference);
-    if (wanted_reference == NULL) {
-        pr_error("Failed to allocate memory\n");
+    if (wanted_object_guess_type_self_optional(wanted_object)) {
+        pr_error("Failed to guess type of object with unknown type\n");
         return -1;
     }
-    *wanted_reference = WANTED_REFERENCE_INIT;
-    wanted_reference->commit.base = **wanted_object;
-    if ((*wanted_object)->previous) {   
-        (*wanted_object)->previous->next = 
-            (struct wanted_base *)wanted_reference;
-        wanted_reference->commit.base.previous = (*wanted_object)->previous;
-    }
-    if ((*wanted_object)->next) {
-        (*wanted_object)->next->previous = 
-            (struct wanted_base *)wanted_reference;
-        wanted_reference->commit.base.next = (*wanted_object)->next;
-    }
-    free(*wanted_object);
-    *wanted_object = (struct wanted_base *)wanted_reference;
-    return 0;
-}
-
-int wanted_object_complete_from_base(
-    struct wanted_base **wanted_object
-) {
-    switch ((*wanted_object)->type) {
+    switch (wanted_object->type) {
     case WANTED_TYPE_UNKNOWN:
         pr_error("Impossible to complete an object with unknown type\n");
         return -1;
     case WANTED_TYPE_ALL_BRANCHES: // These two does not need to be upgraded
     case WANTED_TYPE_ALL_TAGS:
-        return 0;
-    case WANTED_TYPE_COMMIT:
-        return wanted_object_complete_commit_from_base(wanted_object);
     case WANTED_TYPE_REFERENCE:
     case WANTED_TYPE_BRANCH:
     case WANTED_TYPE_TAG:
     case WANTED_TYPE_HEAD:
-        return wanted_object_complete_reference_from_base(wanted_object);
+        return 0;
+    case WANTED_TYPE_COMMIT:
+        return wanted_object_complete_commit(
+            (struct wanted_commit *)wanted_object);
     default:
         pr_error("Impossible routine\n");
         return -1;
@@ -948,63 +884,89 @@ int wanted_object_complete_from_base(
     return 0;
 }
 
-int config_repo_add_wanted_object (
-    struct config *const restrict config,
-    long repo_id,
-    char const *const restrict object,
-    unsigned short len_object,
-    bool guess_type
+int repo_add_wanted_object_no_init(
+    struct repo *const restrict repo
 ) {
-    if (config == NULL || repo_id < 0 || object == NULL || object[0] == '\0') {
-        pr_error("Internal: invalida argument\n");
-        return -1;
-    }
-    enum wanted_type wanted_type = WANTED_TYPE_UNKNOWN;
-    if (guess_type) {
-        if ((wanted_type = wanted_object_guess_type(object, len_object)) 
-            == WANTED_TYPE_UNKNOWN) {
-            pr_error("Failed to guess object type of '%s'\n", object);
+    if (repo->wanted_objects == NULL) {
+        if ((repo->wanted_objects = malloc(
+            sizeof *repo->wanted_objects * ALLOC_BASE)) == NULL) {
+            pr_error("Failed to allocate memory for wanted objects\n");
             return -1;
         }
+        repo->wanted_objects_allocated = ALLOC_BASE;
     }
-    struct repo *const repo = config->repos + repo_id;
-    struct wanted_base *wanted_object = malloc(sizeof *wanted_object);
-    if (wanted_object == NULL) {
-        pr_error("Failed to allocate memory\n");
+    if (++repo->wanted_objects_count > repo->wanted_objects_allocated) {
+        while (repo->wanted_objects_count > (
+            repo->wanted_objects_allocated *= 2)) {
+            if (repo->wanted_objects_allocated == ULONG_MAX) {
+                pr_error(
+                    "Impossible to allocate more, how is this possible?\n");
+                return -1;
+            } else if (repo->wanted_objects_allocated >= 
+                    ULONG_MAX / ALLOC_MULTIPLY) {
+                repo->wanted_objects_allocated = ULONG_MAX;
+            } else {
+                repo->wanted_objects_allocated *= 2;
+            }
+        }
+        struct wanted_object *wanted_objects_new = realloc(
+            repo->wanted_objects, 
+            sizeof *wanted_objects_new * repo->wanted_objects_allocated
+        );
+        if (wanted_objects_new == NULL) {
+            pr_error("Failed to allocate memory\n");
+            return -1;
+        }
+        repo->wanted_objects = wanted_objects_new;
+    }
+    return 0;
+}
+
+int repo_add_wanted_object_and_init_with_name_no_complete(
+    struct repo *const restrict repo,
+    char const *const restrict name,
+    unsigned short len_name
+) {
+    if (repo_add_wanted_object_no_init(repo)) {
+        pr_error("Failed to add wanted object\n");
         return -1;
     }
-    *wanted_object = WANTED_BASE_INIT;
-    if ((wanted_object->name = malloc(len_object + 1)) == NULL) {
-        pr_error("Failed to allocate memory\n");
-        goto free_wanted_object;
-    }
-    memcpy(wanted_object->name, object, len_object);
-    wanted_object->name[len_object] = '\0';
-    wanted_object->name_len = len_object;
-    if (guess_type) {
-        wanted_object->type = wanted_type;
-        if (wanted_object_complete_from_base(
-                &wanted_object)) {
-            pr_error("Failed to complete object\n");
-            goto free_name;
-        }
-    }
-    if (repo->wanted_objects.objects_count == 0) {
-        repo->wanted_objects.objects_head = wanted_object;
-        repo->wanted_objects.objects_tail = wanted_object;
-    } else {
-        repo->wanted_objects.objects_tail->next = wanted_object;
-        wanted_object->previous = repo->wanted_objects.objects_tail;
-        repo->wanted_objects.objects_tail = wanted_object;
-    }
-    ++repo->wanted_objects.objects_count;
+    struct wanted_object *wanted_object = 
+        repo->wanted_objects + repo->wanted_objects_count - 1;
+    *wanted_object = WANTED_OBJECT_INIT;
+    memcpy(wanted_object->name, name, len_name);
+    wanted_object->name[len_name] = '\0';
+    wanted_object->name_len = len_name;
     return 0;
+}
 
-free_name:
-    free(wanted_object->name);
-free_wanted_object:
-    free(wanted_object);
-    return -1;
+
+int repo_add_wanted_object_and_init_with_name_and_complete (
+    struct repo *const restrict repo,
+    char const *const restrict name,
+    unsigned short len_name
+) {
+    enum wanted_type wanted_type = wanted_type_guess_from_name(name, len_name);
+    if (wanted_type == WANTED_TYPE_UNKNOWN) {
+        pr_error("Failed to guess object type of '%s'\n", name);
+        return -1;
+    }
+    if (repo_add_wanted_object_no_init(repo)) {
+        pr_error("Failed to add wanted object\n");
+        return -1;
+    }
+    struct wanted_object *wanted_object = 
+        repo->wanted_objects + repo->wanted_objects_count - 1;
+    *wanted_object = WANTED_OBJECT_INIT;
+    memcpy(wanted_object->name, name, len_name);
+    wanted_object->name[len_name] = '\0';
+    wanted_object->name_len = len_name;
+    wanted_object->type = wanted_type;
+    if (wanted_object_complete(wanted_object)) {
+        pr_error("Failed to complete object\n");
+        return -1;
+    }
+    return 0;
 }
 
 // 0 for false, 1 for true, -1 for error parsing
@@ -1023,16 +985,25 @@ int bool_from_string(
     return -1;
 }
 
+static inline
+struct wanted_object *config_get_last_wanted_object(
+    struct config *const restrict config
+) {
+    struct repo *const restrict repo = 
+        config->repos + config->repos_count - 1;
+    return repo->wanted_objects + repo->wanted_objects_count - 1;
+}
+
 int config_update_from_yaml_event(
     struct config *const restrict config,
     yaml_event_t const *const restrict event,
-    struct config_yaml_parse_state *const restrict state
+    enum yaml_config_parsing_status *const restrict status
 ) {
-    switch (state->status) {
+    switch (*status) {
     case YAML_CONFIG_PARSING_STATUS_NONE:
         switch (event->type) {
         case YAML_STREAM_START_EVENT:
-            state->status = YAML_CONFIG_PARSING_STATUS_STREAM;
+            *status = YAML_CONFIG_PARSING_STATUS_STREAM;
             break;
         default:
             goto unexpected_event_type;
@@ -1041,10 +1012,10 @@ int config_update_from_yaml_event(
     case YAML_CONFIG_PARSING_STATUS_STREAM:
         switch (event->type) {
         case YAML_DOCUMENT_START_EVENT:
-            state->status = YAML_CONFIG_PARSING_STATUS_DOCUMENT;
+            *status = YAML_CONFIG_PARSING_STATUS_DOCUMENT;
             break;
         case YAML_STREAM_END_EVENT:
-            state->status = YAML_CONFIG_PARSING_STATUS_NONE;
+            *status = YAML_CONFIG_PARSING_STATUS_NONE;
             break;
         default:
             goto unexpected_event_type;
@@ -1053,10 +1024,10 @@ int config_update_from_yaml_event(
     case YAML_CONFIG_PARSING_STATUS_DOCUMENT:
         switch (event->type) {
         case YAML_MAPPING_START_EVENT:
-            state->status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            *status = YAML_CONFIG_PARSING_STATUS_SECTION;
             break;
         case YAML_DOCUMENT_END_EVENT:
-            state->status = YAML_CONFIG_PARSING_STATUS_STREAM;
+            *status = YAML_CONFIG_PARSING_STATUS_STREAM;
             break;
         default:
             goto unexpected_event_type;
@@ -1069,35 +1040,35 @@ int config_update_from_yaml_event(
             switch (event->data.scalar.length) {
             case 5:
                 if (!strncmp(key, "proxy", 5))
-                    state->status = YAML_CONFIG_PARSING_STATUS_PROXY;
+                    *status = YAML_CONFIG_PARSING_STATUS_PROXY;
                 else if (!strncmp(key, "repos", 5))
-                    state->status = YAML_CONFIG_PARSING_STATUS_REPOS;
+                    *status = YAML_CONFIG_PARSING_STATUS_REPOS;
                 break;
             case 9:
                 if (!strncmp(key, "dir_repos", 9))
-                    state->status = YAML_CONFIG_PARSING_STATUS_DIR_REPOS;
+                    *status = YAML_CONFIG_PARSING_STATUS_DIR_REPOS;
                 break;
             case 11:
                 if (!strncmp(key, "proxy_after", 11))
-                    state->status = YAML_CONFIG_PARSING_STATUS_PROXY_AFTER;
+                    *status = YAML_CONFIG_PARSING_STATUS_PROXY_AFTER;
                 break;
             case 12:
                 if (!strncmp(key, "dir_archives", 12))
-                    state->status = YAML_CONFIG_PARSING_STATUS_DIR_ARCHIVES;
+                    *status = YAML_CONFIG_PARSING_STATUS_DIR_ARCHIVES;
                 break;
             case 13:
                 if (!strncmp(key, "dir_checkouts", 13))
-                    state->status = YAML_CONFIG_PARSING_STATUS_DIR_CHECKOUTS;
+                    *status = YAML_CONFIG_PARSING_STATUS_DIR_CHECKOUTS;
                 break;
             }
-            if (state->status == YAML_CONFIG_PARSING_STATUS_SECTION) {
+            if (*status == YAML_CONFIG_PARSING_STATUS_SECTION) {
                 pr_error("Unrecognized config key '%s'\n", key);
                 return -1;
             }
             break;
         }
         case YAML_MAPPING_END_EVENT:
-            state->status = YAML_CONFIG_PARSING_STATUS_DOCUMENT;
+            *status = YAML_CONFIG_PARSING_STATUS_DOCUMENT;
             break;
         default:
             goto unexpected_event_type;
@@ -1109,23 +1080,23 @@ int config_update_from_yaml_event(
     case YAML_CONFIG_PARSING_STATUS_DIR_CHECKOUTS:
         switch (event->type) {
         case YAML_SCALAR_EVENT: {
-            char **value = NULL;
+            char *value = NULL;
             unsigned short *len = NULL;
-            switch (state->status) {
+            switch (*status) {
             case YAML_CONFIG_PARSING_STATUS_PROXY:
-                value = &config->proxy_url;
+                value = config->proxy_url;
                 len = &config->len_proxy_url;
                 break;
             case YAML_CONFIG_PARSING_STATUS_DIR_REPOS:
-                value = &config->dir_repos;
+                value = config->dir_repos;
                 len = &config->len_dir_repos;
                 break;
             case YAML_CONFIG_PARSING_STATUS_DIR_ARCHIVES:
-                value = &config->dir_archives;
+                value = config->dir_archives;
                 len = &config->len_dir_archives;
                 break;
             case YAML_CONFIG_PARSING_STATUS_DIR_CHECKOUTS:
-                value = &config->dir_checkouts;
+                value = config->dir_checkouts;
                 len = &config->len_dir_checkouts;
                 break;
             default:
@@ -1136,15 +1107,10 @@ int config_update_from_yaml_event(
                 pr_error("Internal: impossible value\n");
                 return -1;
             }
-            if (*value != NULL) free(*value);
-            if ((*value = malloc(event->data.scalar.length + 1)) == NULL) {
-                pr_error("Failed to allocate memory\n");
-                return -1;
-            }
-            memcpy(*value, event->data.scalar.value, event->data.scalar.length);
-            (*value)[event->data.scalar.length] = '\0';
+            memcpy(value, event->data.scalar.value, event->data.scalar.length);
+            value[event->data.scalar.length] = '\0';
             *len = event->data.scalar.length;
-            state->status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            *status = YAML_CONFIG_PARSING_STATUS_SECTION;
             break;
         }
         default:
@@ -1156,7 +1122,7 @@ int config_update_from_yaml_event(
         case YAML_SCALAR_EVENT:
             config->proxy_after = strtoul(
                 (char const *)event->data.scalar.value, NULL, 10);
-            state->status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            *status = YAML_CONFIG_PARSING_STATUS_SECTION;
             break;
         default:
             goto unexpected_event_type;
@@ -1165,7 +1131,7 @@ int config_update_from_yaml_event(
     case YAML_CONFIG_PARSING_STATUS_REPOS:
         switch (event->type) {
         case YAML_SEQUENCE_START_EVENT:
-            state->status = YAML_CONFIG_PARSING_STATUS_REPOS_LIST;
+            *status = YAML_CONFIG_PARSING_STATUS_REPOS_LIST;
             break;
         default:
             goto unexpected_event_type;
@@ -1185,10 +1151,10 @@ int config_update_from_yaml_event(
             }
             break;
         case YAML_SEQUENCE_END_EVENT: // all end
-            state->status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            *status = YAML_CONFIG_PARSING_STATUS_SECTION;
             break;
         case YAML_MAPPING_START_EVENT: // advanced repo config
-            state->status = YAML_CONFIG_PARSING_STATUS_REPO_URL;
+            *status = YAML_CONFIG_PARSING_STATUS_REPO_URL;
             break;
         default:
             goto unexpected_event_type;
@@ -1207,11 +1173,10 @@ int config_update_from_yaml_event(
                     (char const *) event->data.scalar.value);
                 return -1;
             }
-            state->repo_id = config->repos_count - 1;
-            state->status = YAML_CONFIG_PARSING_STATUS_REPO_AFTER_URL;
+            *status = YAML_CONFIG_PARSING_STATUS_REPO_AFTER_URL;
             break;
         case YAML_MAPPING_END_EVENT:
-            state->status = YAML_CONFIG_PARSING_STATUS_REPOS_LIST;
+            *status = YAML_CONFIG_PARSING_STATUS_REPOS_LIST;
             break;
         default:
             goto unexpected_event_type;
@@ -1220,7 +1185,7 @@ int config_update_from_yaml_event(
     case YAML_CONFIG_PARSING_STATUS_REPO_AFTER_URL:
         switch (event->type) {
         case YAML_MAPPING_START_EVENT:
-            state->status = YAML_CONFIG_PARSING_STATUS_REPO_SECTION;
+            *status = YAML_CONFIG_PARSING_STATUS_REPO_SECTION;
             break;
         default:
             goto unexpected_event_type;
@@ -1233,18 +1198,17 @@ int config_update_from_yaml_event(
             switch (event->data.scalar.length) {
             case 6:
                 if (!strncmp(key, "wanted", 6))
-                    state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED;
+                    *status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED;
                 break;
             }
-            if (state->status == YAML_CONFIG_PARSING_STATUS_REPO_SECTION) {
+            if (*status == YAML_CONFIG_PARSING_STATUS_REPO_SECTION) {
                 pr_error("Unrecognized config key '%s'\n", key);
                 return -1;
             }
             break;
         }
         case YAML_MAPPING_END_EVENT:
-            state->status = YAML_CONFIG_PARSING_STATUS_REPO_URL;
-            state->repo_id = -1;
+            *status = YAML_CONFIG_PARSING_STATUS_REPO_URL;
             break;
         default:
             goto unexpected_event_type;
@@ -1253,7 +1217,7 @@ int config_update_from_yaml_event(
     case YAML_CONFIG_PARSING_STATUS_REPO_WANTED:
         switch (event->type) {
         case YAML_SEQUENCE_START_EVENT:
-            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_LIST;
+            *status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_LIST;
             break;
         default:
             goto unexpected_event_type;
@@ -1262,19 +1226,20 @@ int config_update_from_yaml_event(
     case YAML_CONFIG_PARSING_STATUS_REPO_WANTED_LIST:
         switch (event->type) {
         case YAML_SCALAR_EVENT: 
-            if (config_repo_add_wanted_object(
-                config, state->repo_id, (char const *)event->data.scalar.value,
-                event->data.scalar.length, true
+            if (repo_add_wanted_object_and_init_with_name_and_complete(
+                config->repos + config->repos_count - 1, 
+                (char const *)event->data.scalar.value,
+                event->data.scalar.length
             )) {
                 pr_error("Failed to add wanted object\n");
                 return -1;
             }
             break;
         case YAML_MAPPING_START_EVENT:
-            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT;
+            *status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT;
             break;
         case YAML_SEQUENCE_END_EVENT:
-            state->status = YAML_CONFIG_PARSING_STATUS_REPO_SECTION;
+            *status = YAML_CONFIG_PARSING_STATUS_REPO_SECTION;
             break;
         default:
             goto unexpected_event_type;
@@ -1283,35 +1248,24 @@ int config_update_from_yaml_event(
     case YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT:
         switch (event->type) {
         case YAML_SCALAR_EVENT:
-            if (config_repo_add_wanted_object(
-                config, state->repo_id, (char const *)event->data.scalar.value,
-                event->data.scalar.length, false
+            if (repo_add_wanted_object_and_init_with_name_no_complete(
+                config->repos + config->repos_count - 1, 
+                (char const *)event->data.scalar.value,
+                event->data.scalar.length
             )) {
                 pr_error("Failed to add wanted object\n");
                 return -1;
             }
-            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_AFTER_OBJECT;
+            *status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_AFTER_OBJECT;
             break;
-        case YAML_MAPPING_END_EVENT: {
-            if (wanted_object_guess_type_self_optional(
-                    (config->repos + state->repo_id)
-                        -> wanted_objects.objects_tail)) {
-                pr_error("Failed to guess type\n");
-                return -1;
-            }
-            struct wanted_objects *const wanted_objects =
-                &(config->repos + state->repo_id)->wanted_objects;
-            int r = wanted_object_complete_from_base(
-                        &wanted_objects->objects_tail);
-            if (wanted_objects->objects_count == 1)
-                wanted_objects->objects_head = wanted_objects->objects_tail;
-            if (r) {
+        case YAML_MAPPING_END_EVENT: 
+            if (wanted_object_complete(
+                    config_get_last_wanted_object(config))) {
                 pr_error("Failed to finish wanted object\n");
                 return -1;
             }
-            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_LIST;
+            *status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_LIST;
             break;
-        }
         default:
             goto unexpected_event_type;
         }
@@ -1319,7 +1273,7 @@ int config_update_from_yaml_event(
     case YAML_CONFIG_PARSING_STATUS_REPO_WANTED_AFTER_OBJECT:
         switch (event->type) {
         case YAML_MAPPING_START_EVENT:
-            state->status = 
+            *status = 
                 YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION;
             break;
         default:
@@ -1333,20 +1287,20 @@ int config_update_from_yaml_event(
             switch (event->data.scalar.length) {
             case 4:
                 if (!strncmp(key, "type", 4))
-                    state->status = 
+                    *status = 
                     YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_TYPE;
                 break;
             case 7:
                 if (!strncmp(key, "archive", 7))
-                    state->status = 
+                    *status = 
                     YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_ARCHIVE;
                 break;
             case 8:
                 if (!strncmp(key, "checkout", 8))
-                    state->status = 
+                    *status = 
                     YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_CHECKOUT;
             }
-            if (state->status == 
+            if (*status == 
                 YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION) {
                 pr_error("Unrecognized config key '%s'\n", key);
                 return -1;
@@ -1354,7 +1308,7 @@ int config_update_from_yaml_event(
             break;
         }
         case YAML_MAPPING_END_EVENT:
-            state->status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT;
+            *status = YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT;
             break;
         default:
             goto unexpected_event_type;
@@ -1362,17 +1316,16 @@ int config_update_from_yaml_event(
         break;
     case YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_TYPE:
         switch (event->type) {
-        case YAML_SCALAR_EVENT: 
+        case YAML_SCALAR_EVENT:
             if (wanted_object_fill_type_from_string(
-                (config->repos + state->repo_id)->wanted_objects.objects_tail,
-                (char const *)event->data.scalar.value
-            )) {
+                    config_get_last_wanted_object(config),
+                    (char const *)event->data.scalar.value)) {
                 pr_error(
                     "Invalid object type '%s'\n", 
                     (char const *)event->data.scalar.value);
                 return -1;
             }
-            state->status = 
+            *status = 
                 YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION;
             break;
         default:
@@ -1390,17 +1343,15 @@ int config_update_from_yaml_event(
                     (char const *)event->data.scalar.value);
                 return -1;
             }
-            if (state->status == 
+            bool *value = NULL;
+            if (*status == 
                 YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_ARCHIVE) {
-                config->repos[state->repo_id]
-                    .wanted_objects.objects_tail->archive
-                        = bool_value;
+                value = &config_get_last_wanted_object(config)->archive;
             } else {
-                config->repos[state->repo_id]
-                    .wanted_objects.objects_tail->checkout
-                        = bool_value;
+                value = &config_get_last_wanted_object(config)->checkout;
             }
-            state->status = 
+            *value = bool_value;
+            *status = 
                 YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_SECTION;
             break;
         }
@@ -1413,14 +1364,15 @@ int config_update_from_yaml_event(
 unexpected_event_type:
     pr_error(
         "Unexpected YAML event type %d for current status %d\n", 
-        event->type, state->status);
+        event->type, *status);
     return -1;
 }
 
 void print_config_repo_wanted(
-    struct wanted_objects const *const restrict wanted_objects) {
-    for (struct wanted_base *wanted_object = wanted_objects->objects_head;
-        wanted_object; wanted_object = wanted_object->next) {
+    struct repo const *const restrict repo) {
+    for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
+        struct wanted_object const *const restrict wanted_object
+            = repo->wanted_objects + i;
         printf(
             "|        - %s:\n"
             "|            type: %d (%s)\n"
@@ -1437,35 +1389,35 @@ void print_config_repo_wanted(
         case WANTED_TYPE_TAG:
         case WANTED_TYPE_REFERENCE:
         case WANTED_TYPE_HEAD:
-            struct wanted_reference *wanted_reference = 
-                (struct wanted_reference *) wanted_object;
-            if (wanted_reference->commit_resolved) {
+            if (wanted_object->commit_resolved) {
                 printf(
                     "|            commit: %s\n",
-                    wanted_reference->commit.id_hex_string);
+                    wanted_object->commit.id_hex_string);
             }
             __attribute__((fallthrough));
         case WANTED_TYPE_COMMIT:
-            struct wanted_commit *wanted_commit = 
-                (struct wanted_commit *) wanted_object;
-            if (wanted_commit->submodules_count) {
+            if (wanted_object->parsed_commit_id == (unsigned long) -1) 
+                break;
+            struct parsed_commit *parsed_commit = 
+                repo->parsed_commits + wanted_object->parsed_commit_id;
+            if (parsed_commit->submodules_count) {
                 printf(
                     "|            submodules:\n");
             }
             for (unsigned long i = 0; 
-                i < wanted_commit->submodules_count; 
+                i < parsed_commit->submodules_count; 
                 ++i) {
-                struct wanted_commit_submodule * wanted_commit_submodule =
-                    wanted_commit->submodules + i;
+                struct parsed_commit_submodule * parsed_commit_submodule =
+                    parsed_commit->submodules + i;
                 printf(
                     "|              - path: %s\n"
                     "|                url: %s\n"
                     "|                repo_id: %lu\n"
                     "|                commit: %s\n",
-                    wanted_commit_submodule->path,
-                    wanted_commit_submodule->url,
-                    wanted_commit_submodule->repo_id,
-                    wanted_commit_submodule->id_hex_string);
+                    parsed_commit_submodule->path,
+                    parsed_commit_submodule->url,
+                    parsed_commit_submodule->target_repo_id,
+                    parsed_commit_submodule->id_hex_string);
             }
             // break;
         default:
@@ -1480,20 +1432,18 @@ void print_config_repo(struct repo const *const restrict repo) {
         "|  - %s%s:\n"
         "|      hash: %016lx\n"
         "|      dir: %s\n"
-        "|      sanitized: %s\n"
-        "|      symlink: %s\n",
+        "|      sanitized: %s\n",
         repo->url,
         repo->added_from ? " (added from submodule)" : "",
         repo->url_hash,
         repo->dir_path,
-        repo->url_no_scheme_sanitized,
-        repo->symlink_path);
-    if (repo->wanted_objects.objects_count) {
+        repo->url_no_scheme_sanitized);
+    if (repo->wanted_objects_count) {
         printf(
         "|      wanted (%lu, %s):\n", 
-            repo->wanted_objects.objects_count,
-            repo->wanted_objects.dynamic ? "dynamic" : "static");
-        print_config_repo_wanted(&repo->wanted_objects);
+            repo->wanted_objects_count,
+            repo->wanted_dynamic ? "dynamic" : "static");
+        print_config_repo_wanted(repo);
     }
 }
 
@@ -1526,7 +1476,8 @@ int config_from_yaml(
     yaml_event_t event;
     yaml_event_type_t event_type;
 
-    struct config_yaml_parse_state state = {0};
+    enum yaml_config_parsing_status status = 
+        YAML_CONFIG_PARSING_STATUS_NONE;
     yaml_parser_initialize(&parser);
     yaml_parser_set_input_string(&parser, yaml_buffer, yaml_size);
 
@@ -1535,7 +1486,7 @@ int config_from_yaml(
             pr_error("Failed to parse: %s\n", parser.problem);
             goto error;
         }
-        if (config_update_from_yaml_event(config, &event, &state)) {
+        if (config_update_from_yaml_event(config, &event, &status)) {
             pr_error("Failed to update config from yaml event"
 #ifdef DEBUGGING
             ", current read config:\n");
@@ -1652,10 +1603,15 @@ int guarantee_symlink (
 }
 
 
-int config_repo_generate_symlink(
+int repo_guarantee_symlink(
     struct repo *const restrict repo,
     char const *const restrict dir_repos
 ) {
+    if (repo->url_no_scheme_sanitized_parts * 3 + HASH_STRING_LEN + 1
+             >= PATH_MAX) {
+        pr_error("Link target would be too long");
+        return -1;
+    }
     char symlink_path[PATH_MAX] = "";
     char symlink_target[PATH_MAX] = "";
     int r = snprintf(symlink_path, PATH_MAX, "%s/links/%s", dir_repos, 
@@ -1668,8 +1624,6 @@ int config_repo_generate_symlink(
         return -1;
     }
     unsigned short const len_symlink_path = r;
-    unsigned short const len_symlink_target = 
-        sizeof repo->dir_name - 1 + repo->url_no_scheme_sanitized_parts * 3;
     char *symlink_target_current = symlink_target;
     // Supposed sanitized url is github.com/7Ji/ampart.git, parts is 3
     // Link would be created at repos/links/github.com/7Ji/ampart.git
@@ -1677,31 +1631,19 @@ int config_repo_generate_symlink(
     for (unsigned short i = 0; i < repo->url_no_scheme_sanitized_parts; ++i) {
         symlink_target_current = stpcpy(symlink_target_current, "../");
     }
-    symlink_target_current = stpcpy(symlink_target_current, repo->dir_name);
-    *symlink_target_current = '\0';
+    if (sprintf(symlink_target_current, HASH_FORMAT, repo->url_hash) <= 0) {
+        pr_error_with_errno("Failed to print to string");
+        return -1;
+    }
     if (guarantee_symlink(symlink_path, len_symlink_path, symlink_target)) {
         pr_error("Failed to guarantee a symlink at '%s' pointing to '%s'\n",
             symlink_path, symlink_target);
         return -1;
     }
-    if ((repo->symlink_path = malloc(
-        (repo->symlink_path_len = len_symlink_path) + 1)) == NULL) {
-        pr_error("Failed to allocate memory for symlink path\n");
-        return -1;
-    }
-    if ((repo->symlink_target = malloc(
-        (repo->symlink_target_len = len_symlink_target) + 1)) == NULL) {
-        pr_error("Failed to allocate memory for symlink target\n");
-        free(repo->symlink_path);
-        repo->symlink_path = NULL;
-        return -1;
-    }
-    memcpy(repo->symlink_path, symlink_path, repo->symlink_path_len + 1);
-    memcpy(repo->symlink_target, symlink_target, repo->symlink_target_len + 1);
     return 0;
 }
 
-int config_repo_finish(
+int repo_finish(
     struct repo *const restrict repo,
     char const *const restrict dir_repos,
     unsigned short len_dir_repos
@@ -1710,36 +1652,24 @@ int config_repo_finish(
         pr_error("Internal: invalid arguments\n");
         return -1;
     }
-    if (config_repo_generate_symlink(repo, dir_repos)) {
+    if (repo_guarantee_symlink(repo, dir_repos)) {
         pr_error("Failed to generate symlinks for repo '%s'\n", repo->url);
         return -1;
     }
-    if (repo->wanted_objects.objects_count == 0) {
+    if (repo->wanted_objects_count == 0) {
         pr_warn(
             "Repo '%s' does not have wanted objects defined, "
             "adding HEAD as wanted\n",
             repo->url);
-        struct wanted_reference *wanted_head = malloc(sizeof *wanted_head);
-        if (wanted_head == NULL) {
-            pr_error("Failed to allocate memory\n");
+        if (repo_add_wanted_object_and_init_with_name_and_complete(
+            repo, "HEAD", 4)) {
+            pr_error("Failed to add 'HEAD' as wanted\n");
             return -1;
         }
-        *wanted_head = WANTED_REFERENCE_INIT;
-        if ((wanted_head->commit.base.name = malloc(sizeof("HEAD"))) == NULL) {
-            free(wanted_head);
-            pr_error("Failed to allocate memory\n");
-            return -1;
-        }
-        strncpy(wanted_head->commit.base.name, "HEAD", 5);
-        wanted_head->commit.base.name_len = 4;
-        wanted_head->commit.base.type = WANTED_TYPE_HEAD;
-        repo->wanted_objects.objects_head = (struct wanted_base *)wanted_head;
-        repo->wanted_objects.objects_tail = (struct wanted_base *)wanted_head;
-        ++repo->wanted_objects.objects_count;
     }
-    for (struct wanted_base *wanted_object = repo->wanted_objects.objects_head;
-        wanted_object != NULL;
-        wanted_object = wanted_object->next) {
+    for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
+        struct wanted_object const *const restrict wanted_object = 
+            repo->wanted_objects + i;
         switch (wanted_object->type) {
         case WANTED_TYPE_UNKNOWN:
             pr_error(
@@ -1751,21 +1681,15 @@ int config_repo_finish(
         case WANTED_TYPE_BRANCH:
         case WANTED_TYPE_TAG:
         case WANTED_TYPE_HEAD:
-            repo->wanted_objects.dynamic = true;
+            repo->wanted_dynamic = true;
             break;
         default:
             break;
         }
     }
-    repo->dir_path_len = len_dir_repos + sizeof repo->dir_name;
-    if ((repo->dir_path = malloc(repo->dir_path_len + 1)) == NULL) {
-        pr_error(
-            "Failed to allocate memory for dir path of repo '%s'\n",
-            repo->url);
-        return -1;
-    }
-    if (snprintf(repo->dir_path, repo->dir_path_len + 1, "%s/%s", 
-        dir_repos, repo->dir_name) < 0) {
+    repo->dir_path_len = len_dir_repos + HASH_STRING_LEN + 1;
+    if (snprintf(repo->dir_path, repo->dir_path_len + 1, "%s/"HASH_FORMAT, 
+        dir_repos, repo->url_hash) < 0) {
         free(repo->dir_path);
         pr_error_with_errno(
             "Failed to format dir path of repo '%s'\n",
@@ -1779,26 +1703,17 @@ int config_repo_finish(
 int config_finish(
     struct config *const restrict config
 ) {
-    if (config->dir_repos == NULL) {
-        if ((config->dir_repos = malloc(sizeof(DIR_REPOS))) == NULL) {
-            return -1;
-        }
+    if (config->dir_repos[0] == '\0') {
         memcpy(config->dir_repos, DIR_REPOS, sizeof(DIR_REPOS));
         config->len_dir_repos = sizeof(DIR_REPOS) - 1;
     }
     pr_info("Repos will be stored in '%s'\n", config->dir_repos);
-    if (config->dir_archives == NULL) {
-        if ((config->dir_archives = malloc(sizeof(DIR_ARCHIVES))) == NULL) {
-            return -1;
-        }
+    if (config->dir_archives[0] == '\0') {
         memcpy(config->dir_archives, DIR_ARCHIVES, sizeof(DIR_ARCHIVES));
         config->len_dir_archives = sizeof(DIR_ARCHIVES) - 1;
     }
     pr_info("Archives will be stored in '%s'\n", config->dir_archives);
-    if (config->dir_checkouts == NULL) {
-        if ((config->dir_checkouts = malloc(sizeof(DIR_CHECKOUTS))) == NULL) {
-            return -1;
-        }
+    if (config->dir_checkouts[0] == '\0') {
         memcpy(config->dir_checkouts, DIR_CHECKOUTS, sizeof(DIR_CHECKOUTS));
         config->len_dir_checkouts = sizeof(DIR_CHECKOUTS) - 1;
     }
@@ -1820,7 +1735,7 @@ int config_finish(
             return -1;
         }
     }
-    if (config->proxy_url && config->proxy_url[0] != '\0') {
+    if (config->proxy_url[0] != '\0') {
         if (config->proxy_after) {
             pr_info("Will use proxy '%s' after %hu failed fetches\n", 
                 config->proxy_url, config->proxy_after);
@@ -1869,23 +1784,27 @@ int config_read(
                 "your terminal being jammed\n");
         }
     }
-    unsigned char *config_buffer;
+    unsigned char *config_buffer = NULL;
     ssize_t config_size = buffer_read_from_fd(&config_buffer, config_fd);
+    int r = -1;
     if (config_size < 0) {
         pr_error("Failed to read config into buffer\n");
-        return -1;
+        goto close_config_fd;
     }
     *config = CONFIG_INIT;
     if (config_from_yaml(config, config_buffer, config_size)) {
         pr_error("Failed to read config from YAML\n");
-        free(config_buffer);
-        return -1;
+        goto free_config_buffer;
     }
-    free(config_buffer);
     if (config_finish(config)) {
         pr_error("Failed to finish config\n");
-        return -1;
+        goto free_config_buffer;
     }
+    r = 0;
+free_config_buffer:
+    if (config_buffer) free(config_buffer);
+close_config_fd:
+    if (config_fd != STDIN_FILENO) close (config_fd);
     return 0;
 }
 
@@ -2106,35 +2025,11 @@ int repo_prepare_open_or_create_if_needed(
 int config_free(
     struct config *const restrict config
 ) {
-    if (config->dir_archives) free (config->dir_archives);
-    if (config->dir_repos) free (config->dir_repos);
-    if (config->dir_checkouts) free (config->dir_checkouts);
-    if (config->proxy_url) free (config->proxy_url);
     if (config->repos) {
         for (unsigned long i = 0; i < config->repos_count; ++i) {
             struct repo *const restrict repo = config->repos + i;
-            if (repo->url) free (repo->url);
-            if (repo->url_no_scheme_sanitized)
-                free(repo->url_no_scheme_sanitized);
-            if (repo->dir_path) free (repo->dir_path);
-            if (repo->symlink_path) free (repo->symlink_path);
-            if (repo->symlink_target) free (repo->symlink_target);
-            if (repo->wanted_objects.objects_count) {
-                for (struct wanted_base *wanted_object = 
-                    repo->wanted_objects.objects_head;
-                    wanted_object != NULL;
-                    wanted_object = wanted_object->next) {
-                    if (wanted_object->name) free (wanted_object->name);
-                    if (wanted_object->previous) free (wanted_object->previous);
-                    if (wanted_object->type == WANTED_TYPE_COMMIT &&
-                        ((struct wanted_commit *)wanted_object)->submodules)
-                        free(
-                            ((struct wanted_commit *)wanted_object)
-                                ->submodules);
-                }
-                if (repo->wanted_objects.objects_tail)
-                    free (repo->wanted_objects.objects_tail);
-            }
+            if (repo->parsed_commits) free (repo->parsed_commits);
+            if (repo->wanted_objects) free (repo->wanted_objects);
             if (repo->repository) git_repository_free(repo->repository);
         }
         free (config->repos);
@@ -2160,14 +2055,15 @@ int mirror_repo_add_submodule_to_wanted_commit(
     }
     if (++wanted_commit->submodules_count >
         wanted_commit->submodules_allocated ) {
-        while (wanted_commit->submodules_count > (
-            wanted_commit->submodules_allocated *= ALLOC_MULTIPLY
-        )) {
+        while (wanted_commit->submodules_count > 
+                wanted_commit->submodules_allocated ) {
             if (wanted_commit->submodules_allocated == ULONG_MAX) {
                 pr_error("Failed to allocate more memory for submodules\n");
                 goto error;
             } else if (wanted_commit->submodules_allocated >= ULONG_MAX / 2) {
                 wanted_commit->submodules_allocated = ULONG_MAX / 2;
+            } else {
+                wanted_commit->submodules_allocated *= 2;
             }
         }
         struct wanted_commit_submodule *submodules_new = realloc(
