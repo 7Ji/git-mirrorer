@@ -1767,9 +1767,9 @@ int config_finish(
                 "(when empty)\n");
             return -1;
         }
-        config->always_wanted_objects_count = 1;
-        config->always_wanted_objects_allocated = 1;
-        config->always_wanted_objects->reference = WANTED_HEAD_INIT;
+        config->empty_wanted_objects_count = 1;
+        config->empty_wanted_objects_allocated = 1;
+        config->empty_wanted_objects->reference = WANTED_HEAD_INIT;
 #endif
     }
     for (unsigned long i = 0; i < config->repos_count; ++i) {
