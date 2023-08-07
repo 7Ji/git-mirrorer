@@ -2136,7 +2136,7 @@ int parsed_commit_add_submodule_from_commit_tree(
         goto free_entry;
     }
     pr_info(
-        "Commit '%s' needs submodule from '%s' commit '%s' at '%s'", 
+        "Commit '%s' needs submodule from '%s' commit '%s' at '%s'\n", 
         parsed_commit->id_hex_string,  url, submodule->id_hex_string, path);
     r = 0;
 free_entry:
