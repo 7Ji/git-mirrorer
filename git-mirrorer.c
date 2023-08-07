@@ -2513,82 +2513,174 @@ int repo_parse_wanted_reference_common(
                                 (struct wanted_commit *)wanted_reference);
 }
 
+void repo_parse_wanted_head_explain_libgit_return(int const r) {
+    switch (r) {
+    case GIT_EUNBORNBRANCH:
+        pr_error("Failed to find HEAD, HEAD points to a non-"
+            "existing branch\n");
+        break;
+    case GIT_ENOTFOUND:
+        pr_error("Failed to find HEAD, HEAD is missing\n");
+        break;
+    default:
+        pr_error("Failed to find HEAD, unhandled libgit return %d\n", r);
+        break;
+    }
+}
+
 // May re-allocate repo->parsed_commits
 int repo_parse_wanted_head(
     struct repo *const restrict repo,
-    struct wanted_reference *const restrict wanted_head
+    struct wanted_reference *const restrict wanted_head,
+    git_fetch_options *const restrict fetch_options,
+    unsigned short const proxy_after
 ) {
     git_reference *head;
     int r = git_repository_head(&head, repo->repository);
-    switch (r) {
-    case GIT_OK:
-        break;
-    case GIT_EUNBORNBRANCH:
-        pr_error("Failed to resolve head, HEAD points to a non-"
-            "existing branch\n");        
-        return -1;
-    case GIT_ENOTFOUND:
-        pr_error("Failed to resolve head, HEAD is missing\n");
-        return -1;
-    default:
-        pr_error("Failed to find head, unhandled libgit return %d\n", r);
-        return -1;
+    if (r) {
+        repo_parse_wanted_head_explain_libgit_return(r);
+        if (repo->updated) {
+            pr_error("Failed to find HEAD\n");
+            return -1;
+        }
+        pr_warn("Failed to find HEAD, but repo not updated yet, "
+                "update to retry");
+        if (repo_update(repo, fetch_options, proxy_after)) {
+            pr_error("Failed to update\n");
+            return -1;
+        }
+        if ((r = git_repository_head(&head, repo->repository))) {
+            repo_parse_wanted_head_explain_libgit_return(r);
+            pr_error("Still failed to find HEAD after updating\n");
+            return -1;
+        }
     }
-    r = mirror_repo_ensure_wanted_reference_common(
-        config, repo_id, wanted_head, head);
+    r = repo_parse_wanted_reference_common(
+        repo, wanted_head, head, fetch_options, proxy_after);
     git_reference_free(head);
     return r;
 }
 
-// May re-allocate the config->repos array, must re-assign repo after calling
-int mirror_repo_ensure_wanted_branch(
-    struct config *const restrict config,
-    unsigned long const repo_id,
-    struct wanted_reference *const restrict wanted_branch
+void repo_parse_wanted_branch_explain_libgit_return(
+    int const r, 
+    char const *const restrict branch, 
+    char const *const restrict repo
 ) {
-    int r = repo_prepare_open_or_create_if_needed(config, repo_id);
-    struct repo *restrict repo = config->repos + repo_id;
-    if (r) {
-        pr_error("Failed to ensure repo '%s' is opened\n", repo->url);
-        return -1;
-    }
-    char const *const branch = wanted_branch->commit.base.name;
-    git_reference *reference;
-    r = git_branch_lookup(
-        &reference, repo->repository, branch, GIT_BRANCH_LOCAL);
     switch (r) {
-    case GIT_OK:
-        break;
     case GIT_ENOTFOUND:
         pr_error("Branch '%s' was not found in repo '%s'\n",
-            branch, repo->url);
-        return -1;
+            branch, repo);
+        break;
     case GIT_EINVALIDSPEC:
         pr_error("'%s' is an illegal branch spec\n", branch);
-        return -1;
+        break;
     default:
         pr_error("Failed to find branch '%s', "
             "unhandled libgit return %d\n",
             branch, r);
-        return -1;
+        break;
     }
-    r = mirror_repo_ensure_wanted_reference_common(
-        config, repo_id, wanted_branch, reference);
+}
+
+// May re-allocate the config->repos array, must re-assign repo after calling
+int repo_parse_wanted_branch(
+    struct repo *const restrict repo,
+    struct wanted_reference *const restrict wanted_branch,
+    git_fetch_options *const restrict fetch_options,
+    unsigned short const proxy_after
+) {
+    git_reference *reference;
+    int r = git_branch_lookup(
+        &reference, repo->repository, wanted_branch->name, GIT_BRANCH_LOCAL);
+    if (r) {
+        repo_parse_wanted_branch_explain_libgit_return(
+            r, wanted_branch->name, repo->url);
+        if (repo->updated) {
+            pr_error("Failed to find branch\n");
+            return -1;
+        }
+        pr_warn(
+            "Failed to find branch, but repo not updated, update to retry\n");
+        if (repo_update(repo, fetch_options, proxy_after)) {
+            pr_error("Failed to update repo\n");
+            return -1;
+        }
+        if ((r = git_branch_lookup(
+            &reference, repo->repository, wanted_branch->name, GIT_BRANCH_LOCAL
+        ))) {
+            repo_parse_wanted_branch_explain_libgit_return(
+                r, wanted_branch->name, repo->url);
+            pr_error("Still failed to lookup branch even after update\n");
+            return -1;
+        }
+    }
+    r = repo_parse_wanted_reference_common(
+        repo, wanted_branch, reference, fetch_options, proxy_after);
     git_reference_free(reference);
     return r;
 }
 
-int mirror_repo_ensure_wanted_tag(
-    struct config *const restrict config,
-    unsigned long const repo_id,
-    struct wanted_reference *const restrict wanted_tag
+void repo_parse_wanted_reference_explain_libgit_return(
+    int const r,
+    char const *const restrict reference,
+    char const *const restrict repo
 ) {
-    int r = repo_prepare_open_or_create_if_needed(config, repo_id);
-    struct repo *restrict repo = config->repos + repo_id;
-    if (r) {
-        pr_error("Failed to ensure repo '%s' is opened\n", repo->url);
-        return -1;
+    switch (r) {
+    case GIT_ENOTFOUND:
+        pr_error("Not found reference '%s' in repo '%s'\n", reference, repo);
+        break;
+    case GIT_EINVALIDSPEC:
+        pr_error("'%s' is not a valid reference spec\n", reference);
+        break;
+    default:
+        pr_error("Failed to lookup reference, unhandled libgit return %d\n", r);
+        break;
     }
+}
+
+int repo_parse_wanted_reference_with_given_ref_name(
+    struct repo *const restrict repo,
+    struct wanted_reference *const restrict wanted_reference,
+    git_fetch_options *const restrict fetch_options,
+    unsigned short const proxy_after,
+    char const *const ref_name
+) {
+    git_reference *reference;
+    int r = git_reference_lookup(&reference, repo->repository, ref_name);
+    if (r) {
+        repo_parse_wanted_reference_explain_libgit_return(
+            r, ref_name, repo->url);
+        if (repo->updated) {
+            pr_error("Failed to lookup reference\n");
+            return -1;
+        }
+        pr_warn("Failed to lookup reference, but repo not updated yet, "
+            "update to retry\n");
+        if (repo_update(repo, fetch_options, proxy_after)) {
+            pr_error("Failed to update\n");
+            return -1;
+        }
+        if ((r = git_reference_lookup(
+            &reference, repo->repository, ref_name))) {
+            repo_parse_wanted_reference_explain_libgit_return(
+                r, ref_name, repo->url);
+            pr_error("Failed to lookup reference even after update\n");
+            return -1;
+        }
+    }
+    r = repo_parse_wanted_reference_common(
+        repo, wanted_reference, reference, fetch_options, proxy_after);
+    git_reference_free(reference);
+    return r;
+}
+
+
+int repo_parse_wanted_tag(
+    struct repo *const restrict repo,
+    struct wanted_reference *const restrict wanted_tag,
+    git_fetch_options *const restrict fetch_options,
+    unsigned short const proxy_after
+) {
     char ref_name[NAME_MAX];
     char const *const tag_name = wanted_tag->commit.base.name;
     if (snprintf(ref_name, sizeof ref_name, "refs/tags/%s", tag_name) < 0) {
@@ -2597,66 +2689,19 @@ int mirror_repo_ensure_wanted_tag(
             tag_name, repo->url);
         return -1;
     }
-    git_reference *reference;
-    r = git_reference_lookup(&reference, repo->repository, ref_name);
-    switch (r) {
-    case GIT_OK:
-        break;
-    case GIT_ENOTFOUND:
-        pr_error("Tag '%s' (full ref name '%s') was not found in repo '%s'\n",
-            tag_name, ref_name, repo->url);
-        return -1;
-    case GIT_EINVALIDSPEC:
-        pr_error("Tag '%s' (full ref name '%s') is an illegal branch spec\n", 
-            tag_name, ref_name);
-        return -1;
-    default:
-        pr_error("Failed to find tag '%s' (full ref name '%s'), "
-            "unhandled libgit return %d\n",
-            tag_name, ref_name, r);
-        return -1;
-    }
-    r = mirror_repo_ensure_wanted_reference_common(
-        config, repo_id, wanted_tag, reference);
-    git_reference_free(reference);
-    return r;
+    return repo_parse_wanted_reference_with_given_ref_name(
+        repo, wanted_tag, fetch_options, proxy_after, ref_name);
 }
 
-int mirror_repo_ensure_wanted_reference(
-    struct config *const restrict config,
-    unsigned long const repo_id,
-    struct wanted_reference *const restrict wanted_reference
+int repo_parse_wanted_reference(
+    struct repo *const restrict repo,
+    struct wanted_reference *const restrict wanted_reference,
+    git_fetch_options *const restrict fetch_options,
+    unsigned short const proxy_after
 ) {
-    int r = repo_prepare_open_or_create_if_needed(config, repo_id);
-    struct repo *restrict repo = config->repos + repo_id;
-    if (r) {
-        pr_error("Failed to ensure repo '%s' is opened\n", repo->url);
-        return -1;
-    }
-    git_reference *reference;
-    r = git_reference_lookup(&reference, repo->repository, 
-        wanted_reference->commit.base.name);
-    switch (r) {
-    case GIT_OK:
-        break;
-    case GIT_ENOTFOUND:
-        pr_error("Reference '%s' was not found in repo '%s'\n",
-            wanted_reference->commit.base.name, repo->url);
-        return -1;
-    case GIT_EINVALIDSPEC:
-        pr_error("Reference '%s' is an illegal branch spec\n", 
-            wanted_reference->commit.base.name);
-        return -1;
-    default:
-        pr_error("Failed to find reference '%s', "
-            "unhandled libgit return %d\n",
-            wanted_reference->commit.base.name, r);
-        return -1;
-    }
-    r = mirror_repo_ensure_wanted_reference_common(
-        config, repo_id, wanted_reference, reference);
-    git_reference_free(reference);
-    return r;
+    return repo_parse_wanted_reference_with_given_ref_name(
+        repo, wanted_reference, fetch_options, proxy_after,
+        wanted_reference->name);
 }
 
 int repo_add_wanted_reference(
@@ -2671,58 +2716,28 @@ int repo_add_wanted_reference(
     }
     if (repo_add_wanted_object_and_init_with_name_no_complete(
         repo, reference_name, strlen(reference_name))) {
+        pr_error("Failed to add reference '%s' to repo '%s'\n",
+            reference_name, repo->url);
         return -1;
-        
     }
-    struct wanted_object *const restrict wanted_object = 
+    struct wanted_object *const restrict wanted_reference = 
         get_last(repo->wanted_objects);
-    // struct wanted_reference *const restrict wanted_reference =
-    //     malloc(sizeof *wanted_reference);
-    // if (wanted_reference == NULL) {
-    //     pr_error("Failed to allocate memory for more wanted references\n");
-    //     return -1;
-    // }
-    *wanted_reference = WANTED_REFERENCE_INIT;
-    wanted_reference->commit.base.name_len = strlen(reference_name);
-    wanted_reference->commit.base.name = 
-        malloc(wanted_reference->commit.base.name_len);
-    if (wanted_reference->commit.base.name == NULL) {
-        pr_error("Failed to allocate memory for reference name\n");
-        free(wanted_reference);
-        return -1;
-    }
-    memcpy(wanted_reference->commit.base.name, reference_name,
-        wanted_reference->commit.base.name_len);
-    wanted_reference->commit.base.archive = archive;
-    wanted_reference->commit.base.checkout = checkout;
-    struct wanted_objects *const wanted_objects = &repo->wanted_objects;
-    wanted_objects->dynamic = true;
-    ++wanted_objects->objects_count;
-    wanted_objects->objects_tail->next = 
-        (struct wanted_base *) wanted_reference;
-    wanted_reference->commit.base.previous = 
-        wanted_objects->objects_tail;
-    wanted_objects->objects_tail = (struct wanted_base *) wanted_reference;
+    wanted_reference->archive = archive;
+    wanted_reference->checkout = checkout;
+    wanted_reference->type = WANTED_TYPE_REFERENCE;
     pr_info("Added wanted reference '%s' to repo '%s'\n", 
         wanted_reference->commit.base.name, repo->url);
     return 0;
 }
 
-int mirror_repo_ensure_all_branches(
-    struct config *const restrict config,
-    unsigned long const repo_id,
+int repo_parse_wanted_all_branches(
+    struct repo *const restrict repo,
     struct wanted_base *const restrict wanted_all_branches
 ) {
-    int r = repo_prepare_open_or_create_if_needed(config, repo_id);
-    struct repo *restrict repo = config->repos + repo_id;
-    if (r) {
-        pr_error("Failed to ensure repo '%s' is opened, libgit return %d\n", 
-            repo->url, r);
-        return -1;
-    }
     git_branch_iterator *branch_iterator;
-    if ((r = git_branch_iterator_new(
-        &branch_iterator, repo->repository, GIT_BRANCH_LOCAL))) {
+    int r = git_branch_iterator_new(
+        &branch_iterator, repo->repository, GIT_BRANCH_LOCAL);
+    if (r) {
         pr_error("Failed to create branch iterator for repo '%s', "
         "libgit return %d\n", repo->url, r);
     }
@@ -2763,19 +2778,19 @@ int mirror_repo_ensure_all_branches(
     }
 }
 
-struct mirror_repo_ensure_all_tags_foreach_callback_payload {
+struct repo_parse_wanted_all_tags_foreach_payload {
     struct repo *const restrict repo;
     bool const archive;
     bool const checkout;
 };
 
-int mirror_repo_ensure_all_tags_foreach_callback(
+int repo_parse_wanted_all_tags_foreach_callback(
     char const *name, git_oid *oid, void *payload
 ) {
     (void) oid;
-    struct mirror_repo_ensure_all_tags_foreach_callback_payload 
+    struct repo_parse_wanted_all_tags_foreach_payload 
         *const restrict private_payload = 
-        (struct mirror_repo_ensure_all_tags_foreach_callback_payload *
+        (struct repo_parse_wanted_all_tags_foreach_payload *
             const restrict) payload;
     if (repo_add_wanted_reference(private_payload->repo, name, 
         private_payload->archive, private_payload->checkout)) {
@@ -2786,20 +2801,11 @@ int mirror_repo_ensure_all_tags_foreach_callback(
     return 0;
 }
 
-int mirror_repo_ensure_all_tags(
-    struct config *const restrict config,
-    unsigned long const repo_id,
+int repo_parse_wanted_all_tags(
+    struct repo *const restrict repo,
     struct wanted_base *const restrict wanted_all_tags
 ) {
-    (void) wanted_all_tags;
-    int r = repo_prepare_open_or_create_if_needed(config, repo_id);
-    struct repo *restrict repo = config->repos + repo_id;
-    if (r) {
-        pr_error("Failed to ensure repo '%s' is opened, libgit return %d\n", 
-            repo->url, r);
-        return -1;
-    }
-    struct mirror_repo_ensure_all_tags_foreach_callback_payload 
+    struct repo_parse_wanted_all_tags_foreach_payload 
         const private_payload = {
             .repo = repo,
             .archive = wanted_all_tags->archive,
@@ -2807,15 +2813,15 @@ int mirror_repo_ensure_all_tags(
         };
     pr_info(
         "Looping through all tags to create individual wanted references\n");
-    if ((r = git_tag_foreach(
-        repo->repository, mirror_repo_ensure_all_tags_foreach_callback,
-        (void *)&private_payload))) {
+    int r = git_tag_foreach(
+        repo->repository, repo_parse_wanted_all_tags_foreach_callback,
+        (void *)&private_payload);
+    if (r) {
         pr_error("Failed git_tag_foreach callback, libgit return %d\n", r);
         return -1;
     }
     return 0;
 }
-
 
 // May re-allocate config->repos, and repo->parsed_commits
 int repo_lookup_commit_and_update_if_failed(
@@ -3002,107 +3008,10 @@ int mirror_repo(
         return -1;
     }
     pr_info("Mirroring repo '%s'\n", repo->url);
-    bool updated = repo->updated;
-    for (unsigned i = 0; i < repo->wanted_objects_count;) {
-        if (repo->wanted_dynamic && !repo->updated) {
-            pr_warn(
-                "Dynamic wanted objects set for repo '%s', need to update\n", 
-                repo->url);
-            goto update;
-        }
-        struct wanted_object *wanted_object = repo->wanted_objects + i;
-        switch (wanted_object->type) {
-        case WANTED_TYPE_COMMIT:
-            if (repo_parse_wanted_commit(repo, 
-                (struct wanted_object *)wanted_object)) {
-                pr_error("Failed to parse wanted commit '%s' for repo '%s'\n",
-                        wanted_object->id_hex_string, repo->url);
-                return -1;
-            }
-            break;
-        case WANTED_TYPE_ALL_TAGS:
-            r = mirror_repo_ensure_all_tags(
-                config, repo_id, (struct wanted_base *)wanted_object);
-            repo = config->repos + repo_id;
-            if (r) {
-                pr_error(
-                    "Failed to ensure all tags robust for repo '%s'\n",
-                    repo->url
-                );
-                return -1;
-            }
-            break;
-        case WANTED_TYPE_ALL_BRANCHES:
-            r = mirror_repo_ensure_all_branches(
-                config, repo_id, (struct wanted_base *)wanted_object);
-            repo = config->repos + repo_id;
-            if (r) {
-                pr_error(
-                    "Failed to ensure all branches robust for repo '%s'\n",
-                    repo->url
-                );
-                return -1;
-            }
-            break;
-        case WANTED_TYPE_BRANCH:
-            r = mirror_repo_ensure_wanted_branch(
-                config, repo_id, (struct wanted_reference *)wanted_object);
-            repo = config->repos + repo_id;
-            if (r) {
-                pr_error(
-                    "Failed to ensure branch '%s' robust for repo '%s'\n",
-                    wanted_object->name, repo->url);
-                return -1;
-            }
-            break;
-        case WANTED_TYPE_TAG:
-            r = mirror_repo_ensure_wanted_tag(
-                config, repo_id, (struct wanted_reference *)wanted_object);
-            repo = config->repos + repo_id;
-            if (r) {
-                pr_error(
-                    "Failed to ensure tag '%s' robust for repo '%s'\n",
-                    wanted_object->name, repo->url);
-                return -1;
-            }
-            break;
-        case WANTED_TYPE_REFERENCE:
-            r = mirror_repo_ensure_wanted_reference(
-                config, repo_id, (struct wanted_reference *)wanted_object);
-            repo = config->repos + repo_id;
-            if (r) {
-                pr_error(
-                    "Failed to ensure reference '%s' robust "
-                    "for repo '%s'\n",
-                    wanted_object->name, repo->url);
-                return -1;
-            }
-            break;
-        case WANTED_TYPE_HEAD:
-            r = mirror_repo_ensure_wanted_head(
-                config, repo_id, (struct wanted_reference *)wanted_object);
-            repo = config->repos + repo_id;
-            if (r) {
-                pr_error("Failed to ensure HEAD robust for repo '%s'\n",
-                repo->url);
-                return -1;
-            }
-            break;
-        case WANTED_TYPE_UNKNOWN:
-        default:
-            pr_error(
-                "Impossible wanted type unknown for wanted object '%s' "
-                "for repo '%s'\n",
-                wanted_object->name, repo->url);
-            return -1;
-        }
-        if (repo->updated && !updated) {
-            pr_warn("Silent update happended during run, need to reset loop\n");
-            goto reset_loop_after_update;
-        }
-        ++i;
-        continue;
-update:
+    if (repo->wanted_dynamic && !repo->updated) {
+        pr_warn(
+            "Dynamic wanted objects set for repo '%s', need to update\n", 
+            repo->url);
         if (repo_update(
             repo, &config->fetch_options, config->proxy_after)) {
             pr_error(
@@ -3111,35 +3020,114 @@ update:
                 repo->url);
             return -1;
         }
-reset_loop_after_update:
-        if (repo->parsed_commits_count) {
-            pr_warn("Repo already has parsed commits, need to re-ensure "
-            "them as the updated repo might have different content\n");
-            r = repo_ensure_all_parsed_commits(config, repo_id);
-            repo = config->repos + repo_id;
-            if (r) {
-                pr_error("Failed to ensure robustness of all existing "
-                "parsed commits after updating the repo, upstream may have "
-                "force pushed, refuse to continue for data integrity\n");
+    }
+    git_fetch_options *const fetch_options = &config->fetch_options;
+    unsigned short const proxy_after = config->proxy_after;
+
+    bool updated = repo->updated;
+    for (;;) {
+        for (unsigned i = 0; i < repo->wanted_objects_count;) {
+            struct wanted_object *wanted_object = repo->wanted_objects + i;
+            switch (wanted_object->type) {
+            case WANTED_TYPE_COMMIT:
+                if (repo_parse_wanted_commit(repo,
+                    (struct wanted_commit *)wanted_object)) {
+                    pr_error(
+                        "Failed to parse wanted commit '%s' for repo '%s'\n",
+                        wanted_object->id_hex_string, repo->url);
+                    return -1;
+                }
+                break;
+            case WANTED_TYPE_ALL_TAGS:
+                if (repo_parse_wanted_all_tags(repo,
+                    (struct wanted_base *)wanted_object)) {
+                    pr_error(
+                        "Failed to parse wanted all branches for repo '%s'\n",
+                        repo->url);
+                    return -1;
+                }
+                break;
+            case WANTED_TYPE_ALL_BRANCHES:
+                if (repo_parse_wanted_all_branches(repo,
+                    (struct wanted_base *)wanted_object)) {
+                    pr_error("Failed to parse wanted all tags for repo '%s'\n",
+                        repo->url);
+                    return -1;
+                }
+                break;
+            case WANTED_TYPE_BRANCH:
+                if (repo_parse_wanted_branch(repo,
+                    (struct wanted_reference *)wanted_object,
+                    fetch_options, proxy_after)) {
+                    pr_error(
+                        "Failed to parsed wanted branch '%s'  for repo '%s'\n",
+                        wanted_object->name, repo->url);
+                    return -1;
+                }
+                break;
+            case WANTED_TYPE_TAG:
+                if (repo_parse_wanted_tag(repo,
+                    (struct wanted_reference *)wanted_object,
+                    fetch_options, proxy_after)) {
+                    pr_error(
+                        "Failed to parsed wanted tag '%s'  for repo '%s'\n",
+                        wanted_object->name, repo->url);
+                    return -1;
+                }
+                break;
+            case WANTED_TYPE_REFERENCE:
+                if (repo_parse_wanted_tag(repo,
+                    (struct wanted_reference *)wanted_object,
+                    fetch_options, proxy_after)) {
+                    pr_error(
+                        "Failed to parsed wanted reference '%s'  for "
+                        "repo '%s'\n",
+                        wanted_object->name, repo->url);
+                    return -1;
+                }
+                break;
+            case WANTED_TYPE_HEAD:
+                if (repo_parse_wanted_head(repo, 
+                    (struct wanted_reference *)wanted_object,
+                    fetch_options, proxy_after)) {
+                    pr_error("Failed to parsed wanted HEAD for repo '%s'\n",
+                    repo->url);
+                    return -1;
+                }
+                break;
+            case WANTED_TYPE_UNKNOWN:
+            default:
+                pr_error(
+                    "Impossible wanted type unknown for wanted object '%s' "
+                    "for repo '%s'\n",
+                    wanted_object->name, repo->url);
                 return -1;
             }
+            if (repo->updated && !updated) {
+                pr_warn(
+                    "Silent update happended during run, need to reset loop\n");
+                // Drop all wanted objects added later
+                updated = true;
+                repo->wanted_objects_count = 
+                    repo->wanted_objects_count_original;
+                i = 0;
+                pr_warn("Repo updated, go back to first wanted object\n");
+                continue;
+            }
+            ++i;
         }
-        // Drop all wanted objects added later
-        updated = repo->updated; // Technically they're both true
-        if (!updated) {
-            pr_error("Impossible value for update mark\n");
+        if (repo_ensure_all_parsed_commits(config, repo_id)) {
+            pr_error("Failed to ensure robustness of all parsed commits\n");
             return -1;
         }
-        repo->wanted_objects_count = repo->wanted_objects_count_original;
-        i = 0;
-        pr_warn("Repo updated, go back to first wanted object\n");
+        repo = config->repos + repo_id;
+        if (updated == repo->updated) {
+            break;
+        } else {
+            pr_warn("Silent update happened during run, need to reset loop\n");
+            updated = repo->updated;
+        }
     }
-    
-    if (repo_ensure_all_parsed_commits(config, repo_id)) {
-        pr_error("Failed to ensure robustness of all parsed commits\n");
-        return -1;
-    }
-    repo = config->repos + repo_id;
     pr_info("Finished mirroring repo '%s'\n", repo->url);
     return 0;
 }
