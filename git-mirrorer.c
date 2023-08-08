@@ -311,7 +311,7 @@ struct repo {
     char    url[PATH_MAX],
             url_no_scheme_sanitized[PATH_MAX],
             dir_path[PATH_MAX],
-            short_name[NAME_MAX];
+            short_name[NAME_MAX + 1];
     unsigned short  url_len,
                     url_no_scheme_sanitized_len,
                     url_no_scheme_sanitized_parts,
@@ -757,6 +757,10 @@ int config_add_repo_and_init_with_url(
     }
     if (short_name_len == 0) {
         pr_error("Short name length is 0\n");
+        return -1;
+    }
+    if (short_name_len > NAME_MAX) {
+        pr_error("Short name '%s' too long\n", short_name);
         return -1;
     }
     hash_type url_hash = hash_calculate(url, len_url);
