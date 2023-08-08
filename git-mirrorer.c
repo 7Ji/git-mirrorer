@@ -7,6 +7,8 @@
 #include <assert.h>
 
 #include <unistd.h>
+#include <pthread.h>
+#include <signal.h>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -2058,6 +2060,26 @@ free_remote:
     return r;
 }
 
+struct repo_update_thread_arg_modifiable {
+    struct repo *restrict repo;
+    git_fetch_options fetch_options;
+    unsigned short proxy_after;
+};
+
+struct repo_update_thread_arg {
+    struct repo *const restrict repo;
+    git_fetch_options fetch_options;
+    unsigned short const proxy_after;
+};
+
+void *repo_update_thread(void *arg) {
+    struct repo_update_thread_arg *private_arg = 
+        (struct repo_update_thread_arg *)arg;
+    pr_debug("Thread called for repo '%s'\n", private_arg->repo->url);
+    return (void *)(long)repo_update(private_arg->repo, 
+        &private_arg->fetch_options, private_arg->proxy_after);
+}
+
 int repo_prepare_open_or_create_if_needed(
     struct repo *const restrict repo,
     git_fetch_options *const restrict fetch_options,
@@ -3173,9 +3195,105 @@ int mirror_repo(
     return 0;
 }
 
+int open_and_update_all_dynamic_repos_threaded_optional(
+    struct config *const restrict config
+) {
+    unsigned long repos_need_update_count = 0;
+    git_fetch_options *const fetch_options = &config->fetch_options;
+    unsigned short const proxy_after = config->proxy_after;
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        struct repo *const restrict repo = config->repos + i;
+        if (!repo->wanted_dynamic) continue;
+        ++repos_need_update_count;
+        if (repo_prepare_open_or_create_if_needed(
+            repo, fetch_options, proxy_after)) {
+            pr_error("Failed to prepare repo\n");
+            return -1;
+        }
+    }
+    // If there's only 1 thread needed, going this routine just wastes time
+    if (repos_need_update_count <= 1) return 0;
+
+    pthread_t *threads = malloc(sizeof *threads * repos_need_update_count);
+    if (threads == NULL) {
+        pr_error("Failed to allocate memory for threads\n");
+        return -1;
+    }
+    int r = -1;
+    struct repo_update_thread_arg *threads_args = malloc(
+        sizeof *threads_args * repos_need_update_count);
+    if (threads_args == NULL) {
+        pr_error("Failed to allocate memory for threads args\n");
+        goto free_threads;
+    }
+
+    unsigned long thread_id = 0;
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        struct repo *const restrict repo = config->repos + i;
+        pr_debug("Handling repo %lu '%s' of %lu\n", i, repo->url, repos_need_update_count);
+        if (!repo->wanted_dynamic) continue;
+        pr_debug("Creating thread for repo '%s'\n", repo->url);
+        struct repo_update_thread_arg_modifiable *thread_arg = 
+            (struct repo_update_thread_arg_modifiable *)
+                (threads_args + thread_id);
+        thread_arg->repo = repo;
+        thread_arg->fetch_options = *fetch_options;
+        thread_arg->proxy_after = proxy_after;
+        r = pthread_create(threads + thread_id, NULL, 
+            repo_update_thread, threads_args + thread_id);
+        ++thread_id;
+        if (r) {
+            pr_error("Failed to create thread, pthread return %d\n", r);
+            repos_need_update_count = i;
+            r = -1;
+            goto kill_threads;
+        }
+    }
+    pr_debug("%lu threads running\n", repos_need_update_count);
+    while (repos_need_update_count) {
+        pr_debug("%lu threads running\n", repos_need_update_count);
+        for (unsigned long i = 0; i < repos_need_update_count; ++i) {
+            long thread_ret;
+            r = pthread_tryjoin_np(threads[i], (void **)&thread_ret);
+            switch (r) {
+            case 0:
+                threads[i] = threads[repos_need_update_count-- - 1];
+                if (thread_ret) {
+                    pr_error(
+                        "Repo update thread bad return %ld\n", thread_ret);
+                    r = -1;
+                    goto kill_threads;
+                }
+            case EBUSY:
+                break;
+            default:
+                pr_error("Failed to join thread, pthread return %d\n", r);
+                r = -1;
+                goto kill_threads;
+            }
+        }
+        usleep(10);
+    }
+    r = 0;
+kill_threads:
+    for (unsigned long i = 0; i < repos_need_update_count; ++i) {
+        pthread_kill(threads[i], SIGKILL);
+    }
+// free_threads_args:
+    free(threads_args);
+free_threads:
+    free(threads);
+    return r;
+}
+
 int mirror_all_repos(
     struct config *const restrict config
 ) {
+    if (open_and_update_all_dynamic_repos_threaded_optional(config)) {
+        pr_error("Failed to pre-update repos\n");
+        return -1;
+    }
+
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         if (mirror_repo(config, i)) {
             pr_error("Failed to mirror all repos\n");
