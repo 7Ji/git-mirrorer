@@ -593,12 +593,12 @@ int mkdir_recursively(
             return mkdir_allow_existing(path);
         case '/':
             *c = '\0';
-            if (mkdir_allow_existing(path)) {
-                *c = '/';
+            int r = mkdir_allow_existing(path);
+            *c = '/';
+            if (r) {
                 pr_error("Failed to mkdir recursively '%s'\n", path);
                 return -1;
-            }   
-            *c = '/';
+            }
             break;
         default:
             break;
@@ -3985,6 +3985,26 @@ int ensure_path_non_exist( // essentially rm -rf
     return 0;
 }
 
+int ensure_parent_dir(
+    char *const restrict path,
+    unsigned short const len_path
+) {
+    for (unsigned short i = len_path; i > 0; --i) {
+        if (path[i - 1] == '/') {
+            path[i - 1] = '\0';
+            int r = mkdir_recursively(path);
+            path[i - 1] = '/';
+            if (r) {
+                pr_error("Failed to ensure parent dir of '%s'\n", path);
+                return -1;
+            }
+            return 0;
+        }
+    }
+    pr_error("Path '%s' does not have parent\n", path);
+    return -1;
+}
+
 int export_commit(
     struct config const *const restrict config,
     struct repo const *const restrict repo,
@@ -4103,6 +4123,11 @@ int export_commit(
         r = snprintf(file_archive_work, PATH_MAX, "%s.work", file_archive);
         if (r < 0) {
             pr_error_with_errno("Failed to format archive work file");
+            return -1;
+        }
+        if (ensure_parent_dir(file_archive_work, r)) {
+            pr_error("Failed to ensure parent folder of '%s'\n", 
+                file_archive_work);
             return -1;
         }
         if (ensure_path_non_exist(file_archive_work)) {
