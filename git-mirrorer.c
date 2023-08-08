@@ -3878,6 +3878,7 @@ int remove_dir_recursively(
         }
         switch (entry->d_type) {
         case DT_REG:
+        case DT_LNK:
             if (unlinkat(dir_fd, entry->d_name, 0)) {
                 pr_error_with_errno(
                     "Failed to delete '%s' recursively", entry->d_name);
@@ -3913,7 +3914,8 @@ int remove_dir_recursively(
             break;
         }
         default:
-            pr_error("Unsupported file type %d\n", entry->d_type);
+            pr_error("Unsupported file type %d for '%s'\n", 
+                entry->d_type, entry->d_name);
             return -1;
         }
 
