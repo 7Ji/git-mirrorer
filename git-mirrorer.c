@@ -100,14 +100,18 @@ unsigned char const EMPTY_512_BLOCK[512] = {0};
 #define TAR_LNKTYPE  '1'            /* link */
 #define TAR_SYMTYPE  '2'
 #define TAR_DIRTYPE  '5'            /* directory */
+#define PAX_TAR_GLOBAL_HEADER_TYPE 'g'
 
 #define GNUTAR_LONGLINK 'K'
 #define GNUTAR_LONGNAME 'L'
 
-#define TAR_LONGLINKTYPE GNUTAR_LONGLINK
-#define TAR_LONGNAMETYPE GNUTAR_LONGNAME
+#define TAR_LONGLINK_TYPE GNUTAR_LONGLINK
+#define TAR_LONGNAME_TYPE GNUTAR_LONGNAME
+#define TAR_GLOBAL_HEADER_TYPE    PAX_TAR_GLOBAL_HEADER_TYPE
 
 #define GNUTAR_LONGLINK_NAME    "././@LongLink"
+
+#define PAXTAR_GLOBAL_HEADER_NAME "pax_global_header"
 
 #define TAR_MODE(X)     "0000" #X
 #define TAR_MODE_644    TAR_MODE(644)
@@ -157,10 +161,13 @@ struct tar_posix_header const TAR_POSIX_HEADER_FOLDER_INIT =
     TAR_POSIX_INIT(755, TAR_DIRTYPE);
 
 struct tar_posix_header const TAR_POSIX_HEADER_GNU_LONGLINK_INIT = 
-    TAR_INIT(GNUTAR_LONGLINK_NAME, 644, TAR_LONGLINKTYPE);
+    TAR_INIT(GNUTAR_LONGLINK_NAME, 644, TAR_LONGLINK_TYPE);
 
 struct tar_posix_header const TAR_POSIX_HEADER_GNU_LONGNAME_INIT = 
-    TAR_INIT(GNUTAR_LONGLINK_NAME, 644, TAR_LONGNAMETYPE);
+    TAR_INIT(GNUTAR_LONGLINK_NAME, 644, TAR_LONGNAME_TYPE);
+
+struct tar_posix_header const TAR_POSIX_HEADER_PAX_GLOBAL_HEADER_INIT = 
+    TAR_INIT(PAXTAR_GLOBAL_HEADER_NAME, 666, TAR_GLOBAL_HEADER_TYPE);
 
 // struct tar_posix_header const TAR_POSIX_HEADER_LONGLINK
 
@@ -3241,6 +3248,36 @@ int tar_write_and_pad_to_512_block(
     return 0;
 }
 
+int tar_add_global_header(
+    int const tar_fd,
+    char const *const restrict mtime,
+    void const *const restrict content,
+    unsigned short const len_content
+) {
+    struct tar_posix_header global_header = 
+        TAR_POSIX_HEADER_PAX_GLOBAL_HEADER_INIT;
+    if (snprintf(global_header.size, sizeof global_header.size, 
+                    "%011o", len_content) < 0) {
+        pr_error("Failed to format global header size\n");
+        return -1;
+    }
+    memcpy(global_header.mtime, mtime, sizeof global_header.mtime);
+    if (tar_header_checksum_self(&global_header)) {
+        pr_error("Failed to calculate header checksum\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(
+        tar_fd, &global_header, sizeof global_header)) {
+        pr_error("Failed to write pax global header to tar\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(tar_fd, content, len_content)) {
+        pr_error("Failed to write file data to tar\n");
+        return -1;
+    }
+    return 0;
+}
+
 int tar_append_longlink_optional(
     int const tar_fd,
     char const *const restrict link,
@@ -4005,6 +4042,61 @@ int ensure_parent_dir(
     return -1;
 }
 
+unsigned short get_unsigned_short_decimal_width(unsigned short number) {
+    unsigned short width = 0;
+    if (!number) return 1;
+    while (number) {
+        number /= 10;
+        ++width;
+    }
+    return width;
+}
+
+int export_commit_add_global_comment_to_tar(
+    int tar_fd,
+    char const *const restrict repo,
+    char const *const restrict commit,
+    char const *const restrict mtime
+) {
+    char comment[4096];
+    int r = snprintf(comment, 4096, "Archive of repo '%s' commit '%s', "
+                                    "all recursive submodules includeded, "
+                                    "created with git-mirrorer by "
+                                    "Guoxin \"7Ji\" Pu (c) 2023-present",
+                                    repo, commit);
+    if (r < 0) {
+        pr_error("Failed to format comment\n");
+        return -1;
+    }
+    if (r >= 4000) {
+        pr_error("Comment too long: '%s'\n", comment);
+        return -1;
+    }
+    unsigned short const len_comment = r;
+    unsigned short width_length = get_unsigned_short_decimal_width(len_comment);
+     // 1 between length and comment=
+     // 8 for comment=
+     // 1 for ending \n new line
+    unsigned short width_all = width_length + len_comment + 10;
+    for (;;) {
+        width_length = get_unsigned_short_decimal_width(width_all);
+        unsigned const width_all_new = width_length + len_comment + 10;
+        if (width_all_new == width_all) break;
+        width_all = width_all_new;
+    }
+    char content[4096];
+    r = snprintf(content, 4096, "%hu comment=%s\n", width_all, comment);
+    if (r < 0) {
+        pr_error_with_errno("Failed to format content");
+        return -1;
+    }
+    if (tar_add_global_header(tar_fd, mtime, content, r)) {
+        pr_error("Failed to add global header to tar\n");
+        return -1;
+    }
+    return 0;
+}
+
 int export_commit(
     struct config const *const restrict config,
     struct repo const *const restrict repo,
@@ -4172,6 +4264,15 @@ int export_commit(
         git_commit_free(commit);
         if (fd_archive >= 0) close(fd_archive);
         return -1;
+    }
+    if (archive) {
+        if (export_commit_add_global_comment_to_tar(fd_archive,
+            repo->url, parsed_commit->id_hex_string, mtime)) {
+            pr_error("Failed to add pax global header comment\n");
+            git_commit_free(commit);
+            if (fd_archive >= 0) close(fd_archive);
+            return -1;
+        }
     }
     struct export_commit_treewalk_payload export_commit_treewalk_payload = {
         .config = config,
