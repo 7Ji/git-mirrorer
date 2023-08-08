@@ -3148,7 +3148,7 @@ int mirror_repo(
                 }
                 break;
             case WANTED_TYPE_REFERENCE:
-                if (repo_parse_wanted_tag(repo,
+                if (repo_parse_wanted_reference(repo,
                     (struct wanted_reference *)wanted_object,
                     fetch_options, proxy_after)) {
                     pr_error(
