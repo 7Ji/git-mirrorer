@@ -3,6 +3,48 @@
 # dir_repos: repos # Set the repos folder
 # dir_archives: archives # Set the archives folder
 # dir_checkouts: checkouts # Set the checkout folder
+wanted: # Defines global wanted objects, format is the same as when they're defined for repos
+  empty: # This list of wanted objects will be added to repo that has no wanted objects defined
+         # Note that if you set this list to empty, git-mirrorer will automatically add a wanted HEAD to it.
+         # It's not recommended to add repo-specific things here, like specific commit
+    - HEAD:
+        archive: yes
+        checkout: yes
+  always: # This list of wanted objects will be added to all repos
+          # It's not recommended to add repo-specific things here, like specific commit
+    - all_branches:
+        archive: yes
+        checkout: yes
+    - all_tags:
+        archive: yes
+        checkout: yes
+archive:
+  # Whether to append a prefix to all entries in archive, by default this is turned off so everything will be directly in the archive root.
+  # However, the default behaviour might confuse some build systems if they're used to Github's archive creation method which always includes prefix.
+  # Turn this on if you want similar behaviour to github's archive. 
+  # The prefix will be '[repo name]-[commit hash]/'
+  github_like_prefix: no 
+
+  suffix: .tar # Defines the archive suffix, this does not affect the actual format
+
+  # A combination of executable + argument to pipe the archive to it to get the actual output
+  # If set to / kept empty, the archive will be directly written
+  # If set to non-empty value, git-mirrorer will pipe the archive info it, 
+  # then pipe its output to the on-disk archive file
+  # The command and arguments are seperated on white space
+  # This is very simple and git-mirrorer does not do any escaping on it
+  pipe_through: '' 
+  
+  # It's also possible to define the pipe with each argument as a member of the list seperately, 
+  # if you have some argument that contains whitespace and it's hard to escape them
+  # pipe_through:  
+  #   - zstd
+  #   - 22vT0
+cleanup:
+  repos: no
+  archives: no
+  checkouts: no
+  links: yes
 repos:
   # A repo can be simply declared with its url
   - https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
