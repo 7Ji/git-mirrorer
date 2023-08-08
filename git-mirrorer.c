@@ -2278,6 +2278,7 @@ int repo_parse_commit_submodule_in_tree(
         pr_error("Failed to add parsed commit to repo\n");
         return -1;
     }
+    submodule->target_commit_id = repo_target->parsed_commits_count - 1;
     if (submodule->target_repo_id >= repo_id) {
         pr_info("Added commit '%s' as wanted to repo '%s', will handle "
             "that repo later\n", submodule->id_hex_string, repo_target->url);
@@ -3014,6 +3015,8 @@ int repo_ensure_all_parsed_commits(
     unsigned long const repo_id
 ) {
     struct repo *restrict repo = config->repos + repo_id;
+    pr_debug("Ensursing all parsed commit for repo '%s', count %lu\n", 
+        repo->url, repo->parsed_commits_count);
     for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
         if (repo_ensure_parsed_commit(config, repo_id, i)) {
             repo = config->repos + repo_id;
@@ -3735,6 +3738,9 @@ int export_commit_tree_entry_commit(
     git_oid const *const submodule_commit_id = git_tree_entry_id(entry);
     struct parsed_commit_submodule *parsed_commit_submodule = NULL;
     for (unsigned long i = 0; i < parsed_commit->submodules_count; ++i) {
+        pr_debug("Parsed submodule '%s' commit '%s'\n", 
+        parsed_commit->submodules[i].path, 
+        parsed_commit->submodules[i].id_hex_string);
         if (!git_oid_cmp(
             &parsed_commit->submodules[i].id, submodule_commit_id)) {
             parsed_commit_submodule = parsed_commit->submodules + i;
@@ -3742,7 +3748,11 @@ int export_commit_tree_entry_commit(
         }
     }
     if (parsed_commit_submodule == NULL) {
-        pr_error("Failed to find corresponding wanted commit submodule\n");
+        char oid_buffer[GIT_OID_MAX_HEXSIZE + 1];
+        pr_error("Failed to find corresponding wanted commit submodule, "
+        "path: '%s', commit: '%s'\n", path, 
+        git_oid_tostr(
+            oid_buffer, GIT_OID_MAX_HEXSIZE + 1, submodule_commit_id));
         return -1;
     }
 
@@ -3751,6 +3761,8 @@ int export_commit_tree_entry_commit(
         config->repos + parsed_commit_submodule->target_repo_id;
     struct parsed_commit const *restrict parsed_commit_in_target_repo = 
         target_repo->parsed_commits + parsed_commit_submodule->target_commit_id;
+    pr_debug("Submodule from target repo '%s', id %ld\n",
+        target_repo->url, parsed_commit_submodule->target_commit_id);
 
     // Recursively export
     char const *const restrict name = git_tree_entry_name(entry);
