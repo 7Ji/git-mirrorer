@@ -310,16 +310,13 @@ enum repo_added_from {
 struct repo {
     char    url[PATH_MAX],
             url_no_scheme_sanitized[PATH_MAX],
-            // symlink_link[PATH_MAX],
-            // symlink_target[PATH_MAX],
-            dir_path[PATH_MAX];
-            // url_hash_string[17];
+            dir_path[PATH_MAX],
+            short_name[NAME_MAX];
     unsigned short  url_len,
                     url_no_scheme_sanitized_len,
                     url_no_scheme_sanitized_parts,
-                    // symlink_link_len,
-                    // symlink_target_len,
-                    dir_path_len;
+                    dir_path_len,
+                    short_name_len;
     hash_type   url_hash,
                 url_no_scheme_sanitized_hash;
     git_repository *repository;
@@ -727,6 +724,7 @@ int config_add_repo_and_init_with_url(
             break;
         }
     }
+    char const *short_name = url_no_scheme;
     for (char const *c = url_no_scheme; *c; ++c) {
         if (*c == '/') {
             // Skip all continous leading /
@@ -737,6 +735,7 @@ int config_add_repo_and_init_with_url(
             // we don't want to copy the ending /
             if (*(c + 1) == '\0') break;
             ++url_no_scheme_sanitized_parts;
+            short_name = c + 1;
         }
         url_no_scheme_sanitized[url_no_scheme_sanitized_len++] = *c;
     }
@@ -745,6 +744,21 @@ int config_add_repo_and_init_with_url(
         return -1;
     }
     url_no_scheme_sanitized[url_no_scheme_sanitized_len] = '\0';
+    unsigned short short_name_len = 0;
+    for (char const *c = short_name; !short_name_len; ++c) {
+        switch (*c) {
+        case '.':
+            if (strcmp(c + 1, "git")) break;
+            __attribute__((fallthrough));
+        case '\0':
+            short_name_len = c - short_name;
+            break;
+        }
+    }
+    if (short_name_len == 0) {
+        pr_error("Short name length is 0\n");
+        return -1;
+    }
     hash_type url_hash = hash_calculate(url, len_url);
     hash_type url_no_scheme_sanitized_hash = hash_calculate(
         url_no_scheme_sanitized, url_no_scheme_sanitized_len);
@@ -778,12 +792,15 @@ int config_add_repo_and_init_with_url(
     repo->url_no_scheme_sanitized_len = url_no_scheme_sanitized_len;
     repo->url_no_scheme_sanitized_hash = url_no_scheme_sanitized_hash;
     repo->url_no_scheme_sanitized_parts = url_no_scheme_sanitized_parts;
+    memcpy(repo->short_name, short_name, short_name_len);
+    repo->short_name[short_name_len] = '\0';
     repo->added_from = added_from;
     pr_info("Added repo '%s', "HASH_NAME" '"HASH_FORMAT"', "
-            "no scheme sanitized url '%s'\n", 
+            "no scheme sanitized url '%s', short name '%s'\n", 
             repo->url,
             repo->url_hash,
-            repo->url_no_scheme_sanitized);
+            repo->url_no_scheme_sanitized,
+            repo->short_name);
     return 0;
 }
 
