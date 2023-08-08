@@ -12,6 +12,7 @@
 
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 #include <linux/limits.h>
 
@@ -352,8 +353,9 @@ struct config {
             dir_archives[PATH_MAX],
             dir_checkouts[PATH_MAX],
              // I don't think some one will write arg that's actually ARG_MAX
-            archive_pipe_args[PATH_MAX],
+            archive_pipe_args_buffer[PATH_MAX],
             archive_suffix[NAME_MAX];
+    char *archive_pipe_args[64];
     unsigned short  archive_pipe_args_offsets[64],
                     proxy_after,
                     len_proxy_url,
@@ -4369,6 +4371,7 @@ int export_commit(
             return -1;
         }
     }
+    pid_t pid = 0;
     if (archive) {
         r = snprintf(file_archive_work, PATH_MAX, "%s.work", file_archive);
         if (r < 0) {
@@ -4391,6 +4394,58 @@ int export_commit(
                 "Failed to create file '%s.work' and open it as write-only",
                 file_archive_work);
             return -1;
+        }
+        if (config->archive_pipe_args[0] && config->archive_pipe_args_count) {
+            pr_warn("Open pipe\n");
+            int fd_pipes[2];
+            if (pipe(fd_pipes)) {
+                pr_error_with_errno("Failed to create pipe\n");
+                return -1;
+            }
+            pid_t pid = fork();
+            switch (pid) {
+            case 0: // Child
+                if (close(fd_pipes[1])) { // Close the write end
+                    pr_error_with_errno(
+                        "Failed to close write end of the pipe");
+                    exit(EXIT_FAILURE);
+                }
+                if (dup2(fd_archive, STDOUT_FILENO)) { // Write to archive fd
+                    pr_error_with_errno("Failed to dup archive fd to stdout");
+                    exit(EXIT_FAILURE);
+                }
+                // stdout is now the archive fd, DO NOT write to it
+                if (close(fd_archive)) {
+                    fprintf(stderr, 
+                      "Failed to close the archive fd, errno: %d, error: %s\n",
+                      errno, strerror(errno));
+                    exit(EXIT_FAILURE);
+                }
+                if (execvp(config->archive_pipe_args[0], 
+                    config->archive_pipe_args)) {
+                    fprintf(stderr, "Failed to execute piper, errno: %d, "
+                        "error: %s\n",  errno, strerror(errno));
+                    exit(EXIT_FAILURE);
+                }
+                break;
+            case -1:
+                pr_error_with_errno("Failed to fork");
+                return -1;
+            default: // Parent
+                if (close(fd_pipes[0])) { // Close the read end
+                    pr_error_with_errno("Failed to close read end of the pipe");
+                    kill(pid, SIGKILL);
+                    return -1;
+                }
+                if (close(fd_archive)) { // Close the original archive fd
+                    pr_error_with_errno(
+                        "Failed to close the original archive fd");
+                    kill(pid, SIGKILL);
+                    return -1;
+                }
+                fd_archive = fd_pipes[1]; // write to pipe write end
+                break;
+            }
         }
     }
     if (!archive && !checkout) {
@@ -4472,6 +4527,16 @@ int export_commit(
             return -1;
         }
         close(fd_archive);
+        int status;
+        if (pid) {
+            r = waitpid(pid, &status, 0);
+            if (r) {
+                return -1;
+            }
+            if (status) {
+                return -1;
+            }
+        }
         if (rename(file_archive_work, file_archive)) {
             pr_error("Failed to move '%s' to '%s'\n", file_archive_work,
                 file_archive);
