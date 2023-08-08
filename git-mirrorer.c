@@ -425,6 +425,7 @@ struct config const CONFIG_INIT = {
     },
     .proxy_url = "",
     .proxy_after = 0,
+    .archive_suffix = ".tar",
 };
 
 struct export_commit_treewalk_payload {
@@ -4311,8 +4312,9 @@ int export_commit(
     };
     if (archive) {
         r = snprintf(
-            file_archive, PATH_MAX, "%s/%s.tar", 
-            config->dir_archives, parsed_commit->id_hex_string);
+            file_archive, PATH_MAX, "%s/%s%s", 
+            config->dir_archives, parsed_commit->id_hex_string,
+            config->archive_suffix);
         if (r < 0) {
             pr_error_with_errno("Failed to format archive file");
             return -1;
