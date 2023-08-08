@@ -1,85 +1,240 @@
+# PROXY CONFIG
 # proxy: http://your_http_proxy # Only needed if you want to use proxy
-# proxy_after: 3 # If proxy is set, only after this amount of failed tries, will proxy be used, the retry counts are reset between each repo
-# dir_repos: repos # Set the repos folder
-# dir_archives: archives # Set the archives folder
-# dir_checkouts: checkouts # Set the checkout folder
-wanted: # Defines global wanted objects, format is the same as when they're defined for repos
-  empty: # This list of wanted objects will be added to repo that has no wanted objects defined
-         # Note that if you set this list to empty, git-mirrorer will automatically add a wanted HEAD to it.
-         # It's not recommended to add repo-specific things here, like specific commit
+                                # only http proxy is supported
+                                # default: _empty_
+# proxy_after: 3 # If proxy is set, only after this amount of failed tries, will
+                 # proxy be used, the retry counts are reset between each repo.
+                 # Note there's also an internal addend 3 to the total retry 
+                 # count, so the max try count is [proxy_after] + 3
+                 # default: 0
+
+# UPSTREAM CONFIG
+# Defines an upstream git mirrorer instance's dir_repos, or any server that 
+# provides the same layout like dir_repos/links. Fetch from it first
+# before from the the actual repo links. 
+# If this is set to e.g. https://, it essentially does nothing.
+# You can chain a series of git-mirrorer instances across the network to save
+# bandwidth.
+# Due to limitation of libgit, file:/// and local path are not possible to use
+# here, you must use http/https/git url
+# default: _empty_
+# upstream: http://upstream_git_mirrorer_s_dir_repos
+
+# WORK DIRECTORY CONFIG
+# Since git-mirrorer does not do file-locking for performance concern, it is 
+# users' responsibility to not run multiple instances of git-mirrorer simulta-
+# neously against the same work folders
+# dir_repos: repos # Set the repos folder, default: repos
+# dir_archives: archives # Set the archives folder, default: archives
+# dir_checkouts: checkouts # Set the checkout folder, default: checkouts
+
+# GLOBAL WANTED OBJECTS CONFIG
+# Defines global wanted objects, the format is the same as when they're defined 
+# for repos (see later for exact format)
+wanted: 
+  empty: # This list of wanted objects will be added to repo that has no wanted 
+         # objects defined.
+         # default: [{'HEAD': {'archive': 'no', 'checkout': 'no'}}]
     - HEAD:
         archive: yes
         checkout: yes
   always: # This list of wanted objects will be added to all repos
-          # It's not recommended to add repo-specific things here, like specific commit
+          # default: _empty_
     - all_branches:
         archive: yes
         checkout: yes
     - all_tags:
         archive: yes
         checkout: yes
+
+# ARCHIVE CONFIG
+# For every wanted object that has 'archive' config set to true, an archive will
+# be created for the parsed commit of it, which all recursive submodules 
+# included in the tree just as normal folders, unlike the `git archive`. 
+# This manages the global archive config
 archive:
-  # Whether to append a prefix to all entries in archive, by default this is turned off so everything will be directly in the archive root.
-  # However, the default behaviour might confuse some build systems if they're used to Github's archive creation method which always includes prefix.
+  # Whether to append a prefix to all entries in archive, by default this is 
+  # turned off so the top-level git commit tree root starts in the archive root.
+  # However, the default behaviour might confuse some build systems if they're 
+  # used to Github's archive creation method which always includes prefix, and
+  # the top-level git commit tree root starts in the folder with the same name
+  # as the prefix.
   # Turn this on if you want similar behaviour to github's archive. 
   # The prefix will be '[repo name]-[commit hash]/'
+  # default: no
   github_like_prefix: no 
 
-  suffix: .tar # Defines the archive suffix, this does not affect the actual format
+  # Defines the archive suffix, this does not affect the actual format.
+  # The actual format when pipe_through is empty is GNU tar, and is determined
+  # by the program you feed the GNU tar stream into if pipe_through is not empty
+  # default: .tar
+  suffix: .tar 
 
-  # A combination of executable + argument to pipe the archive to it to get the actual output
-  # If set to / kept empty, the archive will be directly written
-  # If set to non-empty value, git-mirrorer will pipe the archive info it, 
-  # then pipe its output to the on-disk archive file
-  # The command and arguments are seperated on white space
-  # This is very simple and git-mirrorer does not do any escaping on it
-  pipe_through: '' 
+  # A combination of executable + argument to pipe the archive GNU tar stream 
+  # to it to get the actual output
+  # If set to empty, the archive will be directly written
+  # If set to non-empty value, git-mirrorer will pipe the archive info its stdin
+  # then pipe its stdout to the on-disk archive file, and that program will
+  # determine the format of the on-disk archive file. You can set suffix freely 
+  # independent from it.
+  # Any program that eats stdin and spits out stdout can be used, but usually
+  # you only want to use a compressor.
+  # It is NOT RECOMMENDED to pipe through `cat` unless you're debugging as it 
+  # just adds meaningless overhead.
+  # The command and arguments are seperated on white space, and no escaping is
+  # done on it.
+  # NOTE: As git-mirrorer exports commits to archives lazily, just modifying
+  # this will not cause it to recreate archives if the path of the supposed
+  # archive output is not changed, you'll need to manually delete the old 
+  # archives or also modify suffix above if you want to force re-archive
+  # Example: zstd -22vT0 --ultra
+  # default: _empty_
+  pipe_through: ''
   
-  # It's also possible to define the pipe with each argument as a member of the list seperately, 
-  # if you have some argument that contains whitespace and it's hard to escape them
+  # It is also possible to define pipe_through with each argument as a member of
+  # a list seperately. Do not use both.
+  # This is useful if you have some argument that contains whitespace.
   # pipe_through:  
   #   - zstd
   #   - 22vT0
+
+# CLEANUP CONFIG
+# As git-mirrorer will fetch repos and recursively all repos introduced into the
+# wanted objects of your defined repos as submodules, you might want to clean up
+# the work directories to save space
 cleanup:
+  # Whether to clean up repos under dir_repos
+  # The things that could be cleaned are anything but links/ in dir_repos, 
+  # mainly repos, but also things you create manually in there.
+  # Repos might be cloned into dir_repos if they're either 
+  #  1) defined in the repos list in the config
+  #  2) needed recursively as a submodule as the commit parsed from some wanted 
+  # objects of a defined repo
+  # From time to time, either you would remove repo from config if you don't 
+  # want to mirror it anymore, or some repos are not needed anymore as 
+  # submodules. For data hoarding/archiving purpose you would want to disable 
+  # this to keep those local repos just in case upstreams goes boom. To save 
+  # space you would want to enable this to remove those repos.
+  # Note that this does not clean up dir_repos/links, you would want to set
+  # the links option below for that purpose.
+  # default: no
   repos: no
+
+  # Whether to clean up archives under dir_archives
+  # The things that could be cleaned are anything but links/ in dir_archives, 
+  # mainly archives, but also things you create manually in there.
+  # Archives will be created under dir_archives with name '[commit hash]
+  # [archive suffix]', e.g. '00d9a9c44e201058a93c4fa11582c8a7119bdb40.tar'
+  # Each commit has its corresponding archive file, so an archive file will
+  # become obsolete if no wanted object is parsed into that commit anymore.
+  # Note that this does not clean up dir_archives/links, you would want to set
+  # the links option below for that purpose.
+  # default: no
   archives: no
+
+  # Whether to clean up checkouts under dir_archives
+  # The things that could be cleaned are anything but links/ in dir_checkouts, 
+  # mainly checkouts, but also things you create manually in there.
+  # Checkouts will be created under dir_checkouts with name '[commit hash]', 
+  # e.g. '00d9a9c44e201058a93c4fa11582c8a7119bdb40/'
+  # Each commit has its corresponding checkout, so an checkout will
+  # become obsolete if no wanted object is parsed into that commit anymore.
+  # Note that this does not clean up dir_checkouts/links, you would want to set
+  # the links option below for that purpose.
+  # default: no
   checkouts: no
+
+  # Whether to clean up symlinks under dir_repos/links, dir_archives/links and 
+  # dir_checkouts/links
+  # When mirroring repo and creating archives and checkouts, git-mirrorer will
+  # create helpful symlinks so you can easily retrive the result repo/archive/
+  # checkout with human-readable path from its hashed database. e.g. 
+  #  mirrors/links/github.com/systemd/systemd.git -> ../../../f565babad333f393
+  # The links however may break if the target it points to does not exist any
+  # more, like archives/links/github.com/systemd/systemd/branch/main.tar.xz 
+  # will break after branch main was updated.
+  # Enabling this will make git-mirrorer clean up these dead symlinks at the end
+  # of the run.
+  # default: yes
   links: yes
+
+# REPOS CONFIG
+# Defines a list of upstream git repositories that should be mirrored, by
+# mirroring here we mean that:
+#  1) The repo is up-to-date with upstream (or at least was up-to-date if there
+# is no wanted objects that trigger the repo to be updated), almost an identical
+# copy of the upstream git repo, everything same including objects db, branches,
+# HEAD, tags, etc. This is as if a repo cloned with `git clone --mirror`, but 
+# even HEAD will be updated.
+#  2) If a repo has a list of wanted objects defined, either commit, branch, 
+# tag, HEAD, or virtually all_branches, all_tags: 
+#    a) git-mirrorer will update the repo if there's any object that's not 
+#   directly a commit, or there's wanted commit but could not be found in the 
+#   local repo
+#    b) git-mirrorer will ensure every wanted object that's not directly a 
+#   commit can be parsed into an existing commit, and every wanted commit exists
+#    c) For every commit, if the tree includes submodule, git-mirrorer will also
+#   ensure the robustness of a virtual repo with that commit and recursively 
+#   follows the commit submodules.
+# NOTE: all repos defined here WILL DROP THEIR LOCAL CHANGES UPON UPDATING, so
+# NEVER EVER push your work to the local repos.
+# default: _empty_
 repos:
-  # A repo can be simply declared with its url
+  # A repo can be simply declared with its url, the wanted objects in wanted->
+  # empty will be copied to such repo, the wanted objects in wanted->always will
+  # also be copied to it
   - https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
-  # Or a list of wanted objects can be declared
+  # A repo can also be declared as [repo_url]->wanted->[list of wanted objects]
+  # mapping
   - https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git:
+      # Defines a list of wanted objects that should be ensured robust
       wanted:
-        # A special wanted object all_tags, git-mirrorer will guarantee all commits pointed by all tags are robust
+        # A wanted object can be simply declared with its name, as there is no
+        # type set, git-mirrorer will guess its type, and error out if it can
+        # not be guessed.
+
+        # A special wanted object all_tags, during run time this will be 
+        # expanded into a series of wanted tags at the end of the wanted objects 
+        # list, with archive and checkout options kept the same.
         - all_tags
-        # A special wanted object all_branches, git-mirrorer will guarantee all commits pointed by all branches are robust
-        - all_branches: # A wanted object can also be set with advanced options
-            # If archive is enabled, git-mirrorer will create archive for the commit under dir_archives
+
+        # A wanted object can also be declared with archive, checkout, type 
+        # options, to explicity determine the mirroring and exporting behaviour.
+
+        # A special wanted object all_branches, during run time this will be 
+        # expanded into a series of wanted branches at the end of the wanted 
+        # objects list, with archive and checkout options kept the same.
+        - all_branches: 
+            # Exporting the parsed commit to archives under dir_archives, the
+            # archive will contain all recursive submodules and a build system
+            # can use that archive safely to build without worrying about
+            # submodules missing
+            # default: no
             archive: yes
-            # If checkout is enabled, git-mirroer will create checkout for the commit under dir_checkouts
-            # Special note: the checkout won't contain .git work folder, the main purpose is to create temporary build folders.
-            #               If you do want .git involved, you can just clone the mirrored repos instead.
+            # Exporting the parsed commit to checkouts under dir_checkouts
+            # These checkouts do not contain .git work folder and is rather
+            # for quick lookup, or to copy into other places to build
+            # default: no
             checkout: yes
-            # Specially, for all_branches and all_tags, archive and checkout are not created for themselves, but rather for 
-            # the virtual wanted branches and wanted tags appened to the wanted objects list
-        # A wanted object with name [vV][0-9] is automatically identified as a tag
+
+        # A wanted object with name [vV][0-9] will be identified as a tag
         - v6.1
-        # You can/need to set type for names that git-mirrorer can't guess their types
+        # You can specify the type manually, and it's needed for names that
+        # git-mirrorer can't guess their types like the following
         - linux-6.4.y:
             type: branch
-        # You can also set HEAD explicitly, note for a repo without any wanted objects, HEAD is automatically added,
-        # but if there is any wanted object, HEAD will not be checked unless you specify it explicitly
+        # You can also set HEAD explicitly, this is useful if you do not have it
+        # defined in wanted->always but want to ensure its robustnes the same
+        # way as a simple repo (note if you've changed wanted->empty, that might
+        # not be the case)
         - HEAD
-  # The powerfulness of git-mirrorer shines when you're mirroring a repo with submodules
-  # git-mirrorer will look into the commit tree of a wanted object, and if there is .gitmodules, it will also mirror
-  # those submodule repos. The submodule repos are virtually appended to the repos list and with at least the submodule
-  # commit as their wanted object
   - https://github.com/7Ji/amlogic-s9xxx-archlinuxarm:
       wanted:
         - 20230502:
             type: tag
-            # For a repo with submodules, the archives and checkouts created will include those submodules
-            # You can thus use git-mirrorer as a tool to create source tarboll for such repos
+            # For a repo with submodules, the archives and checkouts created 
+            # will include those submodules
+            # You can thus use git-mirrorer as a tool to create source tarboll 
+            # for such repos
             archive: yes
             checkout: yes
