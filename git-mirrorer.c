@@ -1663,9 +1663,13 @@ int repo_finish(
     if (repo->wanted_objects_count == 0 && empty_wanted_objects_count != 0) {
         pr_warn("Repo '%s' does not have wanted objects defined, adding global "
             "wanted objects (when empty) to it as wanted\n", repo->url);
-        if (repo->wanted_objects) free(repo->wanted_objects);
+        if (repo->wanted_objects) {
+            pr_error("Wanted objects already allocated? "
+                    "This should not happen\n");
+            return -1;
+        }
         if ((repo->wanted_objects = malloc(
-            sizeof repo->wanted_objects * empty_wanted_objects_count)) == NULL)
+            sizeof *repo->wanted_objects * empty_wanted_objects_count)) == NULL)
         {
             pr_error("Failed to allocate memory\n");
             return -1;
@@ -1676,6 +1680,7 @@ int repo_finish(
         repo->wanted_objects_allocated = empty_wanted_objects_count;
     }
     if (always_wanted_objects_count != 0) {
+        pr_info("Add always wanted objects to repo '%s'\n", repo->url);
         unsigned long const new_wanted_objects_count = 
             repo->wanted_objects_count + always_wanted_objects_count;
         if (new_wanted_objects_count > repo->wanted_objects_allocated) {
@@ -1713,6 +1718,10 @@ int repo_finish(
         default:
             break;
         }
+    }
+    if (repo->wanted_dynamic) {
+        pr_info("Repo '%s' needs dynamic object, will need to update it\n", 
+                repo->url);
     }
     repo->dir_path_len = len_dir_repos + HASH_STRING_LEN + 1;
     if (snprintf(repo->dir_path, repo->dir_path_len + 1, "%s/"HASH_FORMAT, 
