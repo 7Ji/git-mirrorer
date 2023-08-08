@@ -13,6 +13,8 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+#include <linux/limits.h>
+
 #include <getopt.h>
 #include <dirent.h>
 
@@ -200,7 +202,7 @@ char const *WANTED_TYPE_STRINGS[] = {
 #define WANTED_BASE_DECLARE {\
     enum wanted_type type;\
     char name[NAME_MAX + 1];\
-    unsigned short name_len;\
+    unsigned short len_name;\
     bool archive;\
     bool checkout;\
 }
@@ -265,7 +267,7 @@ struct wanted_reference const WANTED_TAG_INIT = {
 struct wanted_reference const WANTED_HEAD_INIT = {
     .type = WANTED_TYPE_HEAD, 
     .name = "HEAD",
-    .name_len = 4,
+    .len_name = 4,
     .parsed_commit_id = (unsigned long) -1};
 
 
@@ -274,8 +276,8 @@ struct parsed_commit_submodule {
     char    id_hex_string[GIT_OID_MAX_HEXSIZE + 1],
             path[PATH_MAX],
             url[PATH_MAX];
-    unsigned short  path_len,
-                    url_len;
+    unsigned short  len_path,
+                    len_url;
     XXH64_hash_t url_hash;
     unsigned long   target_repo_id,
                     target_commit_id;
@@ -312,11 +314,11 @@ struct repo {
             url_no_scheme_sanitized[PATH_MAX],
             dir_path[PATH_MAX],
             short_name[NAME_MAX + 1];
-    unsigned short  url_len,
-                    url_no_scheme_sanitized_len,
+    unsigned short  len_url,
+                    len_url_no_scheme_sanitized,
                     url_no_scheme_sanitized_parts,
-                    dir_path_len,
-                    short_name_len;
+                    len_dir_path,
+                    len_short_name;
     hash_type   url_hash,
                 url_no_scheme_sanitized_hash;
     git_repository *repository;
@@ -348,12 +350,18 @@ struct config {
     char    proxy_url[PATH_MAX],
             dir_repos[PATH_MAX],
             dir_archives[PATH_MAX],
-            dir_checkouts[PATH_MAX];
-    unsigned short  proxy_after,
+            dir_checkouts[PATH_MAX],
+             // I don't think some one will write arg that's actually ARG_MAX
+            archive_pipe_args[PATH_MAX],
+            archive_suffix[NAME_MAX];
+    unsigned short  archive_pipe_args_offsets[64],
+                    proxy_after,
                     len_proxy_url,
                     len_dir_repos,
                     len_dir_archives,
-                    len_dir_checkouts;
+                    len_dir_checkouts,
+                    archive_pipe_args_count,
+                    len_archive_suffix;
 };
 
 enum yaml_config_parsing_status {
@@ -424,7 +432,7 @@ struct export_commit_treewalk_payload {
     struct repo const *const restrict repo;
     struct parsed_commit const *const restrict parsed_commit;
     char *const restrict submodule_path;
-    unsigned short const submodule_path_len;
+    unsigned short const len_submodule_path;
     bool const archive;
     char const *const restrict mtime;
     int const fd_archive;
@@ -710,7 +718,7 @@ int config_add_repo_and_init_with_url(
         return -1;
     }
     char url_no_scheme_sanitized[PATH_MAX];
-    unsigned short  url_no_scheme_sanitized_len = 0,
+    unsigned short  len_url_no_scheme_sanitized = 0,
                     url_no_scheme_sanitized_parts = 1;
     char const *url_no_scheme = url;
     for (char const *c = url; *c != '\0'; ++c) {
@@ -737,35 +745,35 @@ int config_add_repo_and_init_with_url(
             ++url_no_scheme_sanitized_parts;
             short_name = c + 1;
         }
-        url_no_scheme_sanitized[url_no_scheme_sanitized_len++] = *c;
+        url_no_scheme_sanitized[len_url_no_scheme_sanitized++] = *c;
     }
-    if (url_no_scheme_sanitized_len == 0) {
+    if (len_url_no_scheme_sanitized == 0) {
         pr_error("Sanitized url for url '%s' is empty\n", url);
         return -1;
     }
-    url_no_scheme_sanitized[url_no_scheme_sanitized_len] = '\0';
-    unsigned short short_name_len = 0;
-    for (char const *c = short_name; !short_name_len; ++c) {
+    url_no_scheme_sanitized[len_url_no_scheme_sanitized] = '\0';
+    unsigned short len_short_name = 0;
+    for (char const *c = short_name; !len_short_name; ++c) {
         switch (*c) {
         case '.':
             if (strcmp(c + 1, "git")) break;
             __attribute__((fallthrough));
         case '\0':
-            short_name_len = c - short_name;
+            len_short_name = c - short_name;
             break;
         }
     }
-    if (short_name_len == 0) {
+    if (len_short_name == 0) {
         pr_error("Short name length is 0\n");
         return -1;
     }
-    if (short_name_len > NAME_MAX) {
+    if (len_short_name > NAME_MAX) {
         pr_error("Short name '%s' too long\n", short_name);
         return -1;
     }
     hash_type url_hash = hash_calculate(url, len_url);
     hash_type url_no_scheme_sanitized_hash = hash_calculate(
-        url_no_scheme_sanitized, url_no_scheme_sanitized_len);
+        url_no_scheme_sanitized, len_url_no_scheme_sanitized);
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         struct repo const *const restrict repo_cmp = config->repos + i;
         if (repo_cmp->url_hash == url_hash) {
@@ -789,15 +797,15 @@ int config_add_repo_and_init_with_url(
     struct repo *const restrict repo = get_last(config->repos);
     *repo = REPO_INIT;
     memcpy(repo->url, url, len_url + 1);
-    repo->url_len = len_url;
+    repo->len_url = len_url;
     repo->url_hash = url_hash;
     memcpy(repo->url_no_scheme_sanitized, url_no_scheme_sanitized, 
-        url_no_scheme_sanitized_len + 1);
-    repo->url_no_scheme_sanitized_len = url_no_scheme_sanitized_len;
+        len_url_no_scheme_sanitized + 1);
+    repo->len_url_no_scheme_sanitized = len_url_no_scheme_sanitized;
     repo->url_no_scheme_sanitized_hash = url_no_scheme_sanitized_hash;
     repo->url_no_scheme_sanitized_parts = url_no_scheme_sanitized_parts;
-    memcpy(repo->short_name, short_name, short_name_len);
-    repo->short_name[short_name_len] = '\0';
+    memcpy(repo->short_name, short_name, len_short_name);
+    repo->short_name[len_short_name] = '\0';
     repo->added_from = added_from;
     pr_info("Added repo '%s', "HASH_NAME" '"HASH_FORMAT"', "
             "no scheme sanitized url '%s', short name '%s'\n", 
@@ -874,7 +882,7 @@ enum wanted_type wanted_type_guess_from_name(
 int wanted_object_guess_type_self_optional(struct wanted_object *wanted_object) {
     if (wanted_object->type != WANTED_TYPE_UNKNOWN) return 0;
     if ((wanted_object->type = wanted_type_guess_from_name(
-        wanted_object->name, wanted_object->name_len
+        wanted_object->name, wanted_object->len_name
     )) == WANTED_TYPE_UNKNOWN) {
         pr_error("Failed to guess type\n");
         return -1;
@@ -956,7 +964,7 @@ int repo_add_wanted_object_and_init_with_name_no_complete(
     *wanted_object = WANTED_OBJECT_INIT;
     memcpy(wanted_object->name, name, len_name);
     wanted_object->name[len_name] = '\0';
-    wanted_object->name_len = len_name;
+    wanted_object->len_name = len_name;
     return 0;
 }
 
@@ -980,7 +988,7 @@ int repo_add_wanted_object_and_init_with_name_and_complete (
     *wanted_object = WANTED_OBJECT_INIT;
     memcpy(wanted_object->name, name, len_name);
     wanted_object->name[len_name] = '\0';
-    wanted_object->name_len = len_name;
+    wanted_object->len_name = len_name;
     wanted_object->type = wanted_type;
     if (wanted_object_complete(wanted_object)) {
         pr_error("Failed to complete object\n");
@@ -1744,8 +1752,8 @@ int repo_finish(
         pr_info("Repo '%s' needs dynamic object, will need to update it\n", 
                 repo->url);
     }
-    repo->dir_path_len = len_dir_repos + HASH_STRING_LEN + 1;
-    if (snprintf(repo->dir_path, repo->dir_path_len + 1, "%s/"HASH_FORMAT, 
+    repo->len_dir_path = len_dir_repos + HASH_STRING_LEN + 1;
+    if (snprintf(repo->dir_path, repo->len_dir_path + 1, "%s/"HASH_FORMAT, 
         dir_repos, repo->url_hash) < 0) {
         pr_error_with_errno(
             "Failed to format dir path of repo '%s'\n",
@@ -1770,8 +1778,8 @@ int repo_finish_bare(
         pr_error("Failed to generate symlinks for repo '%s'\n", repo->url);
         return -1;
     }
-    repo->dir_path_len = len_dir_repos + HASH_STRING_LEN + 1;
-    if (snprintf(repo->dir_path, repo->dir_path_len + 1, "%s/"HASH_FORMAT, 
+    repo->len_dir_path = len_dir_repos + HASH_STRING_LEN + 1;
+    if (snprintf(repo->dir_path, repo->len_dir_path + 1, "%s/"HASH_FORMAT, 
         dir_repos, repo->url_hash) < 0) {
         pr_error_with_errno(
             "Failed to format dir path of repo '%s'\n",
@@ -2168,9 +2176,9 @@ int parsed_commit_add_submodule_and_init_with_path_and_url(
     *submodule = PARSED_COMMIT_SUBMODULE_INIT;
     memcpy(submodule->path, path, len_path + 1);
     memcpy(submodule->url, url, len_url + 1);
-    submodule->path_len = len_path;
-    submodule->url_len = len_url;
-    submodule->url_hash = hash_calculate(submodule->url, submodule->url_len);
+    submodule->len_path = len_path;
+    submodule->len_url = len_url;
+    submodule->url_hash = hash_calculate(submodule->url, submodule->len_url);
     return 0;
 }
 
@@ -2396,20 +2404,20 @@ int repo_parse_commit_blob_gitmodules(
             ++id_start;
             continue;
         }
-        unsigned short line_length = 0;
+        unsigned short len_line = 0;
         git_object_size_t id_end = id_start + 1;
-        for (; id_end < blob_gitmodules_size && line_length == 0;) {
+        for (; id_end < blob_gitmodules_size && len_line == 0;) {
             switch (blob_gitmodules_ro_buffer[id_end]) {
             case '\0':
             case '\n':
-                line_length = id_end - id_start;
+                len_line = id_end - id_start;
                 break;
             default:
                 ++id_end;
                 break;
             }
         }
-        if (line_length > 7) { // The shortest, "\turl = "
+        if (len_line > 7) { // The shortest, "\turl = "
             char const *line = blob_gitmodules_ro_buffer + id_start;
             char const *line_end = blob_gitmodules_ro_buffer + id_end;
             switch (blob_gitmodules_ro_buffer[id_start]) {
@@ -3903,7 +3911,7 @@ int export_commit_tree_entry_commit(
     struct config const *const restrict config,
     struct parsed_commit const *const restrict parsed_commit,
     char *const restrict submodule_path,
-    unsigned short const submodule_path_len,
+    unsigned short const len_submodule_path,
     bool const archive,
     char const *const restrict mtime,
     int const fd_archive,
@@ -3951,14 +3959,14 @@ int export_commit_tree_entry_commit(
 
     // Recursively export
     char const *const restrict name = git_tree_entry_name(entry);
-    unsigned short submodule_path_len_r = 
-        submodule_path_len + strlen(name) + strlen(root) + 1;
-    if (submodule_path_len_r >= PATH_MAX) {
+    unsigned short len_submodule_path_r = 
+        len_submodule_path + strlen(name) + strlen(root) + 1;
+    if (len_submodule_path_r >= PATH_MAX) {
         pr_error("Path too long!\n");
         return -1;
     }
     int r = -1;
-    if (sprintf(submodule_path + submodule_path_len, 
+    if (sprintf(submodule_path + len_submodule_path, 
         "%s%s/", root, name) < 0) {
         pr_error_with_errno("Failed to format name");
         goto revert_submodule_path;
@@ -3987,7 +3995,7 @@ int export_commit_tree_entry_commit(
         .repo = target_repo,
         .parsed_commit = parsed_commit_in_target_repo,
         .submodule_path = submodule_path,
-        .submodule_path_len = submodule_path_len_r,
+        .len_submodule_path = len_submodule_path_r,
         .archive = archive,
         .mtime = mtime_r,
         .fd_archive = fd_archive,
@@ -4004,7 +4012,7 @@ int export_commit_tree_entry_commit(
 free_commit:
     git_commit_free(commit);
 revert_submodule_path:
-    submodule_path[submodule_path_len] = '\0';
+    submodule_path[len_submodule_path] = '\0';
     return r;
 };
 
@@ -4049,7 +4057,7 @@ int export_commit_treewalk_callback(
         return export_commit_tree_entry_commit(
             root, entry, path, len_path, private_payload->config, 
             private_payload->parsed_commit, private_payload->submodule_path,
-            private_payload->submodule_path_len, archive, mtime, fd_archive,
+            private_payload->len_submodule_path, archive, mtime, fd_archive,
             checkout, dir_checkout);
     default:
         pr_error("Impossible tree entry type %d\n", git_tree_entry_type(entry));
@@ -4427,7 +4435,7 @@ int export_commit(
         .repo = repo,
         .parsed_commit = parsed_commit,
         .submodule_path = submodule_path,
-        .submodule_path_len = 0,
+        .len_submodule_path = 0,
         .archive = archive,
         .mtime = mtime, // second, 
         // there's also git_commit_time_offset(commit), one offset for a minute
