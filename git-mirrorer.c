@@ -337,6 +337,12 @@ struct repo {
 
 static const struct repo REPO_INIT = {0};
 
+struct dir_keeps{
+    char (*keeps)[NAME_MAX + 1];
+    unsigned long   keeps_count,
+                    keeps_allocated;
+};
+
 struct config {
     struct repo *repos;
     struct wanted_object    *empty_wanted_objects,
@@ -364,6 +370,45 @@ struct config {
                     len_dir_checkouts,
                     archive_pipe_args_count,
                     len_archive_suffix;
+    struct dir_keeps    keeps_repos,
+                        keeps_archives,
+                        keeps_checkouts;
+    bool    clean_repos,
+            clean_archives,
+            clean_checkouts,
+            clean_links;
+};
+
+// struct config_yaml_parse_state {
+//     // int level;
+//     // unsigned short 
+//     //     stream_start,
+//     //     stream_end,
+//     //     document_start,
+//     //     document_end,
+//     //     global,
+//     //     repos;
+//     long repo_id;
+//     enum YAML_CONFIG_PARSING_STATUS status;
+// };
+
+int sideband_progress(char const *string, int len, void *payload);
+int fetch_progress(git_indexer_progress const *stats, void *payload);
+
+struct config const CONFIG_INIT = {
+    .fetch_options = { 
+        .version = GIT_FETCH_OPTIONS_VERSION, 
+        .callbacks = {
+            .version = GIT_REMOTE_CALLBACKS_VERSION,
+            .sideband_progress = sideband_progress,
+            .transfer_progress = fetch_progress,
+        },
+        .update_fetchhead = 1,
+        .proxy_opts = GIT_PROXY_OPTIONS_INIT,
+        0,
+    },
+    .archive_suffix = ".tar",
+    .clean_links = true,
 };
 
 enum yaml_config_parsing_status {
@@ -389,45 +434,6 @@ enum yaml_config_parsing_status {
     YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_TYPE,
     YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_ARCHIVE,
     YAML_CONFIG_PARSING_STATUS_REPO_WANTED_OBJECT_CHECKOUT,
-};
-
-// struct config_yaml_parse_state {
-//     // int level;
-//     // unsigned short 
-//     //     stream_start,
-//     //     stream_end,
-//     //     document_start,
-//     //     document_end,
-//     //     global,
-//     //     repos;
-//     long repo_id;
-//     enum YAML_CONFIG_PARSING_STATUS status;
-// };
-
-int sideband_progress(char const *string, int len, void *payload);
-int fetch_progress(git_indexer_progress const *stats, void *payload);
-
-struct config const CONFIG_INIT = {
-    .repos = NULL,
-    .repos_count = 0,
-    .repos_allocated = 0,
-    .fetch_options = { 
-        .version = GIT_FETCH_OPTIONS_VERSION, 
-        .callbacks = {
-            .version = GIT_REMOTE_CALLBACKS_VERSION,
-            .sideband_progress = sideband_progress,
-            .transfer_progress = fetch_progress,
-            0,
-        },
-        .prune = GIT_FETCH_PRUNE_UNSPECIFIED, 
-        .update_fetchhead = 1,
-        .download_tags = GIT_REMOTE_DOWNLOAD_TAGS_UNSPECIFIED, 
-        .proxy_opts = GIT_PROXY_OPTIONS_INIT,
-        0,
-    },
-    .proxy_url = "",
-    .proxy_after = 0,
-    .archive_suffix = ".tar",
 };
 
 struct export_commit_treewalk_payload {
