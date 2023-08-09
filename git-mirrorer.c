@@ -349,7 +349,9 @@ struct repo {
 
 static const struct repo REPO_INIT = {0};
 
-struct dir_keeps{
+struct work_directory {
+    char const *path;
+    int dirfd;
     char (*keeps)[NAME_MAX + 1];
     unsigned long   keeps_count,
                     keeps_allocated;
@@ -384,9 +386,6 @@ struct config {
                     len_dir_checkouts,
                     archive_pipe_args_count,
                     len_archive_suffix;
-    struct dir_keeps    keeps_repos,
-                        keeps_archives,
-                        keeps_checkouts;
     bool    archive_gh_prefix,
             clean_repos,
             clean_archives,
@@ -2316,7 +2315,6 @@ int config_read(
         pr_error("Failed to read config into buffer\n");
         goto close_config_fd;
     }
-    *config = CONFIG_INIT;
     if (config_from_yaml(config, config_buffer, config_size)) {
         pr_error("Failed to read config from YAML\n");
         goto free_config_buffer;
@@ -2331,6 +2329,66 @@ free_config_buffer:
 close_config_fd:
     if (config_fd != STDIN_FILENO) close (config_fd);
     return r;
+}
+
+int work_directory_from_path(
+    struct work_directory *const restrict work_directory,
+    char const *const restrict path
+) {
+    if ((work_directory->dirfd = open(path, O_RDONLY | O_DIRECTORY)) < 0) {
+        switch (errno) {
+        case ENOENT: 
+            char path_dup[PATH_MAX];
+            strncpy(path_dup, path, PATH_MAX);
+            if (mkdir_recursively(path_dup)) {
+                pr_error("Failed to create folder '%s'\n", path);
+                return -1;
+            }
+            if ((work_directory->dirfd = 
+                open(path, O_RDONLY | O_DIRECTORY)) < 0) {
+                pr_error_with_errno("Still failed to open '%s' as directory\n", 
+                                    path);
+                return -1;
+            }
+            break;
+        default:
+            pr_error_with_errno("Failed to open '%s' as directory", path);
+            return -1;
+        }
+    }
+    work_directory->path = path;
+    work_directory->keeps = NULL;
+    work_directory->keeps_allocated = 0;
+    work_directory->keeps_count = 0;
+    return 0;
+}
+
+int work_directories_from_paths(
+    struct work_directory *const restrict workdir_repos, 
+    struct work_directory *const restrict workdir_archives, 
+    struct work_directory *const restrict workdir_checkouts,
+    char const *const restrict dir_repos,
+    char const *const restrict dir_archives,
+    char const *const restrict dir_checkouts
+) {
+    if (work_directory_from_path(workdir_repos, dir_repos)) {
+        pr_error("Failed to open work directory '%s' for repos\n", dir_repos);
+        return -1;
+    }
+    if (work_directory_from_path(workdir_archives, dir_archives)) {
+        close(workdir_repos->dirfd);
+        pr_error("Failed to open work directory '%s' for archives\n", 
+                dir_archives);
+        return -1;
+    }
+    if (work_directory_from_path(workdir_checkouts, dir_checkouts)) {
+        close(workdir_archives->dirfd);
+        close(workdir_repos->dirfd);
+        pr_error("Failed to open work directory '%s' for checkouts\n", 
+                dir_checkouts);
+        return -1;   
+    }
+    return 0;
 }
 
 // 0 existing and opened, 1 does not exist but created, -1 error
@@ -5082,19 +5140,26 @@ int main(int const argc, char *argv[]) {
             return -1;
         }
     }
-    struct config config;
+    struct config config = CONFIG_INIT;
+    int r = -1;
     if (config_read(&config, config_path)) {
         pr_error("Failed to read config\n");
-        return -1;
+        goto free_config;
     }
     if (config.repos_count == 0) {
         pr_warn("No repos defined, early quit\n");
-        return 0;
+        r = 0;
+        goto free_config;
+    }
+    struct work_directory dir_repos, dir_archives, dir_checkouts;
+    if (work_directories_from_paths(&dir_repos, &dir_archives, &dir_checkouts,
+        config.dir_repos, config.dir_archives, config.dir_checkouts)) {
+        pr_error("Failed to open work directories\n");
+        goto free_config;
     }
     pr_info("Initializing libgit2\n");
     git_libgit2_init();
-    int r = mirror_all_repos(&config);
-    if (r) {
+    if ((r = mirror_all_repos(&config))) {
         pr_error("Failed to mirro all repos\n");
         goto shutdown;
     }
@@ -5102,13 +5167,19 @@ int main(int const argc, char *argv[]) {
         pr_error("Failed to export all repos (archives and checkouts)\n");
         goto shutdown;
     }
+    r = 0;
 shutdown:
 #ifdef DEBUGGING
     pr_info("Current config before shutting down:\n");
     print_config(&config);
 #endif
-    config_free(&config);
     pr_info("Shutting down libgit2\n");
     git_libgit2_shutdown();
+// close_workdirs:
+    close(dir_repos.dirfd);
+    close(dir_archives.dirfd);
+    close(dir_checkouts.dirfd);
+free_config:
+    config_free(&config);
     return r;
 }
