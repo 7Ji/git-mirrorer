@@ -34,14 +34,26 @@
 #define ALLOC_BASE 10
 #define ALLOC_MULTIPLY 2
 
+#define pr_error_file(file, format, arg...) \
+    fprintf(file, "[ERROR] %s:%d: "format, __FUNCTION__, __LINE__, ##arg)
+
 #define pr_error(format, arg...) \
     printf("[ERROR] %s:%d: "format, __FUNCTION__, __LINE__, ##arg)
+
+#define pr_error_with_errno_file(file, format, arg...) \
+    pr_error_file(file, format", errno: %d, error: %s\n", ##arg, errno, strerror(errno))
 
 #define pr_error_with_errno(format, arg...) \
     pr_error(format", errno: %d, error: %s\n", ##arg, errno, strerror(errno))
 
+#define pr_warn_file(file, format, arg...) \
+    fprintf(file, "[WARN] "format, ##arg)
+
 #define pr_warn(format, arg...) \
     printf("[WARN] "format, ##arg)
+
+#define pr_info_file(file, format, arg...) \
+    fprintf(file, "[INFO] "format, ##arg)
 
 #define pr_info(format, arg...) \
     printf("[INFO] "format, ##arg)
@@ -343,6 +355,8 @@ struct dir_keeps{
                     keeps_allocated;
 };
 
+#define ARCHIVE_PIPE_ARGS_MAX_COUNT 64
+
 struct config {
     struct repo *repos;
     struct wanted_object    *empty_wanted_objects,
@@ -361,8 +375,8 @@ struct config {
              // I don't think some one will write arg that's actually ARG_MAX
             archive_pipe_args_buffer[PATH_MAX],
             archive_suffix[NAME_MAX + 1];
-    char *archive_pipe_args[64];
-    unsigned short  archive_pipe_args_offsets[64],
+    char *archive_pipe_args[ARCHIVE_PIPE_ARGS_MAX_COUNT];
+    unsigned short  len_archive_pipe_args_buffer,
                     proxy_after,
                     len_proxy_url,
                     len_dir_repos,
@@ -721,6 +735,13 @@ ssize_t buffer_read_from_fd(unsigned char **buffer, int fd) {
 free_buffer:
     if (*buffer == NULL) free(*buffer);
     return size_total;
+}
+
+void config_clean_archive_pipe(struct config *const restrict config) {
+    config->archive_pipe_args_count = 0;
+    config->len_archive_pipe_args_buffer = 0;
+    config->archive_pipe_args[0] = NULL;
+    config->archive_pipe_args_buffer[0] = '\0';
 }
 
 // May re-allocate config->repos
@@ -1273,6 +1294,58 @@ int config_update_from_yaml_event(
     case YAML_CONFIG_PARSING_STATUS_ARCHIVE_PIPE:
         switch (event->type) {
         case YAML_SCALAR_EVENT:
+            config_clean_archive_pipe(config);
+            if (event->data.scalar.length == 0) {
+                break;
+            }
+            if (event->data.scalar.length >= 
+                sizeof config->archive_pipe_args_buffer) {
+                pr_error("Pipe argument and command too long\n");
+                return -1;
+            }
+            memcpy(config->archive_pipe_args_buffer, event->data.scalar.value,
+                event->data.scalar.length + 1);
+            config->len_archive_pipe_args_buffer = event->data.scalar.length;
+            config->archive_pipe_args[config->archive_pipe_args_count++] = 
+                config->archive_pipe_args_buffer;
+            for (unsigned short i = 0; i < event->data.scalar.length; ++i) {
+                switch (config->archive_pipe_args_buffer[i]) {
+                case '\t':
+                case '\n':
+                case '\v':
+                case '\f':
+                case '\r':
+                case ' ':
+                    config->archive_pipe_args_buffer[i] = '\0';
+                    __attribute__((fallthrough));
+                case '\0':
+                    if (event->data.scalar.length - i < 2) break;
+                    switch (config->archive_pipe_args_buffer[i + 1]) {
+                    case '\t':
+                    case '\n':
+                    case '\v':
+                    case '\f':
+                    case '\r':
+                    case ' ':
+                    case '\0':
+                        break;
+                    default:
+                        config->archive_pipe_args[
+                            config->archive_pipe_args_count++] =
+                                config->archive_pipe_args_buffer + i + 1;
+                        if (config->archive_pipe_args_count >= 
+                            ARCHIVE_PIPE_ARGS_MAX_COUNT) {
+                            pr_error("Failed to parse pipe args\n");
+                            config_clean_archive_pipe(config);
+                            return -1;
+                        }
+                    }
+                    break;
+                }
+            }
+            config->archive_pipe_args[config->archive_pipe_args_count] = NULL;
+            *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION;
+            break;
         case YAML_SEQUENCE_START_EVENT:
             pr_error("PIPE WIP!!!\n");
             return -1;
@@ -1839,7 +1912,7 @@ int config_from_yaml(
             ", current read config:\n");
             print_config(config);
 #else
-            );
+            "\n");
 #endif
             goto error;
         }
@@ -2118,6 +2191,10 @@ int repo_finish_bare(
 int config_finish(
     struct config *const restrict config
 ) {
+    if (config->archive_pipe_args_count >= ARCHIVE_PIPE_ARGS_MAX_COUNT) {
+        pr_error("Archive pipe arguemnts too many\n");
+        return -1;
+    }
     if (config->dir_repos[0] == '\0') {
         memcpy(config->dir_repos, DIR_REPOS, sizeof(DIR_REPOS));
         config->len_dir_repos = sizeof(DIR_REPOS) - 1;
@@ -3629,7 +3706,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
                     goto kill_threads;
                 }
                 if (repos_need_update_count)
-                    pr_info("%lu repos till updating...\n", 
+                    pr_info("%lu repos still updating...\n", 
                         repos_need_update_count);
             case EBUSY:
                 break;
@@ -3676,10 +3753,12 @@ int tar_write_and_pad_to_512_block(
     void const *const restrict data,
     size_t const size
 ) {
+#ifdef TAR_WRITE_CHECK_OFFSET
     if (lseek(tar_fd, 0, SEEK_CUR) % 512) {
         pr_error("Tar not at 512 offset\n");
         return -1;
     }
+#endif
     size_t size_written = 0;
     while (size_written < size) {
         ssize_t size_written_this = write(
@@ -3726,10 +3805,12 @@ int tar_write_and_pad_to_512_block(
             }
         }
     }
+#ifdef TAR_WRITE_CHECK_OFFSET
     if (lseek(tar_fd, 0, SEEK_CUR) % 512) {
         pr_error("Tar not at 512 offset\n");
         return -1;
     }
+#endif
     return 0;
 }
 
@@ -4714,7 +4795,9 @@ int export_commit(
                 file_archive_work);
             return -1;
         }
-        fd_archive = open(file_archive_work, O_WRONLY | O_CREAT, 0644);
+        fd_archive = open(file_archive_work, 
+                            O_WRONLY | O_CREAT | O_CLOEXEC, 
+                            0644);
         if (fd_archive < 0) {
             pr_error_with_errno(
                 "Failed to create file '%s.work' and open it as write-only",
@@ -4722,42 +4805,40 @@ int export_commit(
             return -1;
         }
         if (config->archive_pipe_args[0] && config->archive_pipe_args_count) {
-            pr_warn("Open pipe\n");
             int fd_pipes[2];
-            if (pipe(fd_pipes)) {
+            if (pipe2(fd_pipes, O_CLOEXEC)) {
                 pr_error_with_errno("Failed to create pipe\n");
                 return -1;
             }
-            pid_t pid = fork();
+            pid = fork();
             switch (pid) {
             case 0: // Child
-                if (close(fd_pipes[1])) { // Close the write end
-                    pr_error_with_errno(
-                        "Failed to close write end of the pipe");
+                if (dup2(fd_archive, STDOUT_FILENO) < 0) {
+                    pr_error_with_errno_file(stderr,
+                        "Failed to dup archive fd to stdout");
                     exit(EXIT_FAILURE);
                 }
-                if (dup2(fd_archive, STDOUT_FILENO)) { // Write to archive fd
-                    pr_error_with_errno("Failed to dup archive fd to stdout");
+                if (dup2(fd_pipes[0], STDIN_FILENO) < 0) {
+                    pr_error_with_errno_file(stderr,
+                        "Failed to dup pipe read end to stdin");
                     exit(EXIT_FAILURE);
                 }
-                // stdout is now the archive fd, DO NOT write to it
-                if (close(fd_archive)) {
-                    fprintf(stderr, 
-                      "Failed to close the archive fd, errno: %d, error: %s\n",
-                      errno, strerror(errno));
-                    exit(EXIT_FAILURE);
-                }
+                // fd_pipes[0] (pipe read), fd_pipes[1] (pipe write)
+                // and fd_archive will all be closed as they've been
+                // opened/created with O_CLOEXEC
                 if (execvp(config->archive_pipe_args[0], 
                     config->archive_pipe_args)) {
-                    fprintf(stderr, "Failed to execute piper, errno: %d, "
-                        "error: %s\n",  errno, strerror(errno));
+                    pr_error_with_errno_file(stderr, "Failed to execute piper");
                     exit(EXIT_FAILURE);
                 }
+                pr_error_file(stderr, "We should not be here\n");
+                exit(EXIT_FAILURE);
                 break;
             case -1:
                 pr_error_with_errno("Failed to fork");
                 return -1;
             default: // Parent
+                pr_info("Forked piper to child %d\n", pid);
                 if (close(fd_pipes[0])) { // Close the read end
                     pr_error_with_errno("Failed to close read end of the pipe");
                     kill(pid, SIGKILL);
@@ -4867,11 +4948,15 @@ int export_commit(
         close(fd_archive);
         int status;
         if (pid) {
+            pr_info("Waiting for piper %d to finish...\n", pid);
             r = waitpid(pid, &status, 0);
-            if (r) {
+            if (r != pid) {
+                pr_error("Waited piper %d is not the same as %d we've created",
+                    r, pid);
                 return -1;
             }
             if (status) {
+                pr_error("Piper exited with error %d\n", status);
                 return -1;
             }
         }
