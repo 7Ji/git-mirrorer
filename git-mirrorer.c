@@ -3292,7 +3292,7 @@ int repo_ensure_parsed_commit(
             goto free_commit;
         }
     }
-    pr_info("Ensured existence of commit '%s' in repo '%s'\n",
+    pr_info("Ensured robustness of commit '%s' in repo '%s'\n",
         parsed_commit->id_hex_string, repo->url);
     r = 0;
 free_commit:
