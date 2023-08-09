@@ -360,7 +360,7 @@ struct config {
             dir_checkouts[PATH_MAX],
              // I don't think some one will write arg that's actually ARG_MAX
             archive_pipe_args_buffer[PATH_MAX],
-            archive_suffix[NAME_MAX];
+            archive_suffix[NAME_MAX + 1];
     char *archive_pipe_args[64];
     unsigned short  archive_pipe_args_offsets[64],
                     proxy_after,
@@ -373,7 +373,8 @@ struct config {
     struct dir_keeps    keeps_repos,
                         keeps_archives,
                         keeps_checkouts;
-    bool    clean_repos,
+    bool    archive_gh_prefix,
+            clean_repos,
             clean_archives,
             clean_checkouts,
             clean_links;
@@ -415,6 +416,11 @@ enum yaml_config_parsing_status {
     YAML_CONFIG_PARSING_STATUS_DIR_REPOS,
     YAML_CONFIG_PARSING_STATUS_DIR_ARCHIVES,
     YAML_CONFIG_PARSING_STATUS_DIR_CHECKOUTS,
+    YAML_CONFIG_PARSING_STATUS_ARCHIVE,
+    YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION,
+    YAML_CONFIG_PARSING_STATUS_ARCHIVE_GHPREFIX,
+    YAML_CONFIG_PARSING_STATUS_ARCHIVE_SUFFIX,
+    YAML_CONFIG_PARSING_STATUS_ARCHIVE_PIPE,
     YAML_CONFIG_PARSING_STATUS_CLEAN,
     YAML_CONFIG_PARSING_STATUS_CLEAN_SECTION,
     YAML_CONFIG_PARSING_STATUS_CLEAN_REPOS,
@@ -1130,12 +1136,13 @@ int config_update_from_yaml_event(
                     *status = YAML_CONFIG_PARSING_STATUS_REPOS;
                 break;
             case 6:
-                if (!strcmp(key, "wanted")) {
+                if (!strcmp(key, "wanted"))
                     *status = YAML_CONFIG_PARSING_STATUS_WANTED;
-                }
                 break;
             case 7:
-                if (!strcmp(key, "cleanup"))
+                if (!strcmp(key, "archive"))
+                    *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE;
+                else if (!strcmp(key, "cleanup"))
                     *status = YAML_CONFIG_PARSING_STATUS_CLEAN;
                 break;
             case 9:
@@ -1206,6 +1213,70 @@ int config_update_from_yaml_event(
             *status = YAML_CONFIG_PARSING_STATUS_SECTION;
             break;
         }
+        default: goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_ARCHIVE:
+        switch (event->type) {
+        case YAML_MAPPING_START_EVENT:
+            *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION;
+            break;
+        default: goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION:
+        switch (event->type) {
+        case YAML_SCALAR_EVENT: {
+            char const *const key = (char const *)event->data.scalar.value;
+            switch (event->data.scalar.length) {
+            case 6:
+                if (!strcmp(key, "suffix"))
+                    *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_SUFFIX;
+                break;
+            case 12:
+                if (!strcmp(key, "pipe_through"))
+                    *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_PIPE;
+                break;
+            case 18:
+                if (!strcmp(key, "github_like_prefix")) 
+                    *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_GHPREFIX;
+                break;
+            }
+            if (*status == YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION) {
+                pr_error("Unrecognized key '%s'\n", key);
+                return -1;
+            }
+            break;
+        }
+        case YAML_MAPPING_END_EVENT:
+            *status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            break;
+        default: goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_ARCHIVE_SUFFIX:
+        switch (event->type) {
+        case YAML_SCALAR_EVENT: {
+            char const *const value = (char const *)event->data.scalar.value;
+            if (event->data.scalar.length > NAME_MAX) {
+                pr_error("Suffix '%s' is too long\n", value);
+                return -1;
+            }
+            memcpy(config->archive_suffix, event->data.scalar.value, 
+                event->data.scalar.length + 1);
+            *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION;
+            break;
+        }
+        default: goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_ARCHIVE_PIPE:
+        switch (event->type) {
+        case YAML_SCALAR_EVENT:
+        case YAML_SEQUENCE_START_EVENT:
+            pr_error("PIPE WIP!!!\n");
+            return -1;
+            break;
         default: goto unexpected_event_type;
         }
         break;
@@ -1562,6 +1633,7 @@ int config_update_from_yaml_event(
     case YAML_CONFIG_PARSING_STATUS_CLEAN_REPOS:
     case YAML_CONFIG_PARSING_STATUS_CLEAN_ARCHIVES:
     case YAML_CONFIG_PARSING_STATUS_CLEAN_CHECKOUTS:
+    case YAML_CONFIG_PARSING_STATUS_ARCHIVE_GHPREFIX:
         switch (event->type) {
         case YAML_SCALAR_EVENT: {
             int bool_value = bool_from_string(
@@ -1597,6 +1669,9 @@ int config_update_from_yaml_event(
             case YAML_CONFIG_PARSING_STATUS_CLEAN_CHECKOUTS:
                 config->clean_checkouts = bool_value;
                 break;
+            case YAML_CONFIG_PARSING_STATUS_ARCHIVE_GHPREFIX:
+                config->archive_gh_prefix = bool_value;
+                break;
             default: goto impossible_status;
             }
             switch (*status) {
@@ -1610,6 +1685,9 @@ int config_update_from_yaml_event(
             case YAML_CONFIG_PARSING_STATUS_CLEAN_CHECKOUTS:
                 *status = 
                     YAML_CONFIG_PARSING_STATUS_CLEAN_SECTION;
+                break;
+            case YAML_CONFIG_PARSING_STATUS_ARCHIVE_GHPREFIX:
+                *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION;
                 break;
             default: goto impossible_status;
             }
