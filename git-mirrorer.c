@@ -435,6 +435,7 @@ enum yaml_config_parsing_status {
     YAML_CONFIG_PARSING_STATUS_ARCHIVE_GHPREFIX,
     YAML_CONFIG_PARSING_STATUS_ARCHIVE_SUFFIX,
     YAML_CONFIG_PARSING_STATUS_ARCHIVE_PIPE,
+    YAML_CONFIG_PARSING_STATUS_ARCHIVE_PIPE_LIST,
     YAML_CONFIG_PARSING_STATUS_CLEAN,
     YAML_CONFIG_PARSING_STATUS_CLEAN_SECTION,
     YAML_CONFIG_PARSING_STATUS_CLEAN_REPOS,
@@ -1347,8 +1348,39 @@ int config_update_from_yaml_event(
             *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION;
             break;
         case YAML_SEQUENCE_START_EVENT:
-            pr_error("PIPE WIP!!!\n");
-            return -1;
+            config_clean_archive_pipe(config);
+            *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_PIPE_LIST;
+            break;
+        default: goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_ARCHIVE_PIPE_LIST:
+        switch (event->type) {
+        case YAML_SCALAR_EVENT: {
+            // 1 null between old and new, 1 null at the end
+            if (config->len_archive_pipe_args_buffer + 
+                event->data.scalar.length + 2 >=
+                sizeof config->archive_pipe_args_buffer) {
+                pr_error("Arguments too long\n");
+                return -1;
+            }
+            char *new_buffer = config->archive_pipe_args_buffer + 
+                    config->len_archive_pipe_args_buffer + 1;
+            memcpy(new_buffer, event->data.scalar.value, 
+                                event->data.scalar.length + 1);
+            config->archive_pipe_args[config->archive_pipe_args_count++] = 
+                new_buffer;
+            config->len_archive_pipe_args_buffer += 
+                event->data.scalar.length + 1;
+            if (config->archive_pipe_args_count >= 
+                ARCHIVE_PIPE_ARGS_MAX_COUNT) {
+                pr_error("Too many arguments\n");
+                return -1;
+            }
+            break;
+        }
+        case YAML_SEQUENCE_END_EVENT:
+            *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION;
             break;
         default: goto unexpected_event_type;
         }
