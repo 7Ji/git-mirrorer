@@ -326,7 +326,8 @@ struct repo {
     char    url[PATH_MAX],
             url_no_scheme_sanitized[PATH_MAX],
             dir_path[PATH_MAX],
-            short_name[NAME_MAX + 1];
+            short_name[NAME_MAX + 1],
+            hash_name[HASH_STRING_LEN + 1];
     unsigned short  len_url,
                     len_url_no_scheme_sanitized,
                     url_no_scheme_sanitized_parts,
@@ -492,8 +493,8 @@ int repo_ensure_first_parsed_commits(
 
 #define get_last(x) x + x##_count - 1
 
-#define declare_func_add_object_and_realloc_if_necessary_no_init( \
-        PARENT, STRUCT_CHILD, CHILD) \
+#define declare_func_add_object_and_realloc_if_necessary_no_init_typed( \
+        PARENT, CHILD, CHILDNEW) \
 int PARENT##_add_##CHILD##_no_init( \
     struct PARENT *const restrict PARENT \
 ) { \
@@ -519,7 +520,7 @@ int PARENT##_add_##CHILD##_no_init( \
                 PARENT->CHILD##s_allocated *= ALLOC_MULTIPLY; \
             } \
         } \
-        struct STRUCT_CHILD *CHILD##s_new = realloc( \
+        CHILDNEW = realloc( \
             PARENT->CHILD##s, \
             sizeof *CHILD##s_new * PARENT->CHILD##s_allocated \
         ); \
@@ -531,6 +532,11 @@ int PARENT##_add_##CHILD##_no_init( \
     } \
     return 0; \
 }
+
+#define declare_func_add_object_and_realloc_if_necessary_no_init( \
+        PARENT, STRUCT_CHILD, CHILD) \
+        declare_func_add_object_and_realloc_if_necessary_no_init_typed( \
+        PARENT, CHILD, struct STRUCT_CHILD *CHILD##s_new)
 
 declare_func_add_object_and_realloc_if_necessary_no_init(
     parsed_commit, parsed_commit_submodule, submodule)
@@ -549,6 +555,9 @@ declare_func_add_object_and_realloc_if_necessary_no_init(
 
 declare_func_add_object_and_realloc_if_necessary_no_init(
     config, wanted_object, always_wanted_object)
+
+declare_func_add_object_and_realloc_if_necessary_no_init_typed(
+    work_directory, keep, char (*keeps_new)[NAME_MAX + 1])
 
 int sideband_progress(char const *string, int len, void *payload) {
 	(void)payload; /* unused */
@@ -846,10 +855,16 @@ int config_add_repo_and_init_with_url(
     memcpy(repo->short_name, short_name, len_short_name);
     repo->short_name[len_short_name] = '\0';
     repo->added_from = added_from;
-    pr_info("Added repo '%s', "HASH_NAME" '"HASH_FORMAT"', "
+    if (snprintf(repo->hash_name, sizeof repo->hash_name, HASH_FORMAT, 
+        repo->url_hash) < 0) {
+        pr_error_with_errno("Failed to format hash name of repo '%s'\n", 
+                            repo->url);
+        return -1;
+    }
+    pr_info("Added repo '%s', "HASH_NAME" %s, "
             "no scheme sanitized url '%s', short name '%s'\n", 
             repo->url,
-            repo->url_hash,
+            repo->hash_name,
             repo->url_no_scheme_sanitized,
             repo->short_name);
     return 0;
@@ -2415,6 +2430,23 @@ close_config_fd:
     return r;
 }
 
+int work_directory_add_keep(
+    struct work_directory *const restrict work_directory,
+    char const *const restrict keep,
+    unsigned short const len_keep
+) {
+    if (work_directory_add_keep_no_init(work_directory)) {
+        pr_error("Failed to add keep to work directory\n");
+        return -1;
+    }
+    if (len_keep >= sizeof *work_directory->keeps) {
+        pr_error("Length of keep item '%s' too long\n", keep);
+        return -1;
+    }
+    memcpy(get_last(work_directory->keeps), keep, len_keep + 1);
+    return 0;
+}
+
 int work_directory_from_path(
     struct work_directory *const restrict work_directory,
     char const *const restrict path
@@ -3936,16 +3968,24 @@ free_threads:
 
 int mirror_all_repos(
     struct config *const restrict config,
-    int const links_dirfd
+    struct work_directory *const restrict workdir_repos,
+    bool const clean
 ) {
     if (open_and_update_all_dynamic_repos_threaded_optional(
-        config, links_dirfd)) {
+        config, workdir_repos->links_dirfd)) {
         pr_error("Failed to pre-update repos\n");
         return -1;
     }
-
     for (unsigned long i = 0; i < config->repos_count; ++i) {
-        if (mirror_repo(config, i, links_dirfd)) {
+        if (clean) {
+            struct repo const *const restrict repo = config->repos + i;
+            if (work_directory_add_keep(
+                workdir_repos, repo->hash_name, HASH_STRING_LEN)) {
+                pr_error("Failed to add '%s' to keep items\n", repo->hash_name);
+                return -1;
+            }
+        }
+        if (mirror_repo(config, i, workdir_repos->links_dirfd)) {
             pr_error("Failed to mirror all repos\n");
             return -1;
         }
@@ -5277,7 +5317,8 @@ int main(int const argc, char *argv[]) {
     }
     pr_info("Initializing libgit2\n");
     git_libgit2_init();
-    if ((r = mirror_all_repos(&config, workdir_repos.links_dirfd))) {
+    if ((r = mirror_all_repos(
+            &config, &workdir_repos, config.clean_repos))) {
         pr_error("Failed to mirro all repos\n");
         goto shutdown;
     }
