@@ -1,0 +1,11 @@
+wanted:
+  always:
+    - all_branches:
+        archive: yes
+        checkout: yes
+    - all_tags:
+        archive: yes
+        checkout: yes
+repos:
+  - https://github.com/systemd/systemd.git
+  - https://github.com/systemd/systemd-stable.git
