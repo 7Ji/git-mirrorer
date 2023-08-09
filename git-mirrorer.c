@@ -352,6 +352,7 @@ static const struct repo REPO_INIT = {0};
 struct work_directory {
     char const *path;
     int dirfd;
+    int links_dirfd;
     char (*keeps)[NAME_MAX + 1];
     unsigned long   keeps_count,
                     keeps_allocated;
@@ -2356,6 +2357,32 @@ int work_directory_from_path(
             return -1;
         }
     }
+    if ((work_directory->links_dirfd = openat(
+        work_directory->dirfd, "links", O_RDONLY | O_DIRECTORY)) < 0) {
+        switch (errno) {
+        case ENOENT:
+            if (mkdirat(work_directory->dirfd, "links", 0755) < 0) {
+                pr_error_with_errno(
+                    "Failed to create links subdir under '%s'", path);
+                close(work_directory->dirfd);
+                return -1;
+            }
+            if ((work_directory->links_dirfd = openat(
+                work_directory->dirfd, "links", O_RDONLY | O_DIRECTORY)) < 0) {
+                pr_error_with_errno(
+                    "Failed to open links subdir under '%s' as directory after "
+                    "creating it", path);
+                close(work_directory->dirfd);
+                return -1;
+            }
+            break;
+        default:
+            pr_error_with_errno(
+                "Failed to open links subdir under '%s' as directory", path);
+            close(work_directory->dirfd);
+            return -1;
+        }
+    }
     work_directory->path = path;
     work_directory->keeps = NULL;
     work_directory->keeps_allocated = 0;
@@ -2605,6 +2632,7 @@ void *repo_update_thread(void *arg) {
 // Will also create symlink
 int repo_prepare_open_or_create_if_needed(
     struct repo *const restrict repo,
+    // struct work_directory const *const restrict workdir_repos,
     char const *const restrict dir_repos,
     git_fetch_options *const restrict fetch_options,
     unsigned short const proxy_after
@@ -3820,7 +3848,8 @@ free_threads:
 }
 
 int mirror_all_repos(
-    struct config *const restrict config
+    struct config *const restrict config,
+    struct work_directory const *const restrict workdir_repos
 ) {
     if (open_and_update_all_dynamic_repos_threaded_optional(config)) {
         pr_error("Failed to pre-update repos\n");
@@ -5151,15 +5180,16 @@ int main(int const argc, char *argv[]) {
         r = 0;
         goto free_config;
     }
-    struct work_directory dir_repos, dir_archives, dir_checkouts;
-    if (work_directories_from_paths(&dir_repos, &dir_archives, &dir_checkouts,
+    struct work_directory workdir_repos, workdir_archives, workdir_checkouts;
+    if (work_directories_from_paths(
+        &workdir_repos, &workdir_archives, &workdir_checkouts,
         config.dir_repos, config.dir_archives, config.dir_checkouts)) {
         pr_error("Failed to open work directories\n");
         goto free_config;
     }
     pr_info("Initializing libgit2\n");
     git_libgit2_init();
-    if ((r = mirror_all_repos(&config))) {
+    if ((r = mirror_all_repos(&config, &workdir_repos))) {
         pr_error("Failed to mirro all repos\n");
         goto shutdown;
     }
@@ -5176,9 +5206,9 @@ shutdown:
     pr_info("Shutting down libgit2\n");
     git_libgit2_shutdown();
 // close_workdirs:
-    close(dir_repos.dirfd);
-    close(dir_archives.dirfd);
-    close(dir_checkouts.dirfd);
+    close(workdir_repos.dirfd);
+    close(workdir_archives.dirfd);
+    close(workdir_checkouts.dirfd);
 free_config:
     config_free(&config);
     return r;
