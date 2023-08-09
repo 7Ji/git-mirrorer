@@ -2114,10 +2114,6 @@ int repo_finish(
         pr_error("Internal: invalid arguments\n");
         return -1;
     }
-    if (repo_guarantee_symlink(repo, dir_repos)) {
-        pr_error("Failed to generate symlinks for repo '%s'\n", repo->url);
-        return -1;
-    }
     if (repo->wanted_objects_count == 0 && empty_wanted_objects_count != 0) {
         pr_warn("Repo '%s' does not have wanted objects defined, adding global "
             "wanted objects (when empty) to it as wanted\n", repo->url);
@@ -2202,10 +2198,6 @@ int repo_finish_bare(
     if (repo == NULL || dir_repos == NULL || len_dir_repos == 0 || 
         repo->wanted_objects_count > 0) {
         pr_error("Internal: invalid arguments\n");
-        return -1;
-    }
-    if (repo_guarantee_symlink(repo, dir_repos)) {
-        pr_error("Failed to generate symlinks for repo '%s'\n", repo->url);
         return -1;
     }
     repo->len_dir_path = len_dir_repos + HASH_STRING_LEN + 1;
@@ -2552,12 +2544,18 @@ void *repo_update_thread(void *arg) {
         &private_arg->fetch_options, private_arg->proxy_after);
 }
 
+// Will also create symlink
 int repo_prepare_open_or_create_if_needed(
     struct repo *const restrict repo,
+    char const *const restrict dir_repos,
     git_fetch_options *const restrict fetch_options,
     unsigned short const proxy_after
 ) {
     if (repo->repository != NULL) return 0;
+    if (repo_guarantee_symlink(repo, dir_repos)) {
+        pr_error("Failed to create symlink\n");
+        return -1;
+    }
     switch (repo_open_or_init_bare(repo)) {
     case -1:
         pr_error("Failed to open or init bare repo for '%s'\n", repo->url);
@@ -3536,7 +3534,8 @@ int mirror_repo(
     unsigned long const repo_id
 ) {
     int r = repo_prepare_open_or_create_if_needed(
-        config->repos + repo_id, &config->fetch_options, config->proxy_after);
+        config->repos + repo_id, config->dir_repos, 
+        &config->fetch_options, config->proxy_after);
     struct repo *restrict repo = config->repos + repo_id;
     if (r) {
         pr_error("Failed to ensure repo '%s' is opened\n", repo->url);
@@ -3678,7 +3677,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
         if (!repo->wanted_dynamic) continue;
         ++repos_need_update_count;
         if (repo_prepare_open_or_create_if_needed(
-            repo, fetch_options, proxy_after)) {
+            repo, config->dir_repos, fetch_options, proxy_after)) {
             pr_error("Failed to prepare repo\n");
             return -1;
         }
