@@ -2060,32 +2060,114 @@ int guarantee_symlink (
     return 0;
 }
 
+int guarantee_symlink_at (
+    int const links_dirfd,
+    char const *const restrict symlink_path,
+    unsigned short const len_symlink_path,
+    char const *const restrict symlink_target
+) {
+    char path[PATH_MAX];
+    ssize_t len = readlinkat(links_dirfd, symlink_path, path, PATH_MAX);
+    if (len < 0) {
+        switch (errno) {
+        case ENOENT:
+            break;
+        default:
+            pr_error_with_errno("Failed to read link at '%s'", symlink_path);
+            return -1;
+        }
+    } else {
+        path[len] = '\0';
+        if (strcmp(path, symlink_target)) {
+            pr_warn("Symlink at '%s' points to '%s' instead of '%s', "
+            "if you see this message for too many times, you've probably set "
+            "too many repos with same path but different schemes.\n",
+            symlink_path, path, symlink_target);
+            if (unlinkat(links_dirfd, symlink_path, 0) < 0) {
+                pr_error_with_errno("Faild to unlink '%s'", symlink_path);
+                return -1;
+            }
+        } else {
+            // pr_info("Symlink '%s' -> '%s' already existing\n",
+            //     symlink_path, symlink_target);
+            return 0;
+        }
+    }
+    if (symlinkat(symlink_target, links_dirfd, symlink_path) < 0) {
+        switch (errno) {
+        case ENOENT:
+            break;
+        default:
+            pr_error_with_errno(
+                "Failed to create symlink '%s' -> '%s'",
+                symlink_path, symlink_target);
+            return -1;
+        }
+    } else {
+        pr_info("Created symlink '%s' -> '%s'\n", 
+            symlink_path, symlink_target);
+        return 0;
+    }
+    // After above routine, the only possiblity is missing dirs
+    char symlink_path_dup[PATH_MAX];
+    strncpy(symlink_path_dup, symlink_path, PATH_MAX);
+    unsigned short last_sep = 0;
+    for (unsigned short i = len_symlink_path; i > 0; --i) {
+        char *c = symlink_path_dup + i;
+        if (*c == '/') {
+            if (!last_sep) {
+                last_sep = i;
+            }
+            *c = '\0';
+            if (mkdirat(links_dirfd, symlink_path_dup, 0755)) {
+                if (errno != ENOENT) {
+                    pr_error_with_errno(
+                        "Failed to create folder '%s' as parent of symlink "
+                        "'%s' -> '%s'",
+                        symlink_path_dup, symlink_path, symlink_target);
+                    return -1;
+                }
+            } else {
+                for (unsigned short j = i; j < last_sep; ++j) {
+                    c = symlink_path_dup + j;
+                    if (*c == '\0') {
+                        *c = '/';
+                        if (mkdirat(links_dirfd, symlink_path_dup, 0755)) {
+                            pr_error_with_errno(
+                                "Failed to create folder '%s' as parent of "
+                                "symlink '%s' -> '%s'",
+                                symlink_path_dup, symlink_path, symlink_target);
+                            return -1;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+    if (symlinkat(symlink_target, links_dirfd, symlink_path) < 0) {
+        pr_error_with_errno(
+            "Failed to create symlink '%s' -> '%s'",
+            symlink_path, symlink_target);
+        return -1;
+    }
+    pr_info("Created symlink '%s' -> '%s'\n", 
+        symlink_path, symlink_target);
+    return 0;
+}
+
 
 int repo_guarantee_symlink(
     struct repo *const restrict repo,
-    char const *const restrict dir_repos
+    int const links_dirfd
 ) {
     if (repo->url_no_scheme_sanitized_parts * 3 + HASH_STRING_LEN + 1
              >= PATH_MAX) {
         pr_error("Link target would be too long");
         return -1;
     }
-    char symlink_path[PATH_MAX] = "";
     char symlink_target[PATH_MAX] = "";
-    int r = snprintf(symlink_path, PATH_MAX, "%s/links/%s", dir_repos, 
-                    repo->url_no_scheme_sanitized);
-    if (r < 0) {
-        pr_error_with_errno("Failed to fill symlink path");
-        return -1;
-    } else if (r <= 6) {
-        pr_error("Impossible routine\n");
-        return -1;
-    }
-    unsigned short const len_symlink_path = r;
     char *symlink_target_current = symlink_target;
-    // Supposed sanitized url is github.com/7Ji/ampart.git, parts is 3
-    // Link would be created at repos/links/github.com/7Ji/ampart.git
-    // Target should be ../../../[hash]
     for (unsigned short i = 0; i < repo->url_no_scheme_sanitized_parts; ++i) {
         symlink_target_current = stpcpy(symlink_target_current, "../");
     }
@@ -2093,9 +2175,10 @@ int repo_guarantee_symlink(
         pr_error_with_errno("Failed to print to string");
         return -1;
     }
-    if (guarantee_symlink(symlink_path, len_symlink_path, symlink_target)) {
+    if (guarantee_symlink_at(links_dirfd, repo->url_no_scheme_sanitized, 
+        repo->len_url_no_scheme_sanitized, symlink_target)) {
         pr_error("Failed to guarantee a symlink at '%s' pointing to '%s'\n",
-            symlink_path, symlink_target);
+            repo->url_no_scheme_sanitized, symlink_target);
         return -1;
     }
     return 0;
@@ -2632,13 +2715,12 @@ void *repo_update_thread(void *arg) {
 // Will also create symlink
 int repo_prepare_open_or_create_if_needed(
     struct repo *const restrict repo,
-    // struct work_directory const *const restrict workdir_repos,
-    char const *const restrict dir_repos,
+    int const links_dirfd,
     git_fetch_options *const restrict fetch_options,
     unsigned short const proxy_after
 ) {
     if (repo->repository != NULL) return 0;
-    if (repo_guarantee_symlink(repo, dir_repos)) {
+    if (repo_guarantee_symlink(repo, links_dirfd)) {
         pr_error("Failed to create symlink\n");
         return -1;
     }
@@ -3617,10 +3699,11 @@ int repo_ensure_all_parsed_commits(
 
 int mirror_repo(
     struct config *const restrict config,
-    unsigned long const repo_id
+    unsigned long const repo_id,
+    int const links_dirfd
 ) {
     int r = repo_prepare_open_or_create_if_needed(
-        config->repos + repo_id, config->dir_repos, 
+        config->repos + repo_id, links_dirfd, 
         &config->fetch_options, config->proxy_after);
     struct repo *restrict repo = config->repos + repo_id;
     if (r) {
@@ -3753,7 +3836,8 @@ int mirror_repo(
 }
 
 int open_and_update_all_dynamic_repos_threaded_optional(
-    struct config *const restrict config
+    struct config *const restrict config,
+    int const links_dirfd
 ) {
     unsigned long repos_need_update_count = 0;
     git_fetch_options *const fetch_options = &config->fetch_options;
@@ -3763,7 +3847,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
         if (!repo->wanted_dynamic) continue;
         ++repos_need_update_count;
         if (repo_prepare_open_or_create_if_needed(
-            repo, config->dir_repos, fetch_options, proxy_after)) {
+            repo, links_dirfd, fetch_options, proxy_after)) {
             pr_error("Failed to prepare repo\n");
             return -1;
         }
@@ -3849,15 +3933,16 @@ free_threads:
 
 int mirror_all_repos(
     struct config *const restrict config,
-    struct work_directory const *const restrict workdir_repos
+    int const links_dirfd
 ) {
-    if (open_and_update_all_dynamic_repos_threaded_optional(config)) {
+    if (open_and_update_all_dynamic_repos_threaded_optional(
+        config, links_dirfd)) {
         pr_error("Failed to pre-update repos\n");
         return -1;
     }
 
     for (unsigned long i = 0; i < config->repos_count; ++i) {
-        if (mirror_repo(config, i)) {
+        if (mirror_repo(config, i, links_dirfd)) {
             pr_error("Failed to mirror all repos\n");
             return -1;
         }
@@ -5189,7 +5274,7 @@ int main(int const argc, char *argv[]) {
     }
     pr_info("Initializing libgit2\n");
     git_libgit2_init();
-    if ((r = mirror_all_repos(&config, &workdir_repos))) {
+    if ((r = mirror_all_repos(&config, workdir_repos.links_dirfd))) {
         pr_error("Failed to mirro all repos\n");
         goto shutdown;
     }
