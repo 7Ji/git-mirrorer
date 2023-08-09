@@ -1968,7 +1968,8 @@ int repo_finish(
             repo->wanted_objects_allocated = new_wanted_objects_count;
         }
         memcpy(repo->wanted_objects + repo->wanted_objects_count, 
-                always_wanted_objects, always_wanted_objects_count);
+                always_wanted_objects, 
+                sizeof *repo->wanted_objects * always_wanted_objects_count);
         repo->wanted_objects_count = new_wanted_objects_count;
     }
     repo->wanted_objects_count_original = repo->wanted_objects_count;
