@@ -1128,13 +1128,15 @@ int config_update_from_yaml_event(
                     *status = YAML_CONFIG_PARSING_STATUS_PROXY;
                 else if (!strcmp(key, "repos"))
                     *status = YAML_CONFIG_PARSING_STATUS_REPOS;
-                else if (!strcmp(key, "clean"))
-                    *status = YAML_CONFIG_PARSING_STATUS_CLEAN;
                 break;
             case 6:
                 if (!strcmp(key, "wanted")) {
                     *status = YAML_CONFIG_PARSING_STATUS_WANTED;
                 }
+                break;
+            case 7:
+                if (!strcmp(key, "cleanup"))
+                    *status = YAML_CONFIG_PARSING_STATUS_CLEAN;
                 break;
             case 9:
                 if (!strcmp(key, "dir_repos"))
