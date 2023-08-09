@@ -3533,6 +3533,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
         }
     }
     pr_debug("%lu threads running\n", repos_need_update_count);
+    pr_info("Simultaneously updating %lu repos...\n", repos_need_update_count);
     while (repos_need_update_count) {
         pr_debug("%lu threads running\n", repos_need_update_count);
         for (unsigned long i = 0; i < repos_need_update_count; ++i) {
@@ -3547,6 +3548,9 @@ int open_and_update_all_dynamic_repos_threaded_optional(
                     r = -1;
                     goto kill_threads;
                 }
+                if (repos_need_update_count)
+                    pr_info("%lu repos till updating...\n", 
+                        repos_need_update_count);
             case EBUSY:
                 break;
             default:
