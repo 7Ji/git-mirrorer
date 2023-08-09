@@ -2419,7 +2419,8 @@ int work_directory_from_path(
     struct work_directory *const restrict work_directory,
     char const *const restrict path
 ) {
-    if ((work_directory->dirfd = open(path, O_RDONLY | O_DIRECTORY)) < 0) {
+    if ((work_directory->dirfd = 
+        open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
         switch (errno) {
         case ENOENT: 
             char path_dup[PATH_MAX];
@@ -2429,7 +2430,7 @@ int work_directory_from_path(
                 return -1;
             }
             if ((work_directory->dirfd = 
-                open(path, O_RDONLY | O_DIRECTORY)) < 0) {
+                open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
                 pr_error_with_errno("Still failed to open '%s' as directory\n", 
                                     path);
                 return -1;
@@ -2441,7 +2442,8 @@ int work_directory_from_path(
         }
     }
     if ((work_directory->links_dirfd = openat(
-        work_directory->dirfd, "links", O_RDONLY | O_DIRECTORY)) < 0) {
+                work_directory->dirfd, "links", 
+                O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
         switch (errno) {
         case ENOENT:
             if (mkdirat(work_directory->dirfd, "links", 0755) < 0) {
@@ -2451,7 +2453,8 @@ int work_directory_from_path(
                 return -1;
             }
             if ((work_directory->links_dirfd = openat(
-                work_directory->dirfd, "links", O_RDONLY | O_DIRECTORY)) < 0) {
+                        work_directory->dirfd, "links", 
+                        O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
                 pr_error_with_errno(
                     "Failed to open links subdir under '%s' as directory after "
                     "creating it", path);
