@@ -4795,6 +4795,18 @@ int export_commit(
     pr_info("Started exporting repo '%s' commit '%s'\n",
         repo->url, parsed_commit->id_hex_string);
     char submodule_path[PATH_MAX] = "";
+    unsigned short len_submodule_path = 0;
+    if (config->archive_gh_prefix) {
+        if ((r = snprintf(submodule_path, PATH_MAX, "%s-%s/", repo->short_name, 
+        parsed_commit->id_hex_string)) < 0) {
+            pr_error_with_errno("Failed to generate github-like prefix\n");
+            git_commit_free(commit);
+            if (fd_archive >= 0) close(fd_archive);
+            return -1;
+        }
+        len_submodule_path = r;
+        pr_info("Will add github-like prefix '%s' to tar\n", submodule_path);
+    }
     char mtime[TAR_POSIX_HEADER_MTIME_LEN] = "";
     if (snprintf(
         mtime, TAR_POSIX_HEADER_MTIME_LEN, "%011lo", git_commit_time(commit)
@@ -4818,7 +4830,7 @@ int export_commit(
         .repo = repo,
         .parsed_commit = parsed_commit,
         .submodule_path = submodule_path,
-        .len_submodule_path = 0,
+        .len_submodule_path = len_submodule_path,
         .archive = archive,
         .mtime = mtime, // second, 
         // there's also git_commit_time_offset(commit), one offset for a minute
