@@ -1077,6 +1077,90 @@ declare_funcs_add_wanted_object_and_init(repo)
 declare_funcs_add_wanted_object_and_init(config, empty_)
 declare_funcs_add_wanted_object_and_init(config, always_)
 
+int wanted_object_guarantee_symlinks(
+    struct wanted_object const *const restrict wanted_object,
+    struct repo const *const restrict repo,
+    bool const archive,
+    char const *const restrict archive_suffix,
+    int const archives_links_dirfd,
+    bool const checkout,
+    int const checkouts_links_dirfd
+) {
+    /* links/[sanitized url]/[commit hash](archive suffix)
+                            /named/[name](a.s.)
+                            /tags -> refs/tags
+                            /branches -> refs/heads
+     undetermimed layers -> /refs/[ref name](a.s.)
+                            /HEAD(a.s.)
+    */                
+    bool    link_tags_to_dir_refs_tags = false, 
+            link_branches_to_dir_refs_heads = false;
+    char const *dir_link = "";
+    // E.g. 
+    //  archive: archives/abcdef.tar.gz
+    //  link: archives/links/github.com/user/repo/abcdeg.tar.gz
+    //  target: ../../../../abcdef.tar.gz
+    //   github.com/user/repo has 3 parts, depth is 4
+    unsigned short link_depth = repo->url_no_scheme_sanitized_parts + 1;
+    switch (wanted_object->type) {
+        case WANTED_TYPE_UNKNOWN:
+            pr_error("Wanted type unknown for '%s'\n", wanted_object->name);
+            return -1;
+        case WANTED_TYPE_ALL_BRANCHES:
+        case WANTED_TYPE_ALL_TAGS:
+            return 0;
+        case WANTED_TYPE_BRANCH:
+            link_branches_to_dir_refs_heads = true;
+            dir_link = "refs/heads";
+            link_depth += 2;
+            break;
+        case WANTED_TYPE_TAG:
+            link_tags_to_dir_refs_tags = true;
+            dir_link = "refs/tags";
+            link_depth += 2;
+            break;
+        case WANTED_TYPE_REFERENCE:
+            if (!strncmp(wanted_object->name, "refs/", 5)) {
+                char const *const ref_kind = wanted_object->name + 5;
+                if (!strncmp(ref_kind, "heads/", 6))
+                    link_branches_to_dir_refs_heads = true;
+                else if (!strncmp(ref_kind, "tags/", 5))
+                    link_tags_to_dir_refs_tags = true;
+            }
+            break;
+        case WANTED_TYPE_COMMIT:
+        case WANTED_TYPE_HEAD:
+            break;
+    }
+    for (unsigned short i = 0; i < wanted_object->len_name; ++i) {
+        switch (wanted_object->name[i]) {
+        case '/':
+            ++link_depth;
+            break;
+        case '\0':
+            pr_error("Name '%s' ends pre-maturely\n", wanted_object->name);
+            return -1;
+        }
+    }
+    int archives_repo_links_dirfd = -1;
+    int checkouts_repo_links_dirfd = -1;
+
+    bool const archive_has_suffix = archive_suffix[0] != '\0';
+    char symlink_target[PATH_MAX] = "";
+    char *symlink_target_current = symlink_target;
+    for (unsigned short i = 0; 
+        i < repo->url_no_scheme_sanitized_parts + 1; 
+        ++i) {
+        symlink_target_current = stpcpy(symlink_target_current, "../");
+    }
+    symlink_target_current = stpcpy(symlink_target_current,
+                                    repo->url_no_scheme_sanitized);
+    
+    
+
+    return 0;
+}
+
 // 0 for false, 1 for true, -1 for error parsing
 int bool_from_string(
     char const *const restrict string
@@ -2181,10 +2265,7 @@ int repo_guarantee_symlink(
     for (unsigned short i = 0; i < repo->url_no_scheme_sanitized_parts; ++i) {
         symlink_target_current = stpcpy(symlink_target_current, "../");
     }
-    if (sprintf(symlink_target_current, HASH_FORMAT, repo->url_hash) <= 0) {
-        pr_error_with_errno("Failed to print to string");
-        return -1;
-    }
+    symlink_target_current = stpcpy(symlink_target_current, repo->hash_name);
     if (guarantee_symlink_at(links_dirfd, repo->url_no_scheme_sanitized, 
         repo->len_url_no_scheme_sanitized, symlink_target)) {
         pr_error("Failed to guarantee a symlink at '%s' pointing to '%s'\n",
@@ -2533,6 +2614,25 @@ int work_directories_from_paths(
         return -1;   
     }
     return 0;
+}
+
+static inline
+void work_directory_free(
+    struct work_directory const *const restrict workdir 
+) {
+    if (workdir->dirfd) close(workdir->dirfd);
+    if (workdir->keeps) free(workdir->keeps);
+}
+
+static inline
+void work_directories_free(
+    struct work_directory const *const restrict workdir_repos, 
+    struct work_directory const *const restrict workdir_archives, 
+    struct work_directory const *const restrict workdir_checkouts
+) {
+    work_directory_free(workdir_repos);
+    work_directory_free(workdir_archives);
+    work_directory_free(workdir_checkouts);
 }
 
 // 0 existing and opened, 1 does not exist but created, -1 error
@@ -5216,7 +5316,9 @@ int export_commit(
 }
 
 int export_all_repos(
-    struct config const *const restrict config
+    struct config const *const restrict config,
+    struct work_directory *const restrict workdir_archives,
+    struct work_directory *const restrict workdir_checkouts
 ) {
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         struct repo const *const restrict repo = config->repos + i;
@@ -5321,7 +5423,8 @@ int main(int const argc, char *argv[]) {
         pr_error("Failed to mirro all repos\n");
         goto shutdown;
     }
-    if ((r = export_all_repos(&config))) {
+    if ((r = export_all_repos(
+            &config, &workdir_archives, &workdir_checkouts))) {
         pr_error("Failed to export all repos (archives and checkouts)\n");
         goto shutdown;
     }
@@ -5333,10 +5436,8 @@ shutdown:
 #endif
     pr_info("Shutting down libgit2\n");
     git_libgit2_shutdown();
-// close_workdirs:
-    close(workdir_repos.dirfd);
-    close(workdir_archives.dirfd);
-    close(workdir_checkouts.dirfd);
+    work_directories_free(
+        &workdir_repos, &workdir_archives, &workdir_checkouts);
 free_config:
     config_free(&config);
     return r;
