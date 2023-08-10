@@ -395,16 +395,11 @@ struct config {
             clean_links;
 };
 
-int sideband_progress(char const *string, int len, void *payload);
-int fetch_progress(git_indexer_progress const *stats, void *payload);
-
 struct config const CONFIG_INIT = {
     .fetch_options = { 
         .version = GIT_FETCH_OPTIONS_VERSION, 
         .callbacks = {
             .version = GIT_REMOTE_CALLBACKS_VERSION,
-            .sideband_progress = sideband_progress,
-            .transfer_progress = fetch_progress,
         },
         .update_fetchhead = 1,
         .proxy_opts = GIT_PROXY_OPTIONS_INIT,
@@ -2316,6 +2311,10 @@ int config_finish(
     if (config->archive_pipe_args_count >= ARCHIVE_PIPE_ARGS_MAX_COUNT) {
         pr_error("Archive pipe arguemnts too many\n");
         return -1;
+    }
+    if (isatty(STDOUT_FILENO)) {
+        config->fetch_options.callbacks.sideband_progress = sideband_progress;
+        config->fetch_options.callbacks.transfer_progress = fetch_progress;
     }
     if (config->dir_repos[0] == '\0') {
         memcpy(config->dir_repos, DIR_REPOS, sizeof(DIR_REPOS));
