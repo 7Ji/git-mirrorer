@@ -636,7 +636,7 @@ static inline void print_progress(
 		pr_info(
             "Receiving objects %u%% (%u%c, %u); "
             "Indexing objects %u%% (%u); "
-            "Total objects %u\r",
+            "Total objects %u;\r",
             stats->total_objects > 0 ?
                 100 * stats->received_objects / stats->total_objects :
                 0,
