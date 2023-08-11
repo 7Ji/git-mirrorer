@@ -8,7 +8,7 @@
                  # count, so the max try count is [proxy_after] + 3
                  # default: 0
 
-# UPSTREAM CONFIG
+# UPSTREAM CONFIG !!NOT IMPLEMENTED YET!!
 # Defines an upstream git mirrorer instance's dir_repos, or any server that 
 # provides the same layout like dir_repos/links. Fetch from it first
 # before from the the actual repo links. 
@@ -98,7 +98,7 @@ archive:
   #   - zstd
   #   - 22vT0
 
-# CLEANUP CONFIG
+# CLEANUP CONFIG !!NOT IMPLEMENTED YET!!
 # As git-mirrorer will fetch repos and recursively all repos introduced into the
 # wanted objects of your defined repos as submodules, you might want to clean up
 # the work directories to save space
