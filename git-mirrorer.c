@@ -2569,7 +2569,7 @@ int repo_finish_bare(
             repo->url);
         return -1;
     }
-    pr_info("Repo '%s' will be stored at '%s'\n", repo->url, repo->dir_path);
+    pr_debug("Repo '%s' will be stored at '%s'\n", repo->url, repo->dir_path);
     return 0;
 }
 
@@ -3150,7 +3150,7 @@ int parsed_commit_add_submodule_from_commit_tree(
         goto free_entry;
     }
     pr_info(
-        "Submodule needed: '%s' <= '%s'@%s\n", 
+        "Submodule needed: '%s' <= '%s': %s\n", 
         path, url, submodule->id_hex_string);
     r = 0;
 free_entry:
@@ -3268,7 +3268,7 @@ int repo_parse_commit_submodule_in_tree(
     }
     submodule->target_commit_id = repo_target->parsed_commits_count - 1;
     if (submodule->target_repo_id >= repo_id) {
-        pr_info("Added commit %s as wanted to repo '%s', will handle "
+        pr_debug("Added commit %s as wanted to repo '%s', will handle "
             "that repo later\n", submodule->id_hex_string, repo_target->url);
         return 0;
     }
@@ -3924,7 +3924,7 @@ int repo_ensure_parsed_commit_submodules (
     git_tree_entry const *const entry_gitmodules = 
         git_tree_entry_byname(tree, ".gitmodules");
     if (entry_gitmodules != NULL) {
-        pr_warn(
+        pr_debug(
             "Found .gitmodules in commit tree of %s for repo '%s', "
             "parsing submodules\n", parsed_commit->id_hex_string, repo->url);
         r = repo_parse_commit_tree_entry_gitmodules(
@@ -3973,8 +3973,8 @@ int repo_ensure_parsed_commit(
             goto free_commit;
         }
     }
-    pr_info("Ensured robustness of commit %s in repo '%s'\n",
-        parsed_commit->id_hex_string, repo->url);
+    pr_info("Commit robust: '%s': %s\n",
+        repo->url, parsed_commit->id_hex_string);
     r = 0;
 free_commit:
     git_commit_free(commit);
