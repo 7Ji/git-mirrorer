@@ -334,7 +334,8 @@ struct repo {
                     len_dir_path,
                     len_short_name;
     hash_type   url_hash,
-                url_no_scheme_sanitized_hash;
+                url_no_scheme_sanitized_hash,
+                server_hash;
     git_repository *repository;
     struct wanted_object *wanted_objects;
     struct parsed_commit *parsed_commits;
@@ -813,6 +814,7 @@ int config_add_repo_and_init_with_url(
     unsigned short  len_url_no_scheme_sanitized = 0,
                     url_no_scheme_sanitized_parts = 1;
     char const *url_no_scheme = url;
+    hash_type server_hash = 0;
     for (char const *c = url; *c != '\0'; ++c) {
         if (*c == ':' && *(c + 1) == '/' && *(c + 2) == '/') {
             if (*(c + 3) == '\0') {
@@ -827,6 +829,10 @@ int config_add_repo_and_init_with_url(
     char const *short_name = url_no_scheme;
     for (char const *c = url_no_scheme; *c; ++c) {
         if (*c == '/') {
+            if (url_no_scheme_sanitized_parts == 1) {
+                server_hash = hash_calculate(url_no_scheme, 
+                                len_url_no_scheme_sanitized);
+            }
             // Skip all continous leading /
             for (; *(c + 1) =='/'; ++c);
             // When the above loop ends, we're at the last /
@@ -896,6 +902,7 @@ int config_add_repo_and_init_with_url(
     repo->len_url_no_scheme_sanitized = len_url_no_scheme_sanitized;
     repo->url_no_scheme_sanitized_hash = url_no_scheme_sanitized_hash;
     repo->url_no_scheme_sanitized_parts = url_no_scheme_sanitized_parts;
+    repo->server_hash = server_hash;
     memcpy(repo->short_name, short_name, len_short_name);
     repo->short_name[len_short_name] = '\0';
     repo->added_from = added_from;
