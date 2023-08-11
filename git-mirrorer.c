@@ -3117,7 +3117,8 @@ int repo_prepare_open_or_create_if_needed(
     struct repo *const restrict repo,
     int const links_dirfd,
     git_fetch_options *const restrict fetch_options,
-    unsigned short const proxy_after
+    unsigned short const proxy_after,
+    bool const delay_update
 ) {
     if (repo->repository != NULL) return 0;
     if (repo_guarantee_symlink(repo, links_dirfd)) {
@@ -3133,7 +3134,8 @@ int repo_prepare_open_or_create_if_needed(
     case 1:
         pr_warn(
             "Repo '%s' just created locally, need to update\n", repo->url);
-        if (repo_update(repo, fetch_options, proxy_after)) {
+        if (delay_update) repo->wanted_dynamic = true;
+        else if (repo_update(repo, fetch_options, proxy_after)) {
             pr_error(
                 "Failed to update freshly created repo '%s'\n", repo->url);
             return -1;
@@ -4109,7 +4111,7 @@ int mirror_repo(
 ) {
     int r = repo_prepare_open_or_create_if_needed(
         config->repos + repo_id, links_dirfd,
-        &config->fetch_options, config->proxy_after);
+        &config->fetch_options, config->proxy_after, false);
     struct repo *restrict repo = config->repos + repo_id;
     if (r) {
         pr_error("Failed to ensure repo '%s' is opened\n", repo->url);
@@ -4270,12 +4272,12 @@ int open_and_update_all_dynamic_repos_threaded_optional(
     int r = -1;
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         struct repo *const restrict repo = config->repos + i;
-        if (!repo->wanted_dynamic) continue;
         if (repo_prepare_open_or_create_if_needed(
-            repo, links_dirfd, fetch_options, proxy_after)) {
+            repo, links_dirfd, fetch_options, proxy_after, true)) {
             pr_error("Failed to prepare repo\n");
             goto free_servers_and_ids_maybe;
         }
+        if (!repo->wanted_dynamic) continue;
         if (update_status_add_server_and_init_with_hash_optional(
             &update_status, repo->server_hash)) {
             pr_error("Failed to add server\n");
