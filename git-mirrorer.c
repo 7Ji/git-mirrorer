@@ -1253,7 +1253,6 @@ int guarantee_symlink_at (
     return 0;
 }
 
-
 int wanted_object_guarantee_symlinks(
     struct wanted_object const *const restrict wanted_object,
     struct repo const *const restrict repo,
@@ -1363,28 +1362,28 @@ int wanted_object_guarantee_symlinks(
             goto close_checkouts_repo_links_dirfd;
         }
     }
+    // The commit hash one
     char symlink_path[PATH_MAX] = "";
-    char *symlink_path_current = stpcpy(symlink_path, dir_link);
-    symlink_path_current = stpcpy(symlink_path_current, wanted_object->name);
-    unsigned short len_symlink_path = symlink_path_current - symlink_path;
+    char *symlink_path_current = 
+        stpcpy(symlink_path, wanted_object->id_hex_string);
+    // unsigned short len_symlink_path = HASH_STRING_LEN;
     char symlink_target[PATH_MAX] = "";
     char *symlink_target_current = symlink_target;
-    for (unsigned short i = 0; i < link_depth; ++i) {
+    for (unsigned short i = 0; i < repo->url_no_scheme_sanitized_parts+1; ++i) {
         symlink_target_current = stpcpy(symlink_target_current, "../");
     }
-    symlink_target_current = stpcpy(
-        symlink_target_current, 
-        wanted_object->id_hex_string);
+    symlink_target_current = stpcpy(symlink_target_current, 
+                                    wanted_object->id_hex_string);
     if (checkout && guarantee_symlink_at(
         checkouts_repo_links_dirfd, 
-        symlink_path, len_symlink_path, 
+        symlink_path, HASH_STRING_LEN, 
         symlink_target)) {
         goto close_checkouts_repo_links_dirfd;
     }
     if (archive) {
         if (archive_suffix[0] == '\0' && guarantee_symlink_at(
             archives_repo_links_dirfd, 
-            symlink_path, len_symlink_path, 
+            symlink_path, HASH_STRING_LEN, 
             symlink_target)) {
             goto close_checkouts_repo_links_dirfd;
         } else {
@@ -1392,12 +1391,50 @@ int wanted_object_guarantee_symlinks(
             strcpy(symlink_target_current, archive_suffix);
             if (guarantee_symlink_at(
                 archives_repo_links_dirfd, 
-                symlink_path, wanted_object->len_name + len_archive_suffix, 
+                symlink_path, HASH_STRING_LEN + len_archive_suffix, 
                 symlink_target)) {
                 goto close_checkouts_repo_links_dirfd;
             }
         }
     }
+
+    // The named one
+    if (wanted_object->type != WANTED_TYPE_COMMIT) {
+        char *symlink_path_current = stpcpy(symlink_path, dir_link);
+        symlink_path_current = stpcpy(symlink_path_current, wanted_object->name);
+        unsigned short len_symlink_path = symlink_path_current - symlink_path;
+        char *symlink_target_current = symlink_target;
+        for (unsigned short i = 0; i < link_depth; ++i) {
+            symlink_target_current = stpcpy(symlink_target_current, "../");
+        }
+        symlink_target_current = stpcpy(
+            symlink_target_current, 
+            wanted_object->id_hex_string);
+        if (checkout && guarantee_symlink_at(
+            checkouts_repo_links_dirfd, 
+            symlink_path, len_symlink_path, 
+            symlink_target)) {
+            goto close_checkouts_repo_links_dirfd;
+        }
+        if (archive) {
+            if (archive_suffix[0] == '\0' && guarantee_symlink_at(
+                archives_repo_links_dirfd, 
+                symlink_path, len_symlink_path, 
+                symlink_target)) {
+                goto close_checkouts_repo_links_dirfd;
+            } else {
+                strcpy(symlink_path_current, archive_suffix);
+                strcpy(symlink_target_current, archive_suffix);
+                if (guarantee_symlink_at(
+                    archives_repo_links_dirfd, 
+                    symlink_path, wanted_object->len_name + len_archive_suffix, 
+                    symlink_target)) {
+                    goto close_checkouts_repo_links_dirfd;
+                }
+            }
+        }
+    }
+
     r = 0;
 
 close_checkouts_repo_links_dirfd:
