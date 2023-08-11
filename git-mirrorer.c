@@ -1125,13 +1125,141 @@ declare_funcs_add_wanted_object_and_init(repo)
 declare_funcs_add_wanted_object_and_init(config, empty_)
 declare_funcs_add_wanted_object_and_init(config, always_)
 
+int opendir_create_if_non_exist_at(
+    int const dir_fd,
+    char const *const restrict path,
+    unsigned short const len_path
+) {
+    int subdir_fd = openat(
+            dir_fd, path, 
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (subdir_fd < 0) {
+        switch (errno) {
+        case ENOENT:
+            char path_dup[PATH_MAX];
+            memcpy(path_dup, path, len_path + 1);
+            if (mkdir_recursively_at(dir_fd, path_dup)) {
+                pr_error("Failed to create dir '%s'\n", path);
+                return -1;
+            }
+            if ((subdir_fd = openat(
+                dir_fd, path, 
+                O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+                pr_error_with_errno("Failed to open dir '%s'", path);
+                return -1;
+            }
+            break;
+        default:
+            pr_error_with_errno("Failed to open dir '%s'", path);
+            return -1;
+        }
+    }
+    return subdir_fd;
+}
+
+int guarantee_symlink_at (
+    int const links_dirfd,
+    char const *const restrict symlink_path,
+    unsigned short const len_symlink_path,
+    char const *const restrict symlink_target
+) {
+    char path[PATH_MAX];
+    ssize_t len = readlinkat(links_dirfd, symlink_path, path, PATH_MAX);
+    if (len < 0) {
+        switch (errno) {
+        case ENOENT:
+            break;
+        default:
+            pr_error_with_errno("Failed to read link at '%s'", symlink_path);
+            return -1;
+        }
+    } else {
+        path[len] = '\0';
+        if (strcmp(path, symlink_target)) {
+            pr_warn("Symlink at '%s' points to '%s' instead of '%s', "
+            "if you see this message for too many times, you've probably set "
+            "too many repos with same path but different schemes.\n",
+            symlink_path, path, symlink_target);
+            if (unlinkat(links_dirfd, symlink_path, 0) < 0) {
+                pr_error_with_errno("Faild to unlink '%s'", symlink_path);
+                return -1;
+            }
+        } else {
+            // pr_info("Symlink '%s' -> '%s' already existing\n",
+            //     symlink_path, symlink_target);
+            return 0;
+        }
+    }
+    if (symlinkat(symlink_target, links_dirfd, symlink_path) < 0) {
+        switch (errno) {
+        case ENOENT:
+            break;
+        default:
+            pr_error_with_errno(
+                "Failed to create symlink '%s' -> '%s'",
+                symlink_path, symlink_target);
+            return -1;
+        }
+    } else {
+        pr_info("Created symlink '%s' -> '%s'\n", 
+            symlink_path, symlink_target);
+        return 0;
+    }
+    // After above routine, the only possiblity is missing dirs
+    char symlink_path_dup[PATH_MAX];
+    strncpy(symlink_path_dup, symlink_path, PATH_MAX);
+    unsigned short last_sep = 0;
+    for (unsigned short i = len_symlink_path; i > 0; --i) {
+        char *c = symlink_path_dup + i;
+        if (*c == '/') {
+            if (!last_sep) {
+                last_sep = i;
+            }
+            *c = '\0';
+            if (mkdirat(links_dirfd, symlink_path_dup, 0755)) {
+                if (errno != ENOENT) {
+                    pr_error_with_errno(
+                        "Failed to create folder '%s' as parent of symlink "
+                        "'%s' -> '%s'",
+                        symlink_path_dup, symlink_path, symlink_target);
+                    return -1;
+                }
+            } else {
+                for (unsigned short j = i; j < last_sep; ++j) {
+                    c = symlink_path_dup + j;
+                    if (*c == '\0') {
+                        *c = '/';
+                        if (mkdirat(links_dirfd, symlink_path_dup, 0755)) {
+                            pr_error_with_errno(
+                                "Failed to create folder '%s' as parent of "
+                                "symlink '%s' -> '%s'",
+                                symlink_path_dup, symlink_path, symlink_target);
+                            return -1;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+    if (symlinkat(symlink_target, links_dirfd, symlink_path) < 0) {
+        pr_error_with_errno(
+            "Failed to create symlink '%s' -> '%s'",
+            symlink_path, symlink_target);
+        return -1;
+    }
+    pr_info("Created symlink '%s' -> '%s'\n", 
+        symlink_path, symlink_target);
+    return 0;
+}
+
+
 int wanted_object_guarantee_symlinks(
     struct wanted_object const *const restrict wanted_object,
     struct repo const *const restrict repo,
-    bool const archive,
     char const *const restrict archive_suffix,
+    unsigned short const len_archive_suffix,
     int const archives_links_dirfd,
-    bool const checkout,
     int const checkouts_links_dirfd
 ) {
     /* links/[sanitized url]/[commit hash](archive suffix)
@@ -1143,6 +1271,8 @@ int wanted_object_guarantee_symlinks(
     */                
     bool    link_tags_to_dir_refs_tags = false, 
             link_branches_to_dir_refs_heads = false;
+    bool const  archive = wanted_object->archive,
+                checkout = wanted_object->checkout;
     char const *dir_link = "";
     // E.g. 
     //  archive: archives/abcdef.tar.gz
@@ -1159,12 +1289,12 @@ int wanted_object_guarantee_symlinks(
             return 0;
         case WANTED_TYPE_BRANCH:
             link_branches_to_dir_refs_heads = true;
-            dir_link = "refs/heads";
+            dir_link = "refs/heads/";
             link_depth += 2;
             break;
         case WANTED_TYPE_TAG:
             link_tags_to_dir_refs_tags = true;
-            dir_link = "refs/tags";
+            dir_link = "refs/tags/";
             link_depth += 2;
             break;
         case WANTED_TYPE_REFERENCE:
@@ -1180,6 +1310,10 @@ int wanted_object_guarantee_symlinks(
         case WANTED_TYPE_HEAD:
             break;
     }
+    if (!wanted_object->commit_resolved) {
+        pr_error("Commit not resolved yet\n");
+        return -1;
+    }
     for (unsigned short i = 0; i < wanted_object->len_name; ++i) {
         switch (wanted_object->name[i]) {
         case '/':
@@ -1191,43 +1325,86 @@ int wanted_object_guarantee_symlinks(
         }
     }
     int archives_repo_links_dirfd = -1;
-    if (archive && 
-        (archives_repo_links_dirfd = openat(
-            archives_links_dirfd, repo->url_no_scheme_sanitized, 
-            O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
-        switch (errno) {
-        case ENOENT:
-
-
-            if ((archives_repo_links_dirfd = openat(
-                archives_links_dirfd, repo->url_no_scheme_sanitized, 
-                O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
-
-            
-            }
-
-
-        default:
-            pr_error_with_errno();
+    if (archive) {
+        if ((archives_repo_links_dirfd = opendir_create_if_non_exist_at(
+            archives_links_dirfd, repo->url_no_scheme_sanitized,
+            repo->len_url_no_scheme_sanitized)) < 0) {
+            pr_error("Failed to open archive repos links dir\n");
             return -1;
         }
     }
     int checkouts_repo_links_dirfd = -1;
-
-    bool const archive_has_suffix = archive_suffix[0] != '\0';
+    int r = -1;
+    if (checkout) {
+        if ((checkouts_repo_links_dirfd = opendir_create_if_non_exist_at(
+            checkouts_links_dirfd, repo->url_no_scheme_sanitized,
+            repo->len_url_no_scheme_sanitized)) < 0) {
+            pr_error("Failed to open Checkout repos links dir\n");
+            goto close_archives_repo_links_dirfd;
+        }
+    }
+    if (link_branches_to_dir_refs_heads) {
+        if (archive && guarantee_symlink_at(
+            archives_repo_links_dirfd, "branches", 8, "refs/heads")) {
+            goto close_checkouts_repo_links_dirfd;
+        }
+        if (checkout && guarantee_symlink_at(
+            checkouts_repo_links_dirfd, "branches", 8, "refs/heads")) {
+            goto close_checkouts_repo_links_dirfd;
+        }
+    }
+    if (link_tags_to_dir_refs_tags) {
+        if (archive && guarantee_symlink_at(
+            archives_repo_links_dirfd, "tags", 4, "refs/tags")) {
+            goto close_checkouts_repo_links_dirfd;
+        }
+        if (checkout && guarantee_symlink_at(
+            checkouts_repo_links_dirfd, "tags", 4, "refs/tags")) {
+            goto close_checkouts_repo_links_dirfd;
+        }
+    }
+    char symlink_path[PATH_MAX] = "";
+    char *symlink_path_current = stpcpy(symlink_path, dir_link);
+    symlink_path_current = stpcpy(symlink_path_current, wanted_object->name);
+    unsigned short len_symlink_path = symlink_path_current - symlink_path;
     char symlink_target[PATH_MAX] = "";
     char *symlink_target_current = symlink_target;
-    for (unsigned short i = 0; 
-        i < repo->url_no_scheme_sanitized_parts + 1; 
-        ++i) {
+    for (unsigned short i = 0; i < link_depth; ++i) {
         symlink_target_current = stpcpy(symlink_target_current, "../");
     }
-    symlink_target_current = stpcpy(symlink_target_current,
-                                    repo->url_no_scheme_sanitized);
-    
-    
+    symlink_target_current = stpcpy(
+        symlink_target_current, 
+        wanted_object->id_hex_string);
+    if (checkout && guarantee_symlink_at(
+        checkouts_repo_links_dirfd, 
+        symlink_path, len_symlink_path, 
+        symlink_target)) {
+        goto close_checkouts_repo_links_dirfd;
+    }
+    if (archive) {
+        if (archive_suffix[0] == '\0' && guarantee_symlink_at(
+            archives_repo_links_dirfd, 
+            symlink_path, len_symlink_path, 
+            symlink_target)) {
+            goto close_checkouts_repo_links_dirfd;
+        } else {
+            strcpy(symlink_path_current, archive_suffix);
+            strcpy(symlink_target_current, archive_suffix);
+            if (guarantee_symlink_at(
+                archives_repo_links_dirfd, 
+                symlink_path, wanted_object->len_name + len_archive_suffix, 
+                symlink_target)) {
+                goto close_checkouts_repo_links_dirfd;
+            }
+        }
+    }
+    r = 0;
 
-    return 0;
+close_checkouts_repo_links_dirfd:
+    if (checkout) close(checkouts_repo_links_dirfd);
+close_archives_repo_links_dirfd:
+    if (archive) close(archives_repo_links_dirfd);
+    return r;
 }
 
 // 0 for false, 1 for true, -1 for error parsing
@@ -2222,103 +2399,6 @@ int guarantee_symlink (
         symlink_path, symlink_target);
     return 0;
 }
-
-int guarantee_symlink_at (
-    int const links_dirfd,
-    char const *const restrict symlink_path,
-    unsigned short const len_symlink_path,
-    char const *const restrict symlink_target
-) {
-    char path[PATH_MAX];
-    ssize_t len = readlinkat(links_dirfd, symlink_path, path, PATH_MAX);
-    if (len < 0) {
-        switch (errno) {
-        case ENOENT:
-            break;
-        default:
-            pr_error_with_errno("Failed to read link at '%s'", symlink_path);
-            return -1;
-        }
-    } else {
-        path[len] = '\0';
-        if (strcmp(path, symlink_target)) {
-            pr_warn("Symlink at '%s' points to '%s' instead of '%s', "
-            "if you see this message for too many times, you've probably set "
-            "too many repos with same path but different schemes.\n",
-            symlink_path, path, symlink_target);
-            if (unlinkat(links_dirfd, symlink_path, 0) < 0) {
-                pr_error_with_errno("Faild to unlink '%s'", symlink_path);
-                return -1;
-            }
-        } else {
-            // pr_info("Symlink '%s' -> '%s' already existing\n",
-            //     symlink_path, symlink_target);
-            return 0;
-        }
-    }
-    if (symlinkat(symlink_target, links_dirfd, symlink_path) < 0) {
-        switch (errno) {
-        case ENOENT:
-            break;
-        default:
-            pr_error_with_errno(
-                "Failed to create symlink '%s' -> '%s'",
-                symlink_path, symlink_target);
-            return -1;
-        }
-    } else {
-        pr_info("Created symlink '%s' -> '%s'\n", 
-            symlink_path, symlink_target);
-        return 0;
-    }
-    // After above routine, the only possiblity is missing dirs
-    char symlink_path_dup[PATH_MAX];
-    strncpy(symlink_path_dup, symlink_path, PATH_MAX);
-    unsigned short last_sep = 0;
-    for (unsigned short i = len_symlink_path; i > 0; --i) {
-        char *c = symlink_path_dup + i;
-        if (*c == '/') {
-            if (!last_sep) {
-                last_sep = i;
-            }
-            *c = '\0';
-            if (mkdirat(links_dirfd, symlink_path_dup, 0755)) {
-                if (errno != ENOENT) {
-                    pr_error_with_errno(
-                        "Failed to create folder '%s' as parent of symlink "
-                        "'%s' -> '%s'",
-                        symlink_path_dup, symlink_path, symlink_target);
-                    return -1;
-                }
-            } else {
-                for (unsigned short j = i; j < last_sep; ++j) {
-                    c = symlink_path_dup + j;
-                    if (*c == '\0') {
-                        *c = '/';
-                        if (mkdirat(links_dirfd, symlink_path_dup, 0755)) {
-                            pr_error_with_errno(
-                                "Failed to create folder '%s' as parent of "
-                                "symlink '%s' -> '%s'",
-                                symlink_path_dup, symlink_path, symlink_target);
-                            return -1;
-                        }
-                    }
-                }
-                break;
-            }
-        }
-    }
-    if (symlinkat(symlink_target, links_dirfd, symlink_path) < 0) {
-        pr_error_with_errno(
-            "Failed to create symlink '%s' -> '%s'",
-            symlink_path, symlink_target);
-        return -1;
-    }
-    pr_info("Created symlink '%s' -> '%s'\n", 
-        symlink_path, symlink_target);
-    return 0;
-}
-
 
 int repo_guarantee_symlink(
     struct repo *const restrict repo,
@@ -5396,6 +5476,15 @@ int export_all_repos(
                 repo->wanted_objects + j;
             if (wanted_object->archive || wanted_object->checkout);
             else continue;
+            if (wanted_object_guarantee_symlinks(
+                wanted_object, repo, 
+                config->archive_suffix, config->len_archive_suffix, 
+                workdir_archives->links_dirfd, 
+                workdir_checkouts->links_dirfd)) {
+                pr_error("Failed to guarantee symlinks for wanted object '%s' "
+                    "of repo '%s'\n", wanted_object->name, repo->url);
+                return -1;
+            }
             switch (wanted_object->type) {
             case WANTED_TYPE_BRANCH:
             case WANTED_TYPE_TAG:
