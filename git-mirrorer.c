@@ -3150,8 +3150,8 @@ int parsed_commit_add_submodule_from_commit_tree(
         goto free_entry;
     }
     pr_info(
-        "Commit '%s' needs submodule from '%s' commit '%s' at '%s'\n", 
-        parsed_commit->id_hex_string,  url, submodule->id_hex_string, path);
+        "Submodule needed: '%s' <= '%s'@%s\n", 
+        path, url, submodule->id_hex_string);
     r = 0;
 free_entry:
     git_tree_entry_free(entry);
@@ -3525,9 +3525,8 @@ int repo_parse_wanted_reference_common(
         return -1;
     }
     git_object_free(object);
-    pr_info("Resolved reference '%s' of repo '%s' to commit '%s', "
-        "working on that commit instead\n",
-        wanted_reference->name, repo->url, 
+    pr_info("Reference resolved: '%s': '%s' => '%s'\n",
+        repo->url, wanted_reference->name,
         wanted_reference->commit.id_hex_string);
     return repo_parse_wanted_commit(repo, 
                                 (struct wanted_commit *)wanted_reference);
