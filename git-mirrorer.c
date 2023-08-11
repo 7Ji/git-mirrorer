@@ -4250,7 +4250,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
                 goto kill_threads;
             }
         }
-        usleep(10);
+        sleep(1);
     }
     r = 0;
 kill_threads:
