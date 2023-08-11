@@ -2914,7 +2914,7 @@ int repo_update(
     git_fetch_options *const restrict fetch_options,
     unsigned short const proxy_after
 ) {
-    pr_info("Updating repo '%s'...\r", repo->url);
+    pr_info("Updating: '%s' ...\n", repo->url);
     git_remote *remote;
     int r = git_remote_lookup(&remote, repo->repository, MIRROR_REMOTE) < 0;
     if (r) {
@@ -5442,7 +5442,7 @@ int export_commit(
         if (fd_archive >= 0) close(fd_archive);
         return -1;
     }
-    pr_info("Exporting: '%s': %s\r",
+    pr_info("Exporting: '%s': %s ...\n",
         repo->url, parsed_commit->id_hex_string);
     char submodule_path[PATH_MAX] = "";
     unsigned short len_submodule_path = 0;
