@@ -1249,7 +1249,7 @@ int guarantee_symlink_at (
             symlink_path, symlink_target);
         return -1;
     }
-    pr_info("Created symlink '%s' -> '%s'\n", 
+    pr_debug("Created symlink '%s' -> '%s'\n", 
         symlink_path, symlink_target);
     return 0;
 }
@@ -2371,7 +2371,7 @@ int guarantee_symlink (
                 return -1;
             }
         } else {
-            pr_info("Symlink '%s' -> '%s' already existing\n",
+            pr_debug("Symlink '%s' -> '%s' already existing\n",
                 symlink_path, symlink_target);
             return 0;
         }
@@ -2387,7 +2387,7 @@ int guarantee_symlink (
             return -1;
         }
     } else {
-        pr_info("Created symlink '%s' -> '%s'\n", 
+        pr_debug("Created symlink '%s' -> '%s'\n", 
             symlink_path, symlink_target);
         return 0;
     }
@@ -2433,7 +2433,7 @@ int guarantee_symlink (
             symlink_path, symlink_target);
         return -1;
     }
-    pr_info("Created symlink '%s' -> '%s'\n", 
+    pr_debug("Created symlink '%s' -> '%s'\n", 
         symlink_path, symlink_target);
     return 0;
 }
