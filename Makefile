@@ -5,6 +5,8 @@ STRIP ?= strip
 
 ifdef DEBUGGING
 CFLAGS += -DDEBUGGING -g
+else
+CFLAGS += -O3
 endif
 
 ${BINARY}: ${BINARY}.c
