@@ -624,7 +624,7 @@ static inline void print_progress(
 	if (stats->total_objects &&
 		stats->received_objects == stats->total_objects) {
 		pr_info("Resolving deltas %u%% (%u/%u)\r",
-                stats->total_objects > 0 ?
+                stats->total_deltas > 0 ?
                     100 * stats->indexed_deltas / stats->total_deltas :
                     0,
                 stats->indexed_deltas,
