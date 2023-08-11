@@ -2907,7 +2907,7 @@ int repo_update(
     git_fetch_options *const restrict fetch_options,
     unsigned short const proxy_after
 ) {
-    pr_info("Updating repo '%s'...\n", repo->url);
+    pr_info("Updating repo '%s'...\r", repo->url);
     git_remote *remote;
     int r = git_remote_lookup(&remote, repo->repository, MIRROR_REMOTE) < 0;
     if (r) {
@@ -2987,7 +2987,7 @@ int repo_update(
                     pr_warn("Remote HEAD points to no branch\n");
                     break;
                 }
-                pr_info("Remote HEAD points to '%s' now\n", 
+                pr_debug("Remote HEAD points to '%s' now\n", 
                         head->symref_target);
                 if ((r = git_repository_set_head(
                         repo->repository, head->symref_target))) {
@@ -2996,14 +2996,14 @@ int repo_update(
                     r = -1;
                     goto free_strarray;
                 }
-                pr_info("Set local HEAD of repo '%s' to '%s'\n",
+                pr_debug("Set local HEAD of repo '%s' to '%s'\n",
                     repo->url, head->symref_target);
                 break;
             }
         }
     }
 
-    pr_info("Ended fetching from '%s'\n", repo->url);
+    pr_info("Updated repo '%s'\n", repo->url);
     repo->updated = true;
     r = 0;
 free_strarray:
@@ -3831,7 +3831,7 @@ int repo_parse_wanted_all_tags(
             .archive = wanted_all_tags->archive,
             .checkout = wanted_all_tags->checkout,
         };
-    pr_info(
+    pr_debug(
         "Looping through all tags to create individual wanted references\n");
     int r = git_tag_foreach(
         repo->repository, repo_parse_wanted_all_tags_foreach_callback,
@@ -3840,7 +3840,7 @@ int repo_parse_wanted_all_tags(
         pr_error("Failed git_tag_foreach callback, libgit return %d\n", r);
         return -1;
     }
-    pr_info("Resolved all tags:");
+    pr_info("All tags:");
     for (; i < repo->wanted_objects_count; ++i) {
         printf(" '%s'", repo->wanted_objects[i].name);
     }
