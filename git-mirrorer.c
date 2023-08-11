@@ -601,28 +601,52 @@ int sideband_progress(char const *string, int len, void *payload) {
 	return 0;
 }
 
+#define declare_func_size_to_human_readable_type(TYPE, SUFFIX) \
+static inline \
+TYPE size_to_human_readable_##SUFFIX(TYPE size, char *const suffix) { \
+    char const suffixes[] = "BKMGTPEZY"; \
+    unsigned short suffix_id = 0; \
+    while (size >= 1024) { \
+        ++suffix_id; \
+        size /= 1024; \
+    } \
+    *suffix = suffixes[suffix_id]; \
+    return size; \
+}
+
+declare_func_size_to_human_readable_type(size_t, size_t)
+declare_func_size_to_human_readable_type(unsigned int, uint)
+
+
 static inline void print_progress(
     git_indexer_progress const *const restrict stats) {
 
-	int network_percent = stats->total_objects > 0 ?
-		(100*stats->received_objects) / stats->total_objects :
-		0;
-	int index_percent = stats->total_objects > 0 ?
-		(100*stats->indexed_objects) / stats->total_objects :
-		0;
-
-	size_t kbytes = stats->received_bytes / 1024;
-
 	if (stats->total_objects &&
 		stats->received_objects == stats->total_objects) {
-		printf("Resolving deltas %u/%u\r",
-		       stats->indexed_deltas,
-		       stats->total_deltas);
+		pr_info("Resolving deltas %u%% (%u/%u)\r",
+                stats->total_objects > 0 ?
+                    100 * stats->indexed_deltas / stats->total_deltas :
+                    0,
+                stats->indexed_deltas,
+                stats->total_deltas);
 	} else {
-		printf("net %3d%% (%4zu  kb, %5u/%5u)  /  idx %3d%% (%5u/%5u)\r",
-		   network_percent, kbytes,
-		   stats->received_objects, stats->total_objects,
-		   index_percent, stats->indexed_objects, stats->total_objects);
+        char suffix;
+        unsigned int size_human_readable = size_to_human_readable_uint(
+            stats->received_bytes, &suffix);
+		pr_info(
+            "Receiving objects %u%% (%u%c, %u); "
+            "Indexing objects %u%% (%u); "
+            "Total objects %u\r",
+            stats->total_objects > 0 ?
+                100 * stats->received_objects / stats->total_objects :
+                0,
+            size_human_readable, suffix,
+            stats->received_objects,
+            stats->total_objects > 0 ?
+                100 * stats->indexed_objects/ stats->total_objects :
+                0,
+            stats->indexed_objects, 
+            stats->total_objects);
 	}
 }
 
