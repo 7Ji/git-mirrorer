@@ -1234,6 +1234,10 @@ int guarantee_symlink_at (
     unsigned short const len_symlink_path,
     char const *const restrict symlink_target
 ) {
+    if (len_symlink_path >= PATH_MAX) {
+        pr_error("Symlink path too long\n");
+        return -1;
+    }
     char path[PATH_MAX];
     ssize_t len = readlinkat(links_dirfd, symlink_path, path, PATH_MAX);
     if (len < 0) {
@@ -1278,7 +1282,8 @@ int guarantee_symlink_at (
     }
     // After above routine, the only possiblity is missing dirs
     char symlink_path_dup[PATH_MAX];
-    strncpy(symlink_path_dup, symlink_path, PATH_MAX);
+    memcpy(symlink_path_dup, symlink_path, len_symlink_path);
+    symlink_path_dup[len_symlink_path] = '\0';
     unsigned short last_sep = 0;
     for (unsigned short i = len_symlink_path; i > 0; --i) {
         char *c = symlink_path_dup + i;
@@ -1922,7 +1927,7 @@ int config_update_from_yaml_event(
         case YAML_SCALAR_EVENT: { // Simple wanted object with only name
             char const *const name = (char const *)event->data.scalar.value;
             unsigned short const len_name = event->data.scalar.length;
-            int r;
+            int r = -1;
             switch (*wanted_type) {
             case YAML_CONFIG_WANTED_UNKNOWN:
                 goto wanted_type_unknown;
@@ -1973,7 +1978,7 @@ int config_update_from_yaml_event(
         case YAML_SCALAR_EVENT: { // Simple wanted object with only name
             char const *const name = (char const *)event->data.scalar.value;
             unsigned short const len_name = event->data.scalar.length;
-            int r;
+            int r = -1;
             switch (*wanted_type) {
             case YAML_CONFIG_WANTED_UNKNOWN:
                 goto wanted_type_unknown;
@@ -2419,6 +2424,10 @@ int guarantee_symlink (
     unsigned short const len_symlink_path,
     char const *const restrict symlink_target
 ) {
+    if (len_symlink_path >= PATH_MAX) {
+        pr_error("Symlink path too long\n");
+        return -1;
+    }
     char path[PATH_MAX];
     ssize_t len = readlink(symlink_path, path, PATH_MAX);
     if (len < 0) {
@@ -2462,7 +2471,8 @@ int guarantee_symlink (
         return 0;
     }
     char symlink_path_dup[PATH_MAX];
-    strncpy(symlink_path_dup, symlink_path, PATH_MAX);
+    memcpy(symlink_path_dup, symlink_path, len_symlink_path);
+    symlink_path_dup[len_symlink_path] = '\0';
     unsigned short last_sep = 0;
     for (unsigned short i = len_symlink_path; i > 0; --i) {
         char *c = symlink_path_dup + i;
@@ -2786,14 +2796,20 @@ int work_directory_add_keep(
 
 int work_directory_from_path(
     struct work_directory *const restrict work_directory,
-    char const *const restrict path
+    char const *const restrict path,
+    unsigned short const len_path
 ) {
+    if (len_path >= PATH_MAX) {
+        pr_error("Path too long\n");
+        return -1;
+    }
     if ((work_directory->dirfd =
         open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
         switch (errno) {
         case ENOENT:
             char path_dup[PATH_MAX];
-            strncpy(path_dup, path, PATH_MAX);
+            memcpy(path_dup, path, len_path);
+            path_dup[len_path] = '\0';
             if (mkdir_recursively(path_dup)) {
                 pr_error("Failed to create folder '%s'\n", path);
                 return -1;
@@ -2851,19 +2867,24 @@ int work_directories_from_paths(
     struct work_directory *const restrict workdir_checkouts,
     char const *const restrict dir_repos,
     char const *const restrict dir_archives,
-    char const *const restrict dir_checkouts
+    char const *const restrict dir_checkouts,
+    unsigned short const len_dir_repos,
+    unsigned short const len_dir_archives,
+    unsigned short const len_dir_checkouts
 ) {
-    if (work_directory_from_path(workdir_repos, dir_repos)) {
+    if (work_directory_from_path(workdir_repos, dir_repos, len_dir_repos)) {
         pr_error("Failed to open work directory '%s' for repos\n", dir_repos);
         return -1;
     }
-    if (work_directory_from_path(workdir_archives, dir_archives)) {
+    if (work_directory_from_path(workdir_archives, dir_archives, 
+                                len_dir_archives)) {
         close(workdir_repos->dirfd);
         pr_error("Failed to open work directory '%s' for archives\n",
                 dir_archives);
         return -1;
     }
-    if (work_directory_from_path(workdir_checkouts, dir_checkouts)) {
+    if (work_directory_from_path(workdir_checkouts, dir_checkouts,
+                                    len_dir_checkouts)) {
         close(workdir_archives->dirfd);
         close(workdir_repos->dirfd);
         pr_error("Failed to open work directory '%s' for checkouts\n",
@@ -4835,7 +4856,8 @@ int export_commit_tree_entry_blob_file_symlink_to_archive(
 ) {
     char link[PATH_MAX];
     unsigned short len_link =
-        stpncpy(link, ro_buffer, PATH_MAX) - link;
+        stpncpy(link, ro_buffer, PATH_MAX - 1) - link;
+    link[len_link] = '\0';
     if (tar_append_symlink(
         fd_archive, mtime, path, len_path, link, len_link)) {
         pr_error("Failed to append symlink to archive\n");
@@ -5797,7 +5819,9 @@ int main(int const argc, char *argv[]) {
     struct work_directory workdir_repos, workdir_archives, workdir_checkouts;
     if (work_directories_from_paths(
         &workdir_repos, &workdir_archives, &workdir_checkouts,
-        config.dir_repos, config.dir_archives, config.dir_checkouts)) {
+        config.dir_repos, config.dir_archives, config.dir_checkouts,
+        config.len_dir_repos, config.len_dir_archives, config.len_dir_checkouts
+    )) {
         pr_error("Failed to open work directories\n");
         goto free_config;
     }
