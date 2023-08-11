@@ -4323,6 +4323,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
             }
             update_status.repo_ids[i] = 
                 update_status.repo_ids[--update_status.repo_ids_count];
+            ++update_status.servers[server_id].repos_updating_count;
         }
         for (unsigned long i = 0; i < update_status.thread_ids_count; ++i) {
             long thread_ret;
