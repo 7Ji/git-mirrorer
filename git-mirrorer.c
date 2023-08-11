@@ -3116,14 +3116,14 @@ int parsed_commit_add_submodule_from_commit_tree(
     for (unsigned long i = 0; i < parsed_commit->submodules_count; ++i) {
         if (!strcmp(parsed_commit->submodules[i].path, path)) {
             pr_warn(
-                "Already defined a submodule at path '%s' for commit '%s'\n",
+                "Already defined a submodule at path '%s' for commit %s\n",
                 path, parsed_commit->id_hex_string);
             return -1;
         }
     }
     if (parsed_commit_add_submodule_and_init_with_path_and_url(
         parsed_commit, path, len_path, url, len_url)) {
-        pr_error("Failed to init submodule for commit '%s' with path "
+        pr_error("Failed to init submodule for commit %s with path "
                 "'%s' and url '%s'\n",
                 parsed_commit->id_hex_string, path, url);
         return -1;
@@ -3224,7 +3224,7 @@ int repo_parse_commit_submodule_in_tree(
                     &submodule->id,
                     &repo_cmp->parsed_commits[j].id)) continue;
                 pr_debug(
-                    "Already added commit '%s' to repo '%s', skipped\n",
+                    "Already added commit %s to repo '%s', skipped\n",
                     submodule->id_hex_string, repo_cmp->url);
                 submodule->target_commit_id = j;
                 return 0;
@@ -3248,7 +3248,7 @@ int repo_parse_commit_submodule_in_tree(
         }
     }
     if (submodule->target_repo_id == (unsigned long) -1) {
-        pr_error("Submodule '%s' with url '%s' for commmit '%s' of repo '%s' "
+        pr_error("Submodule '%s' with url '%s' for commmit %s of repo '%s' "
         "still missing target repo id, refuse to continue\n",
             path, url, submodule->id_hex_string, repo->url);
         return -1;
@@ -3268,11 +3268,11 @@ int repo_parse_commit_submodule_in_tree(
     }
     submodule->target_commit_id = repo_target->parsed_commits_count - 1;
     if (submodule->target_repo_id >= repo_id) {
-        pr_info("Added commit '%s' as wanted to repo '%s', will handle "
+        pr_info("Added commit %s as wanted to repo '%s', will handle "
             "that repo later\n", submodule->id_hex_string, repo_target->url);
         return 0;
     }
-    pr_warn("Added commit '%s' as wanted to parsaed repo '%s', need to go back "
+    pr_warn("Added commit %s as wanted to parsaed repo '%s', need to go back "
             "to handle that specific commit\n",
             submodule->id_hex_string, repo_target->url);
     r = repo_ensure_parsed_commit(config, submodule->target_repo_id, 
@@ -3280,8 +3280,8 @@ int repo_parse_commit_submodule_in_tree(
     repo = config->repos + repo_id;
     parsed_commit = repo->parsed_commits + commit_id;
     if (r) {
-        pr_error("Failed to ensure repo '%s' commit '%s' 's submodule at '%s' "
-                "from '%s' commit '%s' in target repo\n",
+        pr_error("Failed to ensure repo '%s' commit %s 's submodule at '%s' "
+                "from '%s' commit %s in target repo\n",
                 repo->url, parsed_commit->id_hex_string, path, url, 
                 submodule->id_hex_string);
         return 1;
@@ -3434,7 +3434,7 @@ int repo_parse_commit_tree_entry_gitmodules(
         repo->parsed_commits + commit_id;        
     if (git_tree_entry_type(entry_gitmodules) != GIT_OBJECT_BLOB) {
         pr_error(
-            "Tree entry .gitmodules in commit '%s' for repo '%s' "
+            "Tree entry .gitmodules in commit %s for repo '%s' "
             "is not a blob\n",
             parsed_commit->id_hex_string, repo->url);
         return -1;
@@ -3525,7 +3525,7 @@ int repo_parse_wanted_reference_common(
         return -1;
     }
     git_object_free(object);
-    pr_info("Reference resolved: '%s': '%s' => '%s'\n",
+    pr_info("Reference resolved: '%s': '%s' => %s\n",
         repo->url, wanted_reference->name,
         wanted_reference->commit.id_hex_string);
     return repo_parse_wanted_commit(repo, 
@@ -3862,14 +3862,14 @@ int repo_lookup_commit_and_update_if_failed(
     if (r) {
         if (repo->updated) {
             pr_error(
-                "Failed to lookup commit '%s' in repo '%s' "
+                "Failed to lookup commit %s in repo '%s' "
                 "even it's up-to-date, "
                 "libgit return %d, consider failure\n", 
                 parsed_commit->id_hex_string, repo->url, r);
             return -1;
         }
         pr_warn(
-            "Commit '%s' does not exist in repo '%s' (libgit return %d), "
+            "Commit %s does not exist in repo '%s' (libgit return %d), "
             "but the repo is not updated yet, "
             "trying to update the repo before looking up the commit again\n", 
             parsed_commit->id_hex_string, repo->url, r);
@@ -3885,13 +3885,13 @@ int repo_lookup_commit_and_update_if_failed(
         parsed_commit = repo->parsed_commits + commit_id;
         if (r) {
             pr_error("Updated repo '%s' breaks robustness of old parsed commit "
-            "'%s'", repo->url, parsed_commit->id_hex_string);
+            "%s", repo->url, parsed_commit->id_hex_string);
             return -1;
         }
         if ((r = git_commit_lookup(
             commit, repo->repository, &parsed_commit->id))) {
             pr_error(
-                "Failed to lookup commit '%s' in repo '%s' "
+                "Failed to lookup commit %s in repo '%s' "
                 "even after updating the repo, libgit return %d, "
                 "consider failure\n",
                 parsed_commit->id_hex_string, repo->url, r);
@@ -3916,7 +3916,7 @@ int repo_ensure_parsed_commit_submodules (
     int r = git_commit_tree(&tree, commit);
     if (r) {
         pr_error(
-            "Failed to get the commit tree pointed by commit '%s' "
+            "Failed to get the commit tree pointed by commit %s "
             "in repo '%s', libgit return %d\n", 
             parsed_commit->id_hex_string, repo->url, r);
         return -1;
@@ -3925,7 +3925,7 @@ int repo_ensure_parsed_commit_submodules (
         git_tree_entry_byname(tree, ".gitmodules");
     if (entry_gitmodules != NULL) {
         pr_warn(
-            "Found .gitmodules in commit tree of '%s' for repo '%s', "
+            "Found .gitmodules in commit tree of %s for repo '%s', "
             "parsing submodules\n", parsed_commit->id_hex_string, repo->url);
         r = repo_parse_commit_tree_entry_gitmodules(
             config, repo_id, commit_id, tree, entry_gitmodules);
@@ -3933,7 +3933,7 @@ int repo_ensure_parsed_commit_submodules (
         parsed_commit = repo->parsed_commits + commit_id;
         if (r) {
             pr_error(
-                "Failed to parse submodules in commit tree of '%s' "
+                "Failed to parse submodules in commit tree of %s "
                 "for repo '%s'\n", 
                 parsed_commit->id_hex_string, repo->url);
             return -1;
@@ -3957,7 +3957,7 @@ int repo_ensure_parsed_commit(
     struct parsed_commit *restrict parsed_commit = 
         repo->parsed_commits + commit_id;          
     if (r) {
-        pr_error("Failed to lookup commit '%s' in repo '%s'\n",
+        pr_error("Failed to lookup commit %s in repo '%s'\n",
             parsed_commit->id_hex_string, repo->url);
         return -1;
     }
@@ -3967,13 +3967,13 @@ int repo_ensure_parsed_commit(
         repo = config->repos + repo_id;
         parsed_commit = repo->parsed_commits + commit_id;
         if (r) {
-            pr_error("Failed to parse repo '%s' commit '%s' submodules\n",
+            pr_error("Failed to parse repo '%s' commit %s submodules\n",
                 repo->url, parsed_commit->id_hex_string);
             r = -1;
             goto free_commit;
         }
     }
-    pr_info("Ensured robustness of commit '%s' in repo '%s'\n",
+    pr_info("Ensured robustness of commit %s in repo '%s'\n",
         parsed_commit->id_hex_string, repo->url);
     r = 0;
 free_commit:
@@ -3993,7 +3993,7 @@ int repo_ensure_first_parsed_commits(
         if (repo_ensure_parsed_commit(config, repo_id, i)) {
             repo = config->repos + repo_id;
             pr_error(
-                "Failed to ensure robustness of commit '%s' of repo '%s'\n",
+                "Failed to ensure robustness of commit %s of repo '%s'\n",
                 repo->parsed_commits[i].id_hex_string, repo->url);
             return -1;
         }
@@ -4014,7 +4014,7 @@ int repo_ensure_all_parsed_commits(
         if (repo_ensure_parsed_commit(config, repo_id, i)) {
             repo = config->repos + repo_id;
             pr_error(
-                "Failed to ensure robustness of commit '%s' of repo '%s'\n",
+                "Failed to ensure robustness of commit %s of repo '%s'\n",
                 repo->parsed_commits[i].id_hex_string, repo->url);
             return -1;
         }
@@ -4062,7 +4062,7 @@ int mirror_repo(
                 if (repo_parse_wanted_commit(repo,
                     (struct wanted_commit *)wanted_object)) {
                     pr_error(
-                        "Failed to parse wanted commit '%s' for repo '%s'\n",
+                        "Failed to parse wanted commit %s for repo '%s'\n",
                         wanted_object->id_hex_string, repo->url);
                     return -1;
                 }
@@ -4888,7 +4888,7 @@ int export_commit_tree_entry_commit(
     git_oid const *const submodule_commit_id = git_tree_entry_id(entry);
     struct parsed_commit_submodule *parsed_commit_submodule = NULL;
     for (unsigned long i = 0; i < parsed_commit->submodules_count; ++i) {
-        pr_debug("Parsed submodule '%s' commit '%s'\n", 
+        pr_debug("Parsed submodule '%s' commit %s\n", 
         parsed_commit->submodules[i].path, 
         parsed_commit->submodules[i].id_hex_string);
         if (!git_oid_cmp(
@@ -4900,7 +4900,7 @@ int export_commit_tree_entry_commit(
     if (parsed_commit_submodule == NULL) {
         char oid_buffer[GIT_OID_MAX_HEXSIZE + 1];
         pr_error("Failed to find corresponding wanted commit submodule, "
-        "path: '%s', commit: '%s'\n", path_checkout, 
+        "path: '%s', commit: %s\n", path_checkout, 
         git_oid_tostr(
             oid_buffer, GIT_OID_MAX_HEXSIZE + 1, submodule_commit_id));
         return -1;
@@ -5254,7 +5254,7 @@ int export_commit(
             return -1;
         }
         pr_debug(
-            "Will checkout repo '%s' commit '%s' to '%s'\n",
+            "Will checkout repo '%s' commit %s to '%s'\n",
             repo->url, parsed_commit->id_hex_string, 
             dir_checkout);
         if (stat(dir_checkout, &stat_buffer)) {
@@ -5295,7 +5295,7 @@ int export_commit(
             return -1;
         }
         pr_debug(
-            "Will archive repo '%s' commit '%s' into '%s'\n",
+            "Will archive repo '%s' commit %s into '%s'\n",
             repo->url, parsed_commit->id_hex_string, 
             file_archive);
         if (stat(file_archive, &stat_buffer)) {
@@ -5435,7 +5435,7 @@ int export_commit(
         if (fd_archive >= 0) close(fd_archive);
         return -1;
     }
-    pr_info("Started exporting repo '%s' commit '%s'\n",
+    pr_info("Started exporting repo '%s' commit %s\n",
         repo->url, parsed_commit->id_hex_string);
     char submodule_path[PATH_MAX] = "";
     unsigned short len_submodule_path = 0;
@@ -5491,7 +5491,7 @@ int export_commit(
         return -1;
     }
     git_commit_free(commit);
-    pr_info("Ended exporting repo '%s' commit '%s'\n",
+    pr_info("Ended exporting repo '%s' commit %s\n",
         repo->url, parsed_commit->id_hex_string);
     if (checkout) {
         if (rename(dir_checkout_work, dir_checkout)) {
@@ -5575,14 +5575,14 @@ int export_all_repos(
                 __attribute__((fallthrough));
             case WANTED_TYPE_COMMIT: {
                 if (wanted_object->parsed_commit_id == (unsigned long) -1) {
-                    pr_error("Commit '%s' is not parsed yet\n",
+                    pr_error("Commit %s is not parsed yet\n",
                         wanted_object->id_hex_string);
                     return -1;
                 }
                 if (export_commit(config, repo, 
                     repo->parsed_commits + wanted_object->parsed_commit_id, 
                     wanted_object->archive, wanted_object->checkout)) {
-                    pr_error("Failed to export commit '%s' of repo '%s'\n",
+                    pr_error("Failed to export commit %s of repo '%s'\n",
                         wanted_object->id_hex_string, repo->url);
                     return -1;
                 }
