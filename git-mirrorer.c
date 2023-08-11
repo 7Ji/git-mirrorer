@@ -1202,7 +1202,7 @@ int guarantee_symlink_at (
             return -1;
         }
     } else {
-        pr_info("Created symlink '%s' -> '%s'\n", 
+        pr_debug("Created symlink '%s' -> '%s'\n", 
             symlink_path, symlink_target);
         return 0;
     }
@@ -5400,7 +5400,7 @@ int export_commit(
                 pr_error_with_errno("Failed to fork");
                 return -1;
             default: // Parent
-                pr_info("Forked piper to child %d\n", pid);
+                pr_debug("Forked piper to child %d\n", pid);
                 if (close(fd_pipes[0])) { // Close the read end
                     pr_error_with_errno("Failed to close read end of the pipe");
                     kill(pid, SIGKILL);
@@ -5435,7 +5435,7 @@ int export_commit(
         if (fd_archive >= 0) close(fd_archive);
         return -1;
     }
-    pr_info("Started exporting repo '%s' commit %s\n",
+    pr_info("Exporting: '%s': %s\r",
         repo->url, parsed_commit->id_hex_string);
     char submodule_path[PATH_MAX] = "";
     unsigned short len_submodule_path = 0;
@@ -5448,7 +5448,7 @@ int export_commit(
             if (fd_archive >= 0) close(fd_archive);
             return -1;
         }
-        pr_info("Will add github-like prefix '%s' to tar\n", archive_prefix);
+        pr_debug("Will add github-like prefix '%s' to tar\n", archive_prefix);
     }
     char mtime[TAR_POSIX_HEADER_MTIME_LEN] = "";
     if (snprintf(
@@ -5491,7 +5491,7 @@ int export_commit(
         return -1;
     }
     git_commit_free(commit);
-    pr_info("Ended exporting repo '%s' commit %s\n",
+    pr_debug("Ended exporting repo '%s' commit %s\n",
         repo->url, parsed_commit->id_hex_string);
     if (checkout) {
         if (rename(dir_checkout_work, dir_checkout)) {
@@ -5499,7 +5499,7 @@ int export_commit(
                 dir_checkout);
             return -1;
         }
-        pr_info("Atomic checkout finish, '%s' <- '%s'\n", 
+        pr_debug("Atomic checkout finish, '%s' <- '%s'\n", 
                 dir_checkout, dir_checkout_work);
     }
     if (archive) {
@@ -5511,7 +5511,7 @@ int export_commit(
         close(fd_archive);
         int status;
         if (pid) {
-            pr_info("Waiting for piper %d to finish...\n", pid);
+            pr_debug("Waiting for piper %d to finish...\n", pid);
             r = waitpid(pid, &status, 0);
             if (r != pid) {
                 pr_error("Waited piper %d is not the same as %d we've created",
@@ -5527,9 +5527,11 @@ int export_commit(
             pr_error("Failed to move '%s' to '%s'\n", file_archive_work,
                 file_archive);
         }
-        pr_info("Atomic archive finish, '%s' <- '%s'\n", 
+        pr_debug("Atomic archive finish, '%s' <- '%s'\n", 
                 file_archive, file_archive_work);
     }
+    pr_info("Exported: '%s': %s\n",
+        repo->url, parsed_commit->id_hex_string);
     return 0;
 }
 
