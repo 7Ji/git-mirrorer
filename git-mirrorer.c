@@ -3223,7 +3223,7 @@ int repo_parse_commit_submodule_in_tree(
                 if (git_oid_cmp(
                     &submodule->id,
                     &repo_cmp->parsed_commits[j].id)) continue;
-                pr_warn(
+                pr_debug(
                     "Already added commit '%s' to repo '%s', skipped\n",
                     submodule->id_hex_string, repo_cmp->url);
                 submodule->target_commit_id = j;
@@ -3393,7 +3393,7 @@ int repo_parse_commit_blob_gitmodules(
                     submodule_value[*len_submodule_value] = '\0';
                     if (submodule_path[0] != '\0' && 
                         submodule_url[0] != '\0') {
-                        pr_info(
+                        pr_debug(
                             "Submodule '%s', path '%s', url '%s'\n", 
                             submodule_name, submodule_path, submodule_url);
                         if (repo_parse_commit_submodule_in_tree(
@@ -5248,7 +5248,7 @@ int export_commit(
             dir_checkout);
             return -1;
         }
-        pr_info(
+        pr_debug(
             "Will checkout repo '%s' commit '%s' to '%s'\n",
             repo->url, parsed_commit->id_hex_string, 
             dir_checkout);
@@ -5263,7 +5263,7 @@ int export_commit(
             }
         } else {
             if ((stat_buffer.st_mode & S_IFMT) == S_IFDIR) {
-                pr_warn("Already checked out to '%s', no neeed to "
+                pr_debug("Already checked out to '%s', no neeed to "
                     "checkout for this run\n", dir_checkout);
                 checkout = false;
             } else {
@@ -5289,7 +5289,7 @@ int export_commit(
             file_archive);
             return -1;
         }
-        pr_info(
+        pr_debug(
             "Will archive repo '%s' commit '%s' into '%s'\n",
             repo->url, parsed_commit->id_hex_string, 
             file_archive);
@@ -5304,7 +5304,7 @@ int export_commit(
             }
         } else {
             if ((stat_buffer.st_mode & S_IFMT) == S_IFREG) {
-                pr_warn("Already archived '%s', no neeed to "
+                pr_debug("Already archived '%s', no neeed to "
                     "archive for this run\n", file_archive);
                 archive = false;
             } else {
