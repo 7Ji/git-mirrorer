@@ -905,7 +905,7 @@ int config_add_repo_and_init_with_url(
                             repo->url);
         return -1;
     }
-    pr_info("Added repo '%s', "HASH_NAME" %s, "
+    pr_debug("Added repo '%s', "HASH_NAME" %s, "
             "no scheme sanitized url '%s', short name '%s'\n", 
             repo->url,
             repo->hash_name,
@@ -2536,7 +2536,7 @@ int repo_finish(
         }
     }
     if (repo->wanted_dynamic) {
-        pr_info("Repo '%s' needs dynamic object, will need to update it\n", 
+        pr_debug("Repo '%s' needs dynamic object, will need to update it\n", 
                 repo->url);
     }
     repo->len_dir_path = len_dir_repos + HASH_STRING_LEN + 1;
@@ -2547,7 +2547,7 @@ int repo_finish(
             repo->url);
         return -1;
     }
-    pr_info("Repo '%s' will be stored at '%s'\n", repo->url, repo->dir_path);
+    pr_debug("Repo '%s' will be stored at '%s'\n", repo->url, repo->dir_path);
     return 0;
 }
 
@@ -2588,23 +2588,23 @@ int config_finish(
         memcpy(config->dir_repos, DIR_REPOS, sizeof(DIR_REPOS));
         config->len_dir_repos = sizeof(DIR_REPOS) - 1;
     }
-    pr_info("Repos will be stored in '%s'\n", config->dir_repos);
+    pr_debug("Repos will be stored in '%s'\n", config->dir_repos);
     if (config->dir_archives[0] == '\0') {
         memcpy(config->dir_archives, DIR_ARCHIVES, sizeof(DIR_ARCHIVES));
         config->len_dir_archives = sizeof(DIR_ARCHIVES) - 1;
     }
-    pr_info("Archives will be stored in '%s'\n", config->dir_archives);
+    pr_debug("Archives will be stored in '%s'\n", config->dir_archives);
     if (config->dir_checkouts[0] == '\0') {
         memcpy(config->dir_checkouts, DIR_CHECKOUTS, sizeof(DIR_CHECKOUTS));
         config->len_dir_checkouts = sizeof(DIR_CHECKOUTS) - 1;
     }
-    pr_info("Checkouts will be stored in '%s'\n", config->dir_checkouts);
+    pr_debug("Checkouts will be stored in '%s'\n", config->dir_checkouts);
     if (config->proxy_url[0] != '\0') {
         if (config->proxy_after) {
-            pr_info("Will use proxy '%s' after %hu failed fetches\n", 
+            pr_debug("Will use proxy '%s' after %hu failed fetches\n", 
                 config->proxy_url, config->proxy_after);
         } else {
-            pr_info("Will use proxy '%s'\n", config->proxy_url);
+            pr_debug("Will use proxy '%s'\n", config->proxy_url);
         }
         config->fetch_options.proxy_opts.url = config->proxy_url;
     } else if (config->proxy_after) {
@@ -2838,7 +2838,7 @@ int repo_open_or_init_bare(
     int r = git_repository_open_bare(&repo->repository, repo->dir_path);
     switch (r) {
     case GIT_OK:
-        pr_info(
+        pr_debug(
             "Opened existing bare repository '%s' for repo '%s'\n",
             repo->dir_path, repo->url);
         return 0;
@@ -2948,7 +2948,7 @@ int repo_update(
         r = -1;
         goto free_strarray;
     }
-    pr_info("Beginning fetching from '%s'\n", repo->url);
+    pr_debug("Beginning fetching from '%s'\n", repo->url);
     fetch_options->proxy_opts.type = GIT_PROXY_NONE;
     unsigned short max_try = proxy_after + 3;
     for (unsigned short try = 0; try < max_try; ++try) {
