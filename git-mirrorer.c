@@ -616,7 +616,7 @@ int mkdir_allow_existing(
     if (mkdir(path, 0755)) {
         if (errno == EEXIST) {
             struct stat stat_buffer;
-            if (stat(path, &stat_buffer)) {
+            if (lstat(path, &stat_buffer)) {
                 pr_error_with_errno("Failed to stat '%s'", path);
                 return -1;
             }
@@ -644,6 +644,54 @@ int mkdir_recursively(
         case '/':
             *c = '\0';
             int r = mkdir_allow_existing(path);
+            *c = '/';
+            if (r) {
+                pr_error("Failed to mkdir recursively '%s'\n", path);
+                return -1;
+            }
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+int mkdir_allow_existing_at(
+    int const dirfd,
+    char *const restrict path
+) {
+    if (mkdirat(dirfd, path, 0755)) {
+        if (errno == EEXIST) {
+            struct stat stat_buffer;
+            if (fstatat(dirfd, path, &stat_buffer, AT_SYMLINK_NOFOLLOW)) {
+                pr_error_with_errno("Failed to stat '%s'", path);
+                return -1;
+            }
+            if ((stat_buffer.st_mode & S_IFMT) == S_IFDIR) {
+                return 0;
+            } else {
+                pr_error("Exisitng '%s' is not a folder\n", path);
+                return -1;
+            }
+        } else {
+            pr_error_with_errno("Failed to mkdir '%s'", path);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int mkdir_recursively_at(
+    int const dirfd,
+    char *const restrict path
+) {
+    for (char *c = path; ; ++c) {
+        switch (*c) {
+        case '\0':
+            return mkdir_allow_existing_at(dirfd, path);
+        case '/':
+            *c = '\0';
+            int r = mkdir_allow_existing_at(dirfd, path);
             *c = '/';
             if (r) {
                 pr_error("Failed to mkdir recursively '%s'\n", path);
@@ -1143,6 +1191,27 @@ int wanted_object_guarantee_symlinks(
         }
     }
     int archives_repo_links_dirfd = -1;
+    if (archive && 
+        (archives_repo_links_dirfd = openat(
+            archives_links_dirfd, repo->url_no_scheme_sanitized, 
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+        switch (errno) {
+        case ENOENT:
+
+
+            if ((archives_repo_links_dirfd = openat(
+                archives_links_dirfd, repo->url_no_scheme_sanitized, 
+                O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+
+            
+            }
+
+
+        default:
+            pr_error_with_errno();
+            return -1;
+        }
+    }
     int checkouts_repo_links_dirfd = -1;
 
     bool const archive_has_suffix = archive_suffix[0] != '\0';
