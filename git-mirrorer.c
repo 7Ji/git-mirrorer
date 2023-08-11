@@ -5784,6 +5784,9 @@ struct export_wanted_object_thread_arg {
 void *export_wanted_object_thread(void *arg) {
     struct export_wanted_object_thread_arg *private_arg = 
         (struct export_wanted_object_thread_arg *)arg;
+    pr_debug("Starting exporting thread %ld for '%s': '%s'\n", 
+            pthread_self(), private_arg->repo->url, 
+            private_arg->wanted_object->name);
     return (void *)(long)export_wanted_object(
         private_arg->config, private_arg->repo,
         private_arg->wanted_object, 
@@ -5796,6 +5799,7 @@ int export_all_repos(
     struct work_directory *const restrict workdir_checkouts
 ) {
     if (config->export_threads <= 1) {
+        pr_info("Exporting all repos (single-threaded)...\n");
         // Single-threaded exporting
         for (unsigned long i = 0; i < config->repos_count; ++i) {
             struct repo const *const restrict repo = config->repos + i;
@@ -5812,6 +5816,7 @@ int export_all_repos(
                 }
             }
         }
+        pr_info("Exported all repos\n");
         return 0;
     }
     struct export_thread_complex {
@@ -5829,6 +5834,7 @@ int export_all_repos(
     unsigned short export_threads_count = 0;
     long thread_ret;
     int r = -1;
+    pr_info("Exporting all repos (%hu threads)...\n", config->export_threads);
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         struct repo const *const restrict repo = config->repos + i;
         for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
@@ -5847,6 +5853,8 @@ int export_all_repos(
                                             (void **)&thread_ret);
                     switch (r) {
                     case 0:
+                        pr_debug("Ended exporting thread %ld\n",
+                            export_thread_complex->thread);
                         export_thread_complex_running->active = false;
                         if (thread_ret) {
                             pr_error("Thread %ld returned with %ld\n", 
@@ -5856,6 +5864,7 @@ int export_all_repos(
                             goto kill_threads;
                         }
                         export_thread_complex = export_thread_complex_running;
+                        --export_threads_count;
                         break;
                     case EBUSY:
                         break;
@@ -5899,13 +5908,15 @@ int export_all_repos(
                 goto kill_threads;
             }
             export_thread_complex->active = true;
+            ++export_threads_count;
         }
     }
     for (unsigned short i = 0; i < config->export_threads; ++i) {
         struct export_thread_complex *export_thread_complex = 
                         export_threads_complex + i;
         if (!export_thread_complex->active) continue;
-        r = pthread_join(export_threads_complex->thread, (void **)&thread_ret);
+        pr_debug("Joining thread %ld\n", export_thread_complex->thread);
+        r = pthread_join(export_thread_complex->thread, (void **)&thread_ret);
         switch (r) {
         case 0:
             if (thread_ret) {
@@ -5917,11 +5928,13 @@ int export_all_repos(
             export_thread_complex->active = false;
             break;
         default:
-            pr_error("Failed to join thread, pthread return %d\n", r);
+            pr_error("Failed to join thread %ld, pthread return %d\n", 
+                    export_thread_complex->thread, r);
             r = -1;
             goto free_threads;
         }
     }
+    pr_info("Exported all repos\n");
     r = 0;
 kill_threads:
     for (unsigned short i = 0; i < config->export_threads; ++i) {
