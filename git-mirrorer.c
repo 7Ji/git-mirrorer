@@ -464,6 +464,7 @@ struct export_commit_treewalk_payload {
     bool const archive;
     char const *const restrict mtime;
     int const fd_archive;
+    char const *const restrict archive_prefix;
     bool const checkout;
     char const *const restrict dir_checkout;
 };
@@ -4634,28 +4635,30 @@ int export_commit_tree_entry_blob_file_regular_to_checkout(
 int export_commit_tree_entry_blob_file_regular(
     void const *const restrict ro_buffer,
     git_object_size_t size,
-    char const *const restrict path,
-    unsigned short const len_path,
     bool const archive,
     char const *const restrict mtime,
     int const fd_archive,
+    char const *const restrict path_archive,
+    unsigned short const len_path_archive,
     bool const checkout,    
     char const *const restrict dir_checkout,
+    char const *const restrict path_checkout,
     mode_t mode
 ) {
     if (archive) {
         if (export_commit_tree_entry_blob_file_regular_to_archive(
-            ro_buffer, size, path, len_path, mtime, fd_archive, mode)) {
+            ro_buffer, size, path_archive, len_path_archive, mtime, fd_archive, 
+            mode)) {
             pr_error("Failed to archive commit tree entry blob regular file "
-                "at '%s'\n", path);
+                "at '%s'\n", path_archive);
             return -1;
         }
     }
     if (checkout) {
         if (export_commit_tree_entry_blob_file_regular_to_checkout(
-            ro_buffer, size, path, dir_checkout, mode)) {
+            ro_buffer, size, path_checkout, dir_checkout, mode)) {
             pr_error("Failed to checkout commit tree entry blob regular file "
-                "at '%s'\n", path);
+                "at '%s'\n", path_checkout);
             return -1;
         }
     }
@@ -4701,27 +4704,28 @@ int export_commit_tree_entry_blob_file_symlink_to_checkout(
 
 int export_commit_tree_entry_blob_file_symlink(
     char const *const restrict ro_buffer,
-    char const *const restrict path,
-    unsigned short const len_path,
     bool const archive,
     char const *const restrict mtime,
     int const fd_archive,
+    char const *const restrict path_archive,
+    unsigned short const len_path_archive,
     bool const checkout,    
-    char const *const restrict dir_checkout
+    char const *const restrict dir_checkout,
+    char const *const restrict path_checkout
 ) {
     if (archive) {
         if (export_commit_tree_entry_blob_file_symlink_to_archive(
-            ro_buffer, path, len_path, mtime, fd_archive)) {
+            ro_buffer, path_archive, len_path_archive, mtime, fd_archive)) {
             pr_error("Failed to archive commit tree entry blob file symlink "
-                "at '%s'\n", path);
+                "at '%s'\n", path_archive);
             return -1;
         }
     }
     if (checkout) {
         if (export_commit_tree_entry_blob_file_symlink_to_checkout(
-            ro_buffer, path, dir_checkout)) {
+            ro_buffer, path_checkout, dir_checkout)) {
             pr_error("Failed to checkout commit tree entry blob file symlink "
-                "at '%s'\n", path);
+                "at '%s'\n", path_checkout);
             return -1;
         }
     }
@@ -4730,14 +4734,15 @@ int export_commit_tree_entry_blob_file_symlink(
 
 int export_commit_tree_entry_blob(
     git_tree_entry const *const restrict entry,
-    char const *const restrict path,
-    unsigned short const len_path,
     struct repo const *const restrict repo,
     bool const archive,
     char const *const restrict mtime,
     int const fd_archive,
+    char const *const restrict path_archive,
+    unsigned short const len_path_archive,
     bool const checkout,    
-    char const *const restrict dir_checkout
+    char const *const restrict dir_checkout,
+    char const *const restrict path_checkout
 ) {
     git_object *object;
     int r = git_tree_entry_to_object(
@@ -4755,24 +4760,27 @@ int export_commit_tree_entry_blob(
         r = export_commit_tree_entry_blob_file_regular(
             ro_buffer,
             git_blob_rawsize((git_blob *)object),
-            path, len_path, 
             archive, mtime, fd_archive, 
+            path_archive, len_path_archive,
             checkout, dir_checkout, 
+            path_checkout,
             0644);
         break;
     case GIT_FILEMODE_BLOB_EXECUTABLE:
         r = export_commit_tree_entry_blob_file_regular(
-            ro_buffer, 
-            git_blob_rawsize((git_blob *)object), 
-            path, len_path, 
+            ro_buffer,
+            git_blob_rawsize((git_blob *)object),
             archive, mtime, fd_archive, 
+            path_archive, len_path_archive,
             checkout, dir_checkout, 
+            path_checkout,
             0755);
         break;
     case GIT_FILEMODE_LINK:
         r = export_commit_tree_entry_blob_file_symlink(
-            ro_buffer, path, len_path, 
-            archive, mtime, fd_archive, checkout, dir_checkout);
+            ro_buffer,
+            archive, mtime, fd_archive, path_archive, len_path_archive,
+            checkout, dir_checkout, path_checkout);
         break;
     default:
         pr_error("Impossible tree entry filemode %d\n", 
@@ -4820,24 +4828,26 @@ int export_commit_tree_entry_tree_to_checkout(
 
 
 int export_commit_tree_entry_tree(
-    char const *const restrict path,
-    unsigned short const len_path,
     bool const archive,
     char const *const restrict mtime,
     int const fd_archive,
+    char const *const restrict path_archive,
+    unsigned short const len_path_archive,
     bool const checkout,    
-    char const *const restrict dir_checkout
+    char const *const restrict dir_checkout,
+    char const *const restrict path_checkout
 ) {
     if (archive) {
         if (export_commit_tree_entry_tree_to_archive(
-            path, len_path, mtime, fd_archive)) {
-            pr_error("Failed to export '%s' to archive\n", path);
+            path_archive, len_path_archive, mtime, fd_archive)) {
+            pr_error("Failed to export '%s' to archive\n", path_archive);
             return -1;
         }
     }
     if (checkout) {
-        if (export_commit_tree_entry_tree_to_checkout(path, dir_checkout)) {
-            pr_error("Failed to export '%s' to checkout\n", path);
+        if (export_commit_tree_entry_tree_to_checkout(
+            path_checkout, dir_checkout)) {
+            pr_error("Failed to export '%s' to checkout\n", path_checkout);
             return -1;
         }
     }
@@ -4847,8 +4857,6 @@ int export_commit_tree_entry_tree(
 int export_commit_tree_entry_commit(
 	char const *const restrict root,
     git_tree_entry const *const restrict entry,
-    char const *const restrict path,
-    unsigned short const len_path,
     struct config const *const restrict config,
     struct parsed_commit const *const restrict parsed_commit,
     char *const restrict submodule_path,
@@ -4856,15 +4864,18 @@ int export_commit_tree_entry_commit(
     bool const archive,
     char const *const restrict mtime,
     int const fd_archive,
+    char const *const restrict archive_prefix,
+    char const *const restrict path_archive,
+    unsigned short const len_path_archive,
     bool const checkout,    
-    char const *const restrict dir_checkout
+    char const *const restrict dir_checkout,
+    char const *const restrict path_checkout
 ) {
     // Export self as a tree (folder)
     if (export_commit_tree_entry_tree(
-        path, len_path, 
-        archive, mtime, fd_archive, 
-        checkout, dir_checkout)) {
-        pr_error("Failed to export submodule '%s' as a tree\n", path);
+        archive, mtime, fd_archive, path_archive, len_path_archive,
+        checkout, dir_checkout, path_checkout)) {
+        pr_error("Failed to export submodule '%s' as a tree\n", path_archive);
         return -1;
     }
 
@@ -4884,7 +4895,7 @@ int export_commit_tree_entry_commit(
     if (parsed_commit_submodule == NULL) {
         char oid_buffer[GIT_OID_MAX_HEXSIZE + 1];
         pr_error("Failed to find corresponding wanted commit submodule, "
-        "path: '%s', commit: '%s'\n", path, 
+        "path: '%s', commit: '%s'\n", path_checkout, 
         git_oid_tostr(
             oid_buffer, GIT_OID_MAX_HEXSIZE + 1, submodule_commit_id));
         return -1;
@@ -4940,6 +4951,7 @@ int export_commit_tree_entry_commit(
         .archive = archive,
         .mtime = mtime_r,
         .fd_archive = fd_archive,
+        .archive_prefix = archive_prefix,
         .checkout = checkout,
         .dir_checkout = dir_checkout,
     };
@@ -4971,35 +4983,49 @@ int export_commit_treewalk_callback(
         pr_error("Neither archive nor checkout needed\n");
         return -1;
     }
-    char path[PATH_MAX];
+    char path_checkout[PATH_MAX];
+    char const *const name = git_tree_entry_name(entry);
     int r = snprintf(
-        path, PATH_MAX, "%s%s%s", private_payload->submodule_path,
-        root, git_tree_entry_name(entry));
+        path_checkout, PATH_MAX, "%s%s%s", private_payload->submodule_path,
+        root, name);
     if (r < 0) {
         pr_error("Failed to format entry path\n");
         return -1;
     }
-    unsigned short len_path = r;
+    unsigned short len_path_archive = r;
+    char path_archive[PATH_MAX];
+    char const *const restrict archive_prefix = 
+        private_payload->archive_prefix;
+    if (archive_prefix && archive_prefix[0] != '\0') {
+        if ((r = snprintf(path_archive, PATH_MAX, "%s%s", 
+                    archive_prefix, path_checkout)) < 0) {
+            pr_error("Failed to format entry path\n");
+            return -1;
+        }
+        len_path_archive = r;
+    } else {
+        memcpy(path_archive, path_checkout, len_path_archive + 1);
+    }
     char const *const restrict mtime = private_payload->mtime;
     int const fd_archive = private_payload->fd_archive;
     char const *const restrict dir_checkout = private_payload->dir_checkout;
     switch (git_tree_entry_type(entry)) {
     case GIT_OBJECT_BLOB:
         return export_commit_tree_entry_blob(
-            entry, path, len_path, private_payload->repo, 
-            archive, mtime, fd_archive, 
-            checkout, dir_checkout);
+            entry, private_payload->repo, 
+            archive, mtime, fd_archive, path_archive, len_path_archive,
+            checkout, dir_checkout, path_checkout);
     case GIT_OBJECT_TREE:
         return export_commit_tree_entry_tree(
-            path, len_path, 
-            archive, mtime, fd_archive,
-            checkout, dir_checkout);
+            archive, mtime, fd_archive, path_archive, len_path_archive,
+            checkout, dir_checkout, path_checkout);
     case GIT_OBJECT_COMMIT:
         return export_commit_tree_entry_commit(
-            root, entry, path, len_path, private_payload->config, 
+            root, entry, private_payload->config, 
             private_payload->parsed_commit, private_payload->submodule_path,
-            private_payload->len_submodule_path, archive, mtime, fd_archive,
-            checkout, dir_checkout);
+            private_payload->len_submodule_path, archive, mtime, fd_archive, 
+            archive_prefix, path_archive, len_path_archive,
+            checkout, dir_checkout, path_checkout);
     default:
         pr_error("Impossible tree entry type %d\n", git_tree_entry_type(entry));
         return -1;
@@ -5408,16 +5434,16 @@ int export_commit(
         repo->url, parsed_commit->id_hex_string);
     char submodule_path[PATH_MAX] = "";
     unsigned short len_submodule_path = 0;
+    char archive_prefix[PATH_MAX] = "";
     if (config->archive_gh_prefix) {
-        if ((r = snprintf(submodule_path, PATH_MAX, "%s-%s/", repo->short_name, 
+        if ((r = snprintf(archive_prefix, PATH_MAX, "%s-%s/", repo->short_name, 
         parsed_commit->id_hex_string)) < 0) {
             pr_error_with_errno("Failed to generate github-like prefix\n");
             git_commit_free(commit);
             if (fd_archive >= 0) close(fd_archive);
             return -1;
         }
-        len_submodule_path = r;
-        pr_info("Will add github-like prefix '%s' to tar\n", submodule_path);
+        pr_info("Will add github-like prefix '%s' to tar\n", archive_prefix);
     }
     char mtime[TAR_POSIX_HEADER_MTIME_LEN] = "";
     if (snprintf(
@@ -5447,6 +5473,7 @@ int export_commit(
         .mtime = mtime, // second, 
         // there's also git_commit_time_offset(commit), one offset for a minute
         .fd_archive = fd_archive,
+        .archive_prefix = archive_prefix,
         .checkout = checkout,
         .dir_checkout = dir_checkout_work,
     };
