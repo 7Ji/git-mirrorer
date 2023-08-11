@@ -3745,7 +3745,7 @@ int repo_add_wanted_reference(
     wanted_reference->archive = archive;
     wanted_reference->checkout = checkout;
     wanted_reference->type = WANTED_TYPE_REFERENCE;
-    pr_info("Added wanted reference '%s' to repo '%s'\n", 
+    pr_debug("Added wanted reference '%s' to repo '%s'\n", 
         wanted_reference->commit.base.name, repo->url);
     return 0;
 }
@@ -3825,6 +3825,7 @@ int repo_parse_wanted_all_tags(
     struct repo *const restrict repo,
     struct wanted_base *const restrict wanted_all_tags
 ) {
+    unsigned long i = repo->wanted_objects_count;
     struct repo_parse_wanted_all_tags_foreach_payload 
         const private_payload = {
             .repo = repo,
@@ -3840,6 +3841,11 @@ int repo_parse_wanted_all_tags(
         pr_error("Failed git_tag_foreach callback, libgit return %d\n", r);
         return -1;
     }
+    pr_info("Resolved all tags:");
+    for (; i < repo->wanted_objects_count; ++i) {
+        printf(" '%s'", repo->wanted_objects[i].name);
+    }
+    printf("\n");
     return 0;
 }
 
