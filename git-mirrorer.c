@@ -5773,6 +5773,23 @@ int export_wanted_object(
     return 0;
 }
 
+struct export_wanted_object_thread_arg {
+    struct config const *restrict config;
+    struct repo const *restrict repo;
+    struct wanted_object const *restrict wanted_object;
+    struct work_directory *restrict workdir_archives;
+    struct work_directory *restrict workdir_checkouts;
+};
+
+void *export_wanted_object_thread(void *arg) {
+    struct export_wanted_object_thread_arg *private_arg = 
+        (struct export_wanted_object_thread_arg *)arg;
+    return (void *)(long)export_wanted_object(
+        private_arg->config, private_arg->repo,
+        private_arg->wanted_object, 
+        private_arg->workdir_archives, private_arg->workdir_checkouts);
+}
+
 int export_all_repos(
     struct config const *const restrict config,
     struct work_directory *const restrict workdir_archives,
@@ -5797,14 +5814,21 @@ int export_all_repos(
         }
         return 0;
     }
-    pthread_t *export_threads = malloc(
-        sizeof *export_threads * config->export_threads);
-    if (export_threads == NULL) {
+    struct export_thread_complex {
+        pthread_t thread;
+        bool active;
+        struct export_wanted_object_thread_arg arg;
+    };
+    struct export_thread_complex *export_threads_complex = 
+        calloc(config->export_threads,
+                sizeof *export_threads_complex);
+    if (export_threads_complex == NULL) {
         pr_error_with_errno("Failed to allocate memory for exporting threads");
         return -1;
     }
     unsigned short export_threads_count = 0;
     long thread_ret;
+    int r = -1;
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         struct repo const *const restrict repo = config->repos + i;
         for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
@@ -5812,21 +5836,102 @@ int export_all_repos(
                 repo->wanted_objects + j;
             if (wanted_object->archive || wanted_object->checkout);
             else continue;
+            struct export_thread_complex *export_thread_complex = NULL;
             while (export_threads_count >= config->export_threads) {
-                for (unsigned short i = 0; i < export_threads_count; ++i) {
-
+                for (unsigned short i = 0; i < config->export_threads; ++i) {
+                    struct export_thread_complex *export_thread_complex_running 
+                        = export_threads_complex + i;
+                    if (!export_thread_complex_running->active) continue;
+                    r = pthread_tryjoin_np(
+                            export_thread_complex_running->thread, 
+                                            (void **)&thread_ret);
+                    switch (r) {
+                    case 0:
+                        export_thread_complex_running->active = false;
+                        if (thread_ret) {
+                            pr_error("Thread %ld returned with %ld\n", 
+                                    export_thread_complex_running->thread, 
+                                    thread_ret);
+                            r = -1;
+                            goto kill_threads;
+                        }
+                        export_thread_complex = export_thread_complex_running;
+                        break;
+                    case EBUSY:
+                        break;
+                    default:
+                        pr_error("Failed to non-blocking wait for thread %ld, "
+                                "pthread returned %ld\n", 
+                                export_thread_complex_running->thread, 
+                                thread_ret);
+                        r = -1;
+                        goto kill_threads;
+                    }
                 }
                 sleep(1);
             }
-            pthread_t *export_thread = export_threads + export_threads_count++;
-            pthread_create(export_thread, NULL, );
-            
+            if (!export_thread_complex) {
+                for (unsigned short i = 0; i < config->export_threads; ++i) {
+                    struct export_thread_complex *export_thread_complex_running 
+                        = export_threads_complex + i;
+                    if (!export_thread_complex_running->active) {
+                        export_thread_complex = export_thread_complex_running;
+                        break;
+                    }
+                }
+                if (!export_thread_complex) {
+                    pr_error("Failed to find empty thread slot\n");
+                    r = -1;
+                    goto kill_threads;
+                }
+            }
+            export_thread_complex->arg.config = config;
+            export_thread_complex->arg.repo = repo;
+            export_thread_complex->arg.wanted_object = wanted_object;
+            export_thread_complex->arg.workdir_archives = workdir_archives;
+            export_thread_complex->arg.workdir_checkouts = workdir_checkouts;
+            r = pthread_create(
+                &export_thread_complex->thread, NULL, 
+                export_wanted_object_thread, 
+                &export_thread_complex->arg);
+            if (r) {
+                pr_error("Failed to create thread, pthread return %d\n", r);
+                goto kill_threads;
+            }
+            export_thread_complex->active = true;
         }
     }
-    for (unsigned short i = 0; i < export_threads_count; ++i) {
-        pthread_join(export_threads[i], (void **)&thread_ret);
+    for (unsigned short i = 0; i < config->export_threads; ++i) {
+        struct export_thread_complex *export_thread_complex = 
+                        export_threads_complex + i;
+        if (!export_thread_complex->active) continue;
+        r = pthread_join(export_threads_complex->thread, (void **)&thread_ret);
+        switch (r) {
+        case 0:
+            if (thread_ret) {
+                pr_error("Thread %ld returned %ld\n", 
+                    export_thread_complex->thread, thread_ret);
+                r = -1;
+                goto free_threads;
+            }
+            export_thread_complex->active = false;
+            break;
+        default:
+            pr_error("Failed to join thread, pthread return %d\n", r);
+            r = -1;
+            goto free_threads;
+        }
     }
-    return 0;
+    r = 0;
+kill_threads:
+    for (unsigned short i = 0; i < config->export_threads; ++i) {
+        if (export_threads_complex[i].active) {
+            pthread_kill(export_threads_complex[i].thread, SIGKILL);
+        }
+    }
+free_threads:
+    free(export_threads_complex);
+    return r;
 }
 
 int main(int const argc, char *argv[]) {
