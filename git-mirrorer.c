@@ -597,7 +597,7 @@ declare_func_add_object_and_realloc_if_necessary_no_init_typed(
 
 int sideband_progress(char const *string, int len, void *payload) {
 	(void)payload; /* unused */
-    printf("remote: %.*s", len, string);
+    pr_info("Remote: %.*s", len, string);
 	return 0;
 }
 
