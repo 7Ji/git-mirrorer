@@ -5332,6 +5332,61 @@ int ensure_path_non_exist( // essentially rm -rf
     return 0;
 }
 
+int ensure_path_non_exist_at( // essentially rm -rf
+    int const dir_fd,
+    char const *const restrict path
+) {
+    struct stat stat_buffer;
+    if (fstatat(dir_fd, path, &stat_buffer, AT_SYMLINK_NOFOLLOW)) {
+        switch(errno) {
+        case ENOENT:
+            return 0;
+        default:
+            pr_error_with_errno("Failed to get stat of path '%s'", path);
+            return -1;
+        }
+    }
+    mode_t mode = stat_buffer.st_mode & S_IFMT;
+    switch (mode) {
+    case S_IFDIR: {
+        int const subdir_fd = openat(dir_fd, path, O_RDONLY | O_DIRECTORY);
+        // DIR *const restrict dir_p = opendir;
+        if (subdir_fd < 0) {
+            pr_error_with_errno("Failed to open subdir '%s'", path);
+            return -1;
+        }
+        DIR *const restrict dir_p = fdopendir(subdir_fd);
+        if (dir_p == NULL) {
+            pr_error_with_errno("Failed to opendir '%s'", path);
+            close(subdir_fd);
+            return -1;
+        }
+        if (remove_dir_recursively(dir_p)) {
+            pr_error("Failed to remove '%s' recursively\n", path);
+            closedir(dir_p);
+            return -1;
+        }
+        closedir(dir_p);
+        if (unlinkat(dir_fd, path, AT_REMOVEDIR)) {
+            pr_error_with_errno("Failed to rmdir '%s'", path);
+            return -1;
+        }
+        break;
+    }
+    case S_IFREG:
+    case S_IFLNK:
+        if (unlinkat(dir_fd, path, 0)) {
+            pr_error_with_errno("Failed to remove regular file '%s'", path);
+            return -1;
+        }
+        break;
+    default:
+        pr_error("Cannot remove existing '%s' with type %d\n", path, mode);
+        return -1;
+    }
+    return 0;
+}
+
 int ensure_parent_dir(
     char *const restrict path,
     unsigned short const len_path
@@ -5340,6 +5395,27 @@ int ensure_parent_dir(
         if (path[i - 1] == '/') {
             path[i - 1] = '\0';
             int r = mkdir_recursively(path);
+            path[i - 1] = '/';
+            if (r) {
+                pr_error("Failed to ensure parent dir of '%s'\n", path);
+                return -1;
+            }
+            return 0;
+        }
+    }
+    pr_error("Path '%s' does not have parent\n", path);
+    return -1;
+}
+
+int ensure_parent_dir_at(
+    int const dir_fd,
+    char *const restrict path,
+    unsigned short const len_path
+) {
+    for (unsigned short i = len_path; i > 0; --i) {
+        if (path[i - 1] == '/') {
+            path[i - 1] = '\0';
+            int r = mkdir_recursively_at(dir_fd, path);
             path[i - 1] = '/';
             if (r) {
                 pr_error("Failed to ensure parent dir of '%s'\n", path);
@@ -5403,6 +5479,160 @@ int export_commit_add_global_comment_to_tar(
     if (tar_add_global_header(tar_fd, mtime, content, r)) {
         pr_error("Failed to add global header to tar\n");
         return -1;
+    }
+    return 0;
+}
+
+// 1 path did not exist, or existed but we removed it, 
+// 0 exists and is of type, -1 error
+int ensure_path_is_type_at(
+    int dirfd,
+    char const *const restrict path,
+    mode_t type
+) {
+    struct stat stat_buffer;
+    if (fstatat(dirfd, path, &stat_buffer, AT_SYMLINK_NOFOLLOW)) {
+        switch (errno) {
+        case ENOENT:
+            return 1;
+        default:
+            pr_error_with_errno(
+                "Failed to check stat of existing '%s'", path);
+            return -1;
+        }
+    } else {
+        if ((stat_buffer.st_mode & S_IFMT) == type) {
+            pr_debug("'%s' is of expected type %u\n", path, type);
+            return 0;
+        } else {
+            if (ensure_path_non_exist_at(dirfd, path)) {
+                pr_error_with_errno(
+                    "Failed to remove existing '%s' whose type is not %u",
+                    path, type);
+                return -1;
+            }
+            return 1;
+        }
+    }
+}
+
+struct export_handle {
+    bool should_export;
+    char path[PATH_MAX],
+         path_work[PATH_MAX];
+    unsigned short  len_path,
+                    len_path_work;
+    int fd;
+};
+
+int export_handle_init(
+    struct export_handle *restrict handle,
+    int const dir_fd,
+    char const commit_string[GIT_OID_MAX_HEXSIZE + 1],
+    char const *const restrict suffix,
+    unsigned short const len_suffix,
+    bool const is_dir
+) {
+    handle->len_path = GIT_OID_MAX_HEXSIZE;
+    memcpy(handle->path, commit_string, GIT_OID_MAX_HEXSIZE);
+    if (suffix && suffix[0]) {
+        handle->len_path += len_suffix;
+        memcpy(handle->path + GIT_OID_MAX_HEXSIZE, suffix, len_suffix);
+    }
+    handle->path[handle->len_path] = '\0';
+    mode_t type, mode;
+    int flags;
+    if (is_dir) {
+        type = S_IFREG;
+        mode = 0755;
+        flags = O_RDONLY | O_DIRECTORY;
+    } else {
+        type = S_IFDIR;
+        mode = 0644;
+        flags = O_WRONLY | O_CREAT;
+    }
+    int r = ensure_path_is_type_at(dir_fd, handle->path, type);
+    if (r > 0) {
+        memcpy(handle->path_work, handle->path, handle->len_path);
+        memcpy(handle->path_work + handle->len_path, ".work", 6);
+        handle->len_path_work += 5;
+        if (ensure_path_non_exist_at(dir_fd, handle->path_work)) {
+            pr_error("Failed to ensure '%s' non-existing\n");
+            r = -1;
+            goto set_no_export;
+        }
+        if (is_dir) {
+            if (mkdir_recursively_at(dir_fd, handle->path_work)) {
+                pr_error("Failed to create work dir '%s'\n", handle->path_work);
+                r = -1;
+                goto set_no_export;
+            }
+        } else {
+            if (ensure_parent_dir_at(dir_fd, handle->path_work, 
+                handle->len_path_work)) {
+                pr_error("Failed to ensure parent dir for work file '%s'\n",
+                        handle->path_work);
+                r = -1;
+                goto set_no_export;
+            }
+        }
+        // if (mkdir_re)
+        if ((handle->fd = openat(
+            dir_fd, handle->path_work, flags, mode)) < 0) {
+            pr_error_with_errno("Failed to open '%s'", handle->path_work);
+            r = -1;
+            goto set_no_export;
+        }
+        handle->should_export = true;
+    } else if (r < 0) {
+        pr_error("Failed to ensure '%s' non-existing or is type %d\n", 
+                handle->path, type);
+        r = -1;
+        goto set_no_export;
+    } else {
+        r = 0;
+        goto set_no_export;
+    }
+    return 0;
+set_no_export:
+    handle->should_export = false;
+    // handle->len_path = 0;
+    // handle->len_path_work = 0;
+    // handle->path[0] = '\0';
+    // handle->path_work[0] = '\0';
+    return -1;
+}
+
+int export_commit_prepare(
+    struct config const *const restrict config,
+    struct repo const *const restrict repo,
+    struct parsed_commit const *const restrict parsed_commit,
+    bool *archive,
+    struct export_handle *archive_handle,
+    struct work_directory *const restrict workdir_archives,
+    bool *checkout,
+    struct export_handle *checkout_handle,
+    struct work_directory *const restrict workdir_checkouts
+) {
+    if (*archive || *checkout); else {
+        pr_error("Commit '%s' should neither be archived or checked out\n");
+        return -1;
+    }
+    struct stat stat_buffer;
+    int r = -1;
+    if (*archive) {
+        if (export_handle_init(archive_handle, workdir_archives->dirfd, 
+            parsed_commit->id_hex_string, config->archive_suffix, 
+            config->len_archive_suffix, false)) {
+            return -1;
+        }
+        *archive = archive_handle->should_export;
+    } 
+    if (*checkout) {
+        if (export_handle_init(checkout_handle, workdir_checkouts->dirfd,
+            parsed_commit->id_hex_string, NULL, 0, true)) {
+            return -1;
+        }
     }
     return 0;
 }
@@ -5717,6 +5947,63 @@ int export_commit(
     return 0;
 }
 
+// 1 already exported, 0 need to export, -1 error
+int export_wanted_object_prepare(
+    struct config const *const restrict config,
+    struct repo const *const restrict repo,
+    struct wanted_object const *const restrict wanted_object,
+    struct work_directory *const restrict workdir_archives,
+    struct work_directory *const restrict workdir_checkouts
+) {
+    if (wanted_object_guarantee_symlinks(
+        wanted_object, repo,
+        config->archive_suffix, config->len_archive_suffix,
+        workdir_archives->links_dirfd,
+        workdir_checkouts->links_dirfd)) {
+        pr_error("Failed to guarantee symlinks for wanted object '%s' "
+            "of repo '%s'\n", wanted_object->name, repo->url);
+        return -1;
+    }
+    switch (wanted_object->type) {
+    case WANTED_TYPE_BRANCH:
+    case WANTED_TYPE_TAG:
+    case WANTED_TYPE_REFERENCE:
+        if (!((struct wanted_reference const *)wanted_object)
+            ->commit_resolved) {
+            pr_error("Reference '%s' is not resolved into commit\n",
+                    wanted_object->name);
+            return -1;
+        }
+        __attribute__((fallthrough));
+    case WANTED_TYPE_HEAD:
+        if (!((struct wanted_reference const *)wanted_object)
+            ->commit_resolved) {
+            pr_warn("Reference '%s' is not resolved into commit\n",
+                    wanted_object->name);
+            break;
+        }
+        __attribute__((fallthrough));
+    case WANTED_TYPE_COMMIT: {
+        if (wanted_object->parsed_commit_id == (unsigned long) -1) {
+            pr_error("Commit %s is not parsed yet\n",
+                wanted_object->id_hex_string);
+            return -1;
+        }
+        if (export_commit(config, repo,
+            repo->parsed_commits + wanted_object->parsed_commit_id,
+            wanted_object->archive, wanted_object->checkout)) {
+            pr_error("Failed to export commit %s of repo '%s'\n",
+                wanted_object->id_hex_string, repo->url);
+            return -1;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    return 0;
+}
+
 int export_wanted_object(
     struct config const *const restrict config,
     struct repo const *const restrict repo,
@@ -5793,32 +6080,86 @@ void *export_wanted_object_thread(void *arg) {
         private_arg->workdir_archives, private_arg->workdir_checkouts);
 }
 
-int export_all_repos(
+int repo_guarantee_all_wanted_objects_symlinks(
+    struct config const *const restrict config,
+    struct repo const *const restrict repo,
+    int const archives_links_dirfd,
+    int const checkouts_links_dirfd
+) {
+    for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {   
+        struct wanted_object const *const restrict wanted_object = 
+            repo->wanted_objects + i;
+        if (wanted_object_guarantee_symlinks(
+            wanted_object, repo,
+            config->archive_suffix, config->len_archive_suffix,
+            archives_links_dirfd,
+            checkouts_links_dirfd)) {
+            pr_error("Failed to guarantee symlinks for wanted object '%s' "
+                "of repo '%s'\n", wanted_object->name, repo->url);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int export_all_repos_single_threaded(
     struct config const *const restrict config,
     struct work_directory *const restrict workdir_archives,
     struct work_directory *const restrict workdir_checkouts
 ) {
-    if (config->export_threads <= 1) {
-        pr_info("Exporting all repos (single-threaded)...\n");
+    pr_info("Exporting all repos (single-threaded)...\n");
         // Single-threaded exporting
-        for (unsigned long i = 0; i < config->repos_count; ++i) {
-            struct repo const *const restrict repo = config->repos + i;
-            for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
-                struct wanted_object const *const restrict wanted_object =
-                    repo->wanted_objects + j;
-                if (wanted_object->archive || wanted_object->checkout);
-                else continue;
-                if (export_wanted_object(config, repo, wanted_object, 
-                                workdir_archives, workdir_checkouts)) {
-                    pr_error("Failed to export wanted object '%s'\n", 
-                            wanted_object->name);
-                    return -1;
-                }
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        struct repo const *const restrict repo = config->repos + i;
+        for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
+            struct wanted_object const *const restrict wanted_object =
+                repo->wanted_objects + j;
+            if (wanted_object->archive || wanted_object->checkout);
+            else continue;
+            if (export_wanted_object(config, repo, wanted_object, 
+                            workdir_archives, workdir_checkouts)) {
+                pr_error("Failed to export wanted object '%s'\n", 
+                        wanted_object->name);
+                return -1;
             }
         }
-        pr_info("Exported all repos\n");
-        return 0;
     }
+    pr_info("Exported all repos\n");
+    return 0;
+}
+
+int export_all_repos_multi_threaded_symlinks(
+    struct config const *const restrict config,
+    struct work_directory *const restrict workdir_archives,
+    struct work_directory *const restrict workdir_checkouts
+) {
+
+}
+
+int export_all_repos_multi_threaded_files(
+    struct config const *const restrict config,
+    struct work_directory *const restrict workdir_archives,
+    struct work_directory *const restrict workdir_checkouts
+) {
+
+}
+
+int export_all_repos_multi_threaded(
+    struct config const *const restrict config,
+    struct work_directory *const restrict workdir_archives,
+    struct work_directory *const restrict workdir_checkouts
+) {
+    /*
+      Multi-thread exporting is done in two stages:
+        1. Every repo has its thread to prepare symlinks for 
+        all its wanted objects. Why not MT on object? Because 
+        there will be race-condition involved on createing/
+        reading the symlinks, and introducing locks will just 
+        slow down the whole process
+        2. Every wanted object, should it be expoted, has its
+        own thread. Note however, there will also be archive-
+        child forked processes.
+    */
     struct export_thread_complex {
         pthread_t thread;
         bool active;
@@ -5834,6 +6175,9 @@ int export_all_repos(
     unsigned short export_threads_count = 0;
     long thread_ret;
     int r = -1;
+
+
+
     pr_info("Exporting all repos (%hu threads)...\n", config->export_threads);
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         struct repo const *const restrict repo = config->repos + i;
@@ -5945,6 +6289,19 @@ kill_threads:
 free_threads:
     free(export_threads_complex);
     return r;
+}
+
+int export_all_repos(
+    struct config const *const restrict config,
+    struct work_directory *const restrict workdir_archives,
+    struct work_directory *const restrict workdir_checkouts
+) {
+    if (config->export_threads <= 1) {
+        return export_all_repos_single_threaded(config,
+            workdir_archives, workdir_checkouts);
+    }
+    return export_all_repos_multi_threaded(config, 
+            workdir_archives, workdir_checkouts);
 }
 
 int main(int const argc, char *argv[]) {
