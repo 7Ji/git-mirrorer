@@ -506,24 +506,24 @@ struct repo_update_thread_arg {
     unsigned short proxy_after;
 };
 
-struct update_thread_and_server_id {
+struct update_thread_handle {
     pthread_t thread;
     unsigned long server_id;
+    struct repo_update_thread_arg arg;
+    bool active;
+    unsigned long checked;
 };
 
 struct update_status {
     struct update_server_repo_activity *servers;
-    struct repo_update_thread_arg *thread_args;
-    struct update_thread_and_server_id *thread_and_server_ids;
+    struct update_thread_handle *thread_handles;
     unsigned long *repo_ids;
     unsigned long servers_count,
                   servers_allocated,
                   repo_ids_count,
                   repo_ids_allocated,
-                  thread_args_count,
-                  thread_args_allocated,
-                  thread_and_server_ids_count,
-                  thread_and_server_ids_allocated;
+                  thread_handles_allocated,
+                  threads_active_count;
 };
 
 #define get_last(x) x + x##_count - 1
@@ -4325,28 +4325,26 @@ int open_and_update_all_dynamic_repos_threaded_optional(
     // We only allow 10 concurrent connections to a server
     // Here we allocate the most possibly used memory to avoid future
     // realloc calls
-    update_status.thread_args_allocated = update_status.repo_ids_count;
-    update_status.thread_args = malloc(sizeof *update_status.thread_args * 
-                            update_status.thread_args_allocated);
-    if (update_status.thread_args == NULL) {
-        pr_error_with_errno("Failed to allocate memory for threads");
-        goto free_servers_and_ids;
-    }
     unsigned long const max_possible_connections = 
         update_status.servers_count * MAX_CONNECTIONS_TO_SINGLE_SERVER;
-    update_status.thread_and_server_ids_allocated = 
+    update_status.thread_handles_allocated = 
         max_possible_connections > update_status.repo_ids_count ?
             update_status.repo_ids_count :
             max_possible_connections;
-    update_status.thread_and_server_ids = malloc(
-        sizeof *update_status.thread_and_server_ids *
-                update_status.thread_and_server_ids_allocated);
-    if (update_status.thread_and_server_ids == NULL) {
+    update_status.thread_handles = calloc(
+        update_status.thread_handles_allocated,
+        sizeof *update_status.thread_handles);
+    if (update_status.thread_handles == NULL) {
         pr_error_with_errno("Failed to allocate memory for thread ids");
-        goto free_thread_args;
+        goto free_thread_handles;
     }
-    while (update_status.repo_ids_count || 
-            update_status.thread_and_server_ids_count) {
+    for (unsigned i = 0; i < update_status.thread_handles_allocated; ++i) {
+        struct repo_update_thread_arg *arg = 
+            &update_status.thread_handles[i].arg;
+        arg->fetch_options = *fetch_options;
+        arg->proxy_after = proxy_after;
+    }
+    while (update_status.repo_ids_count || update_status.threads_active_count) {
         for (unsigned long i = 0; i < update_status.repo_ids_count; ++i) {
             struct repo *const restrict repo = 
                 config->repos + update_status.repo_ids[i];
@@ -4366,75 +4364,71 @@ int open_and_update_all_dynamic_repos_threaded_optional(
                 MAX_CONNECTIONS_TO_SINGLE_SERVER) {
                 continue;
             }
-            if (++update_status.thread_and_server_ids_count > 
-                update_status.thread_and_server_ids_allocated) {
+            ++update_status.servers[server_id].repos_updating_count;
+            if (++update_status.threads_active_count >
+                    update_status.thread_handles_allocated) {
                 pr_error(
-                    "Allocated memory for thread ids not enough %lu / %lu\n",
-                    update_status.thread_and_server_ids_count, 
-                    update_status.thread_and_server_ids_allocated);
+                    "Allocated memory for threads not enough %lu / %lu\n",
+                    update_status.threads_active_count, 
+                    update_status.thread_handles_allocated);
                 goto kill_threads;
             }
-            if (++update_status.thread_args_count >
-                update_status.thread_args_allocated) {
-                pr_error(
-                    "Allocate memory for thread args not enough %lu / %lu\n",
-                    update_status.thread_args_count, 
-                    update_status.thread_args_allocated);
-                goto kill_threads;
+            struct update_thread_handle *handle = NULL;
+            for (unsigned long j = 0; 
+                j < update_status.thread_handles_allocated; 
+                ++j) {
+                if (!update_status.thread_handles[j].active) {
+                    handle = update_status.thread_handles + j;
+                    break;
+                }
             }
-            struct update_thread_and_server_id *thread_and_server_id = 
-                        get_last(update_status.thread_and_server_ids);
-            struct repo_update_thread_arg *thread_arg = 
-                        get_last(update_status.thread_args);
-            thread_arg->repo = repo;
-            thread_arg->fetch_options = *fetch_options;
-            thread_arg->proxy_after = proxy_after;
-            r = pthread_create(&thread_and_server_id->thread, 
-                            NULL, repo_update_thread, thread_arg);
+            if (handle == NULL) {
+                pr_error("Failed to find empty handle\n");
+                goto kill_threads; 
+            }
+            handle->arg.repo = repo;
+            r = pthread_create(&handle->thread, 
+                            NULL, repo_update_thread, &handle->arg);
             if (r) {
                 pr_error("Failed to create thread, pthread return %d\n", r);
-                --update_status.thread_and_server_ids_count;
+                --update_status.threads_active_count;
                 r = -1;
                 goto kill_threads;
             }
-            thread_and_server_id->server_id = server_id;
+            handle->server_id = server_id;
+            handle->active = true;
+            handle->checked = 0;
             update_status.repo_ids[i] = 
                 update_status.repo_ids[--update_status.repo_ids_count];
-            ++update_status.servers[server_id].repos_updating_count;
         }
+        // Here there must be at least one active, no need to check
         for (unsigned long i = 0; 
-            i < update_status.thread_and_server_ids_count; 
+            i < update_status.thread_handles_allocated; 
             ++i) {
+            struct update_thread_handle *handle = 
+                update_status.thread_handles + i;;
+            if (!handle->active) continue;
             long thread_ret;
-            r = pthread_tryjoin_np(
-                    update_status.thread_and_server_ids[i].thread, 
-                    (void **)&thread_ret);
+            r = pthread_tryjoin_np(handle->thread, (void **)&thread_ret);
             switch (r) {
             case 0:
-                --update_status.servers[
-                    update_status.thread_and_server_ids[i].server_id
-                        ].repos_updating_count;
-                update_status.thread_and_server_ids[i] = 
-                    update_status.thread_and_server_ids[
-                        --update_status.thread_and_server_ids_count];
+                handle->active = false;
+                --update_status.threads_active_count;
+                --update_status.servers[handle->server_id].repos_updating_count;
                 if (thread_ret) {
                     pr_error(
                         "Repo update thread bad return %ld\n", thread_ret);
                     r = -1;
                     goto kill_threads;
                 }
-                if (update_status.thread_and_server_ids_count) {
-                    if (update_status.repo_ids_count) {
-                        pr_info("Updating %lu repos, "
-                            "%lu more repos needs to be updated...\n",
-                            update_status.thread_and_server_ids_count,
-                            update_status.repo_ids_count);
-                    } else {
-                        pr_info("Updating %lu repos...\n",
-                            update_status.thread_and_server_ids_count);
-                    }
-                }
+                break;
             case EBUSY:
+                if (++handle->checked % 100 == 0)  {
+                    pr_warn("Repo '%s' takes too long to update, "
+                        "%lu circles after started it\n",
+                        handle->arg.repo->url,
+                        handle->checked);
+                }
                 break;
             default:
                 pr_error("Failed to join thread, pthread return %d\n", r);
@@ -4442,19 +4436,32 @@ int open_and_update_all_dynamic_repos_threaded_optional(
                 goto kill_threads;
             }
         }
+        if (update_status.threads_active_count) {
+            if (update_status.repo_ids_count) {
+                pr_info("Updating %lu repos, "
+                    "%lu more repos needs to be updated "
+                    "(max %u connections each server)...\n",
+                    update_status.threads_active_count,
+                    update_status.repo_ids_count,
+                    MAX_CONNECTIONS_TO_SINGLE_SERVER);
+            } else {
+                pr_info("Updating %lu repos...\n",
+                    update_status.threads_active_count);
+            }
+        }
         sleep(1);
     }
     r = 0;
 kill_threads:
     for (unsigned long i = 0; 
-        i < update_status.thread_and_server_ids_count; ++i) {
-        pthread_kill(update_status.thread_and_server_ids[i].thread, SIGKILL);
+        i < update_status.thread_handles_allocated; ++i) {
+        struct update_thread_handle *handle = update_status.thread_handles + i;
+        if (handle->active)
+            pthread_kill(handle->thread, SIGKILL);
     }
-// free_thread_ids:
-    free(update_status.thread_and_server_ids);
-free_thread_args:
-    free(update_status.thread_args);
-free_servers_and_ids:    
+free_thread_handles:
+    free(update_status.thread_handles);
+// free_servers_and_ids:
     free(update_status.servers);
     free(update_status.repo_ids);
     return r;
