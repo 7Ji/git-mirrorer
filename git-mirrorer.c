@@ -410,6 +410,7 @@ struct config const CONFIG_INIT = {
         0,
     },
     .archive_suffix = ".tar",
+    .len_archive_suffix = 4,
     .export_threads = 1,
     .clean_links = true,
 };
@@ -1816,7 +1817,9 @@ int config_update_from_yaml_event(
                 return -1;
             }
             memcpy(config->archive_suffix, event->data.scalar.value,
-                event->data.scalar.length + 1);
+                event->data.scalar.length);
+            config->len_archive_suffix = event->data.scalar.length;
+            config->archive_suffix[config->len_archive_suffix] = '\0';
             *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION;
             break;
         }
@@ -5704,10 +5707,8 @@ set_no_export:
     return -1;
 }
 
-#define export_handle_init_checkout(\
-    handle, dir_fd, commit_string, suffix, len_suffix) \
-        export_handle_init_common(\
-        handle, dir_fd, commit_string, suffix, len_suffix, true)
+#define export_handle_init_checkout(handle, dir_fd, commit_string) \
+        export_handle_init_common(handle, dir_fd, commit_string, NULL, 0, true)
 
 int export_handle_init_archive(
     struct export_handle *restrict handle,
@@ -5804,7 +5805,7 @@ int export_commit_prepare(
     if (checkout_handle->should_export) {
         if (export_handle_init_checkout(
             checkout_handle, workdir_checkouts->dirfd,
-            parsed_commit->id_hex_string, NULL, 0)) {
+            parsed_commit->id_hex_string)) {
             pr_error("Failed to init export handle for checkout\n");
             return -1;
         }
