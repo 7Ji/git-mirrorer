@@ -4558,8 +4558,9 @@ int open_and_update_all_dynamic_repos_threaded_optional(
                         update_status.threads_active_count);
                 }
             }
+        } else {
+            sleep(1);
         }
-        sleep(1);
     }
     r = 0;
 kill_threads:
@@ -6397,7 +6398,7 @@ int export_all_repos_multi_threaded_lookup(
         struct repo const *const restrict repo = 
             config->repos + repo_prepared_count;
         bool thread_added = false;
-        while (!thread_added) {
+        for (;;) {
             unsigned short threads_active_count = 0;
             for (unsigned short i = 0; i < config->export_threads; ++i) {
                 struct prepare_thread_handle *handle = handles + i;
@@ -6440,10 +6441,10 @@ int export_all_repos_multi_threaded_lookup(
                     break;
                 }
             }
+            if (thread_added) break;
+            sleep(1);
             if (threads_active_count == config->export_threads) {
-                pr_debug(
-                    "Sleeping for 1 second as active threads reached max\n");
-                sleep(1);
+                pr_debug("Active threads reached max\n");
             }
             pr_debug("%hu threads running for looking up commits\n", 
                             threads_active_count);
@@ -6570,7 +6571,7 @@ int export_all_repos_multi_threaded_work(
             if (archive_handle.should_export || checkout_handle.should_export);
             else continue;
             bool thread_added = false;
-            while (!thread_added) {
+            for (;;) {
                 unsigned short threads_active_count = 0;
                 for (unsigned short k = 0; k < config->export_threads; ++k) {
                     struct thread_handle *handle = handles + k;
@@ -6618,9 +6619,8 @@ int export_all_repos_multi_threaded_work(
                         break;
                     }
                 }
-                if (threads_active_count == config->export_threads) {
-                    sleep(1);
-                }
+                if (thread_added) break;
+                sleep(1);
             }
         }
     }
