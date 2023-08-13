@@ -6610,10 +6610,12 @@ wait_threads:
         }
     }
     free(handles);
-    for (unsigned long i = 0; i < repo_prepared_count; ++i) {
-        if (repo_free_all_parsed_commits(config->repos + i)) {
-            pr_error("Failed to free all parsed commits in repo '%s'\n",
-                config->repos[i].url);
+    if (r) {
+        for (unsigned long i = 0; i < repo_prepared_count; ++i) {
+            if (repo_free_all_parsed_commits(config->repos + i)) {
+                pr_error("Failed to free all parsed commits in repo '%s'\n",
+                    config->repos[i].url);
+            }
         }
     }
     return r;
