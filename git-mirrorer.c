@@ -5687,11 +5687,11 @@ int export_handle_init_common(
     mode_t type, mode;
     int flags;
     if (is_dir) {
-        type = S_IFREG;
+        type = S_IFDIR;
         mode = 0755;
         flags = O_RDONLY | O_DIRECTORY;
     } else {
-        type = S_IFDIR;
+        type = S_IFREG;
         mode = 0644;
         flags = O_WRONLY | O_CREAT;
     }
@@ -5725,17 +5725,14 @@ int export_handle_init_common(
         r = -1;
         goto set_no_export;
     } else {
+        pr_debug("'%s' existing, no need to export\n", handle->path);
         r = 0;
         goto set_no_export;
     }
     return 0;
 set_no_export:
     handle->should_export = false;
-    // handle->len_path = 0;
-    // handle->len_path_work = 0;
-    // handle->path[0] = '\0';
-    // handle->path_work[0] = '\0';
-    return -1;
+    return r;
 }
 
 #define export_handle_init_checkout(handle, dir_fd, commit_string) \
