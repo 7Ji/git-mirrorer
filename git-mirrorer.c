@@ -2893,7 +2893,9 @@ int work_directory_add_keep(
         pr_error("Length of keep item '%s' too long\n", keep);
         return -1;
     }
-    memcpy(get_last(work_directory->keeps), keep, len_keep + 1);
+    char *keep_last = get_last(work_directory->keeps);
+    memcpy(keep_last, keep, len_keep);
+    keep_last[len_keep] = '\0';
     return 0;
 }
 
@@ -5827,6 +5829,14 @@ int export_commit_prepare(
             pr_error("Failed to init export handle for checkout\n");
             return -1;
         }
+        if (config->clean_checkouts) {
+            if (work_directory_add_keep(workdir_checkouts, 
+                checkout_handle->path, checkout_handle->len_path)) {
+                pr_error("Failed to add keep checkout '%s'\n",
+                    checkout_handle->path);
+                goto close_checkout_fd;
+            }
+        }
     }
     if (archive_handle->should_export) {
         if (export_handle_init_archive(
@@ -5837,8 +5847,21 @@ int export_commit_prepare(
             pr_error("Failed to init export handle for archive\n");
             goto close_checkout_fd;
         }
+        if (config->clean_archives) {
+            if (work_directory_add_keep(workdir_archives,
+                archive_handle->path, archive_handle->len_path)) {
+                pr_error("Failed to add keep archive '%s'\n",
+                    archive_handle->path);
+                goto close_archive_fd;
+            }
+        }
     }
     return 0;
+close_archive_fd:
+    if (close(archive_handle->fd)) {
+        pr_error_with_errno("Failed to close archive dirfd");
+    }
+
 close_checkout_fd:
     if (checkout_handle->should_export) {
         if (close(checkout_handle->fd)) {
