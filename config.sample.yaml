@@ -159,10 +159,9 @@ cleanup:
   links: yes
 
 # THREADING CONFIG
-threads:
-  # This only limits the threads to one git server, but not the global count
-  update: 10
-  export: 10
+export_threads: 10
+# This only limits the threads to one git server, but not the global count
+connections_per_server: 10
 
 # REPOS CONFIG
 # Defines a list of upstream git repositories that should be mirrored, by
