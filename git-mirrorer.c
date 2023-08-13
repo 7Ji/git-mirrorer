@@ -4509,7 +4509,8 @@ int open_and_update_all_dynamic_repos_threaded_optional(
         arg->fetch_options = *fetch_options;
         arg->proxy_after = proxy_after;
     }
-    pr_info("Updating repos with %hu threads...\n", config->update_threads);
+    pr_info("Updating repos with %hu threads/connections per server...\n",
+            config->update_threads);
     while (update_status.repo_ids_count || update_status.threads_active_count) {
         update_status.changed = false;
         for (unsigned long i = 0; i < update_status.repo_ids_count; ++i) {

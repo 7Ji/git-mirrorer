@@ -160,6 +160,7 @@ cleanup:
 
 # THREADING CONFIG
 threads:
+  # This only limits the threads to one git server, but not the global count
   update: 10
   export: 10
 
