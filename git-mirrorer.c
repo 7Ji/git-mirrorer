@@ -5872,6 +5872,7 @@ int export_commit_write(
     git_commit_free(commit);
     pr_debug("Ended exporting repo '%s' commit %s\n",
         repo->url, parsed_commit->id_hex_string);
+    return 0;
 }
 
 int export_commit_finish(
@@ -6027,117 +6028,117 @@ int export_commit_single_threaded(
 }
 
 // 1 already exported, 0 need to export, -1 error
-int export_wanted_object_prepare(
-    struct config const *const restrict config,
-    struct repo const *const restrict repo,
-    struct wanted_object const *const restrict wanted_object,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts
-) {
-    if (wanted_object_guarantee_symlinks(
-        wanted_object, repo,
-        config->archive_suffix, config->len_archive_suffix,
-        workdir_archives->links_dirfd,
-        workdir_checkouts->links_dirfd)) {
-        pr_error("Failed to guarantee symlinks for wanted object '%s' "
-            "of repo '%s'\n", wanted_object->name, repo->url);
-        return -1;
-    }
-    switch (wanted_object->type) {
-    case WANTED_TYPE_BRANCH:
-    case WANTED_TYPE_TAG:
-    case WANTED_TYPE_REFERENCE:
-        if (!((struct wanted_reference const *)wanted_object)
-            ->commit_resolved) {
-            pr_error("Reference '%s' is not resolved into commit\n",
-                    wanted_object->name);
-            return -1;
-        }
-        __attribute__((fallthrough));
-    case WANTED_TYPE_HEAD:
-        if (!((struct wanted_reference const *)wanted_object)
-            ->commit_resolved) {
-            pr_warn("Reference '%s' is not resolved into commit\n",
-                    wanted_object->name);
-            break;
-        }
-        __attribute__((fallthrough));
-    case WANTED_TYPE_COMMIT: {
-        if (wanted_object->parsed_commit_id == (unsigned long) -1) {
-            pr_error("Commit %s is not parsed yet\n",
-                wanted_object->id_hex_string);
-            return -1;
-        }
-        if (export_commit(config, repo,
-            repo->parsed_commits + wanted_object->parsed_commit_id,
-            wanted_object->archive, wanted_object->checkout)) {
-            pr_error("Failed to export commit %s of repo '%s'\n",
-                wanted_object->id_hex_string, repo->url);
-            return -1;
-        }
-        break;
-    }
-    default:
-        break;
-    }
-    return 0;
-}
+// int export_wanted_object_prepare(
+//     struct config const *const restrict config,
+//     struct repo const *const restrict repo,
+//     struct wanted_object const *const restrict wanted_object,
+//     struct work_directory *const restrict workdir_archives,
+//     struct work_directory *const restrict workdir_checkouts
+// ) {
+//     if (wanted_object_guarantee_symlinks(
+//         wanted_object, repo,
+//         config->archive_suffix, config->len_archive_suffix,
+//         workdir_archives->links_dirfd,
+//         workdir_checkouts->links_dirfd)) {
+//         pr_error("Failed to guarantee symlinks for wanted object '%s' "
+//             "of repo '%s'\n", wanted_object->name, repo->url);
+//         return -1;
+//     }
+//     switch (wanted_object->type) {
+//     case WANTED_TYPE_BRANCH:
+//     case WANTED_TYPE_TAG:
+//     case WANTED_TYPE_REFERENCE:
+//         if (!((struct wanted_reference const *)wanted_object)
+//             ->commit_resolved) {
+//             pr_error("Reference '%s' is not resolved into commit\n",
+//                     wanted_object->name);
+//             return -1;
+//         }
+//         __attribute__((fallthrough));
+//     case WANTED_TYPE_HEAD:
+//         if (!((struct wanted_reference const *)wanted_object)
+//             ->commit_resolved) {
+//             pr_warn("Reference '%s' is not resolved into commit\n",
+//                     wanted_object->name);
+//             break;
+//         }
+//         __attribute__((fallthrough));
+//     case WANTED_TYPE_COMMIT: {
+//         if (wanted_object->parsed_commit_id == (unsigned long) -1) {
+//             pr_error("Commit %s is not parsed yet\n",
+//                 wanted_object->id_hex_string);
+//             return -1;
+//         }
+//         if (export_commit(config, repo,
+//             repo->parsed_commits + wanted_object->parsed_commit_id,
+//             wanted_object->archive, wanted_object->checkout)) {
+//             pr_error("Failed to export commit %s of repo '%s'\n",
+//                 wanted_object->id_hex_string, repo->url);
+//             return -1;
+//         }
+//         break;
+//     }
+//     default:
+//         break;
+//     }
+//     return 0;
+// }
 
-int export_wanted_object(
-    struct config const *const restrict config,
-    struct repo const *const restrict repo,
-    struct wanted_object const *const restrict wanted_object,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts
-) {
-    if (wanted_object_guarantee_symlinks(
-        wanted_object, repo,
-        config->archive_suffix, config->len_archive_suffix,
-        workdir_archives->links_dirfd,
-        workdir_checkouts->links_dirfd)) {
-        pr_error("Failed to guarantee symlinks for wanted object '%s' "
-            "of repo '%s'\n", wanted_object->name, repo->url);
-        return -1;
-    }
-    switch (wanted_object->type) {
-    case WANTED_TYPE_BRANCH:
-    case WANTED_TYPE_TAG:
-    case WANTED_TYPE_REFERENCE:
-        if (!((struct wanted_reference const *)wanted_object)
-            ->commit_resolved) {
-            pr_error("Reference '%s' is not resolved into commit\n",
-                    wanted_object->name);
-            return -1;
-        }
-        __attribute__((fallthrough));
-    case WANTED_TYPE_HEAD:
-        if (!((struct wanted_reference const *)wanted_object)
-            ->commit_resolved) {
-            pr_warn("Reference '%s' is not resolved into commit\n",
-                    wanted_object->name);
-            break;
-        }
-        __attribute__((fallthrough));
-    case WANTED_TYPE_COMMIT: {
-        if (wanted_object->parsed_commit_id == (unsigned long) -1) {
-            pr_error("Commit %s is not parsed yet\n",
-                wanted_object->id_hex_string);
-            return -1;
-        }
-        if (export_commit(config, repo,
-            repo->parsed_commits + wanted_object->parsed_commit_id,
-            wanted_object->archive, wanted_object->checkout)) {
-            pr_error("Failed to export commit %s of repo '%s'\n",
-                wanted_object->id_hex_string, repo->url);
-            return -1;
-        }
-        break;
-    }
-    default:
-        break;
-    }
-    return 0;
-}
+// int export_wanted_object(
+//     struct config const *const restrict config,
+//     struct repo const *const restrict repo,
+//     struct wanted_object const *const restrict wanted_object,
+//     struct work_directory *const restrict workdir_archives,
+//     struct work_directory *const restrict workdir_checkouts
+// ) {
+//     if (wanted_object_guarantee_symlinks(
+//         wanted_object, repo,
+//         config->archive_suffix, config->len_archive_suffix,
+//         workdir_archives->links_dirfd,
+//         workdir_checkouts->links_dirfd)) {
+//         pr_error("Failed to guarantee symlinks for wanted object '%s' "
+//             "of repo '%s'\n", wanted_object->name, repo->url);
+//         return -1;
+//     }
+//     switch (wanted_object->type) {
+//     case WANTED_TYPE_BRANCH:
+//     case WANTED_TYPE_TAG:
+//     case WANTED_TYPE_REFERENCE:
+//         if (!((struct wanted_reference const *)wanted_object)
+//             ->commit_resolved) {
+//             pr_error("Reference '%s' is not resolved into commit\n",
+//                     wanted_object->name);
+//             return -1;
+//         }
+//         __attribute__((fallthrough));
+//     case WANTED_TYPE_HEAD:
+//         if (!((struct wanted_reference const *)wanted_object)
+//             ->commit_resolved) {
+//             pr_warn("Reference '%s' is not resolved into commit\n",
+//                     wanted_object->name);
+//             break;
+//         }
+//         __attribute__((fallthrough));
+//     case WANTED_TYPE_COMMIT: {
+//         if (wanted_object->parsed_commit_id == (unsigned long) -1) {
+//             pr_error("Commit %s is not parsed yet\n",
+//                 wanted_object->id_hex_string);
+//             return -1;
+//         }
+//         if (export_commit(config, repo,
+//             repo->parsed_commits + wanted_object->parsed_commit_id,
+//             wanted_object->archive, wanted_object->checkout)) {
+//             pr_error("Failed to export commit %s of repo '%s'\n",
+//                 wanted_object->id_hex_string, repo->url);
+//             return -1;
+//         }
+//         break;
+//     }
+//     default:
+//         break;
+//     }
+//     return 0;
+// }
 
 // struct export_wanted_object_thread_arg {
 //     struct config const *restrict config;
@@ -6181,43 +6182,43 @@ int repo_guarantee_all_wanted_objects_symlinks(
     return 0;
 }
 
-int export_all_repos_single_threaded(
-    struct config const *const restrict config,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts
-) {
-    pr_info("Exporting all repos (single-threaded)...\n");
-    int r = -1;
-    unsigned long repo_free_count = config->repos_count;
-    for (unsigned long i = 0; i < config->repos_count; ++i) {
-        struct repo const *const restrict repo = config->repos + i;
-        if (repo_lookup_all_parsed_commits(repo)) {
-            repo_free_count = i;
-            goto free_commits;
-        }
-    }
-    for (unsigned long i = 0; i < config->repos_count; ++i) {
-        struct repo const *const restrict repo = config->repos + i;
-        for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
-            struct wanted_object const *const restrict wanted_object =
-                repo->wanted_objects + j;
-            if (wanted_object->archive || wanted_object->checkout);
-            else continue;
-            if (export_wanted_object(config, repo, wanted_object, 
-                            workdir_archives, workdir_checkouts)) {
-                pr_error("Failed to export wanted object '%s'\n", 
-                        wanted_object->name);
-                return -1;
-            }
-        }
-    }
-    pr_info("Exported all repos\n");
-free_commits:
-    for (unsigned long i = 0; i < config->repos_count; ++i) {
-        repo_free_all_parsed_commits(config->repos + i);
-    }
-    return r;
-}
+// int export_all_repos_single_threaded(
+//     struct config const *const restrict config,
+//     struct work_directory *const restrict workdir_archives,
+//     struct work_directory *const restrict workdir_checkouts
+// ) {
+//     pr_info("Exporting all repos (single-threaded)...\n");
+//     int r = -1;
+//     unsigned long repo_free_count = config->repos_count;
+//     for (unsigned long i = 0; i < config->repos_count; ++i) {
+//         struct repo const *const restrict repo = config->repos + i;
+//         if (repo_lookup_all_parsed_commits(repo)) {
+//             repo_free_count = i;
+//             goto free_commits;
+//         }
+//     }
+//     for (unsigned long i = 0; i < config->repos_count; ++i) {
+//         struct repo const *const restrict repo = config->repos + i;
+//         for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
+//             struct wanted_object const *const restrict wanted_object =
+//                 repo->wanted_objects + j;
+//             if (wanted_object->archive || wanted_object->checkout);
+//             else continue;
+//             if (export_wanted_object(config, repo, wanted_object, 
+//                             workdir_archives, workdir_checkouts)) {
+//                 pr_error("Failed to export wanted object '%s'\n", 
+//                         wanted_object->name);
+//                 return -1;
+//             }
+//         }
+//     }
+//     pr_info("Exported all repos\n");
+// free_commits:
+//     for (unsigned long i = 0; i < config->repos_count; ++i) {
+//         repo_free_all_parsed_commits(config->repos + i);
+//     }
+//     return r;
+// }
 
 // int export_all_repos_multi_threaded_symlinks(
 //     struct config const *const restrict config,
@@ -6382,18 +6383,18 @@ free_commits:
 //     return r;
 // }
 
-int export_all_repos(
-    struct config const *const restrict config,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts
-) {
-    if (config->export_threads <= 1) {
-        return export_all_repos_single_threaded(config,
-            workdir_archives, workdir_checkouts);
-    }
-    return export_all_repos_multi_threaded(config, 
-            workdir_archives, workdir_checkouts);
-}
+// int export_all_repos(
+//     struct config const *const restrict config,
+//     struct work_directory *const restrict workdir_archives,
+//     struct work_directory *const restrict workdir_checkouts
+// ) {
+//     if (config->export_threads <= 1) {
+//         return export_all_repos_single_threaded(config,
+//             workdir_archives, workdir_checkouts);
+//     }
+//     return export_all_repos_multi_threaded(config, 
+//             workdir_archives, workdir_checkouts);
+// }
 
 int main(int const argc, char *argv[]) {
     char *config_path = NULL;
@@ -6451,11 +6452,11 @@ int main(int const argc, char *argv[]) {
         pr_error("Failed to mirro all repos\n");
         goto shutdown;
     }
-    if ((r = export_all_repos(
-            &config, &workdir_archives, &workdir_checkouts))) {
-        pr_error("Failed to export all repos (archives and checkouts)\n");
-        goto shutdown;
-    }
+    // if ((r = export_all_repos(
+    //         &config, &workdir_archives, &workdir_checkouts))) {
+    //     pr_error("Failed to export all repos (archives and checkouts)\n");
+    //     goto shutdown;
+    // }
     r = 0;
 shutdown:
 #ifdef DEBUGGING
