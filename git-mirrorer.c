@@ -3698,7 +3698,11 @@ int repo_parse_wanted_reference_common(
                 "Failed to peel reference '%s' into a commit object, "
                 "libgit return %d\n",
                 wanted_reference->name, r);
+#ifdef ALL_REFERENCES_MUST_BE_RESOLVED
             return -1;
+#else
+            return 0;
+#endif
         }
         pr_warn("Failed to peel reference '%s' into a commit object, "
                 "libgit return %d, but repo not updated yet, update to retry\n",
@@ -3710,11 +3714,7 @@ int repo_parse_wanted_reference_common(
         if ((r = git_reference_peel(&object, reference, GIT_OBJECT_COMMIT))) {
             pr_error("Failed to peel reference '%s' into commit object even "
             "after updating, libgit return %d\n", wanted_reference->name, r);
-#ifdef ALL_REFERENCES_MUST_BE_RESOLVED
             return -1;
-#else
-            return 0;
-#endif
         }
     }
     git_commit *commit = (git_commit *)object;
