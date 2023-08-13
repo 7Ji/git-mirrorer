@@ -11,6 +11,7 @@
 #include <signal.h>
 
 #include <fcntl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 
@@ -6469,6 +6470,31 @@ int repo_guarantee_all_wanted_objects_symlinks(
 //             workdir_archives, workdir_checkouts);
 // }
 
+int raise_nofile_limit() {
+    struct rlimit rlimit;
+    if (getrlimit(RLIMIT_NOFILE, &rlimit)) {
+        pr_error_with_errno("Failed to get limit of opened files");
+        return -1;
+    }
+    if (rlimit.rlim_cur <= 1024) {
+        pr_warn(
+            "Current nofile limit too small (%lu), this may result in "
+            "unexpeceted behaviours as git-mirrorer caches all repos "
+            "with all of their fds kept open during the whole run. "
+            "~10 fds are needed per repo.\n", 
+            rlimit.rlim_cur);
+    }
+    if (rlimit.rlim_cur == rlimit.rlim_max) return 0;
+    rlimit.rlim_cur = rlimit.rlim_max > 16384 ? 16384 : rlimit.rlim_max;
+    if (setrlimit(RLIMIT_NOFILE, &rlimit)) {
+        pr_error_with_errno("Failed to raise limit of opened files");
+        return -1;
+    }
+    pr_info("Raised limit of opened file descriptors to %lu\n", 
+            rlimit.rlim_cur);
+    return 0;
+}
+
 int main(int const argc, char *argv[]) {
     char *config_path = NULL;
     struct option const long_options[] = {
@@ -6508,6 +6534,11 @@ int main(int const argc, char *argv[]) {
         pr_warn("No repos defined, early quit\n");
         r = 0;
         goto free_config;
+    }
+    if (raise_nofile_limit()) {
+        pr_error("Failed to raise limit of opened file descriptors\n");
+        goto free_config;
+        r = -1;
     }
     struct work_directory workdir_repos, workdir_archives, workdir_checkouts;
     if (work_directories_from_paths(
