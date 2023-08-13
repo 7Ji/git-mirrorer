@@ -3386,17 +3386,6 @@ int repo_add_parsed_commit(
     return 0;
 }
 
-// May re-allocate repo->parsed_commits
-// int repo_add_parsed_commit_optional(
-//     struct repo *const restrict repo,
-//     git_oid const *const restrict oid
-// ) {
-//     for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
-
-//     }
-//     return repo_add_parsed_commit(repo, oid);
-// }
-
 // May re-allocate config->repos
 int repo_parse_commit_submodule_in_tree(
     struct config *const restrict config,
@@ -6192,63 +6181,6 @@ void *export_commit_write_and_finish_thread(void *arg) {
     );
 }
 
-// 1 already exported, 0 need to export, -1 error
-// int export_wanted_object_prepare(
-//     struct config const *const restrict config,
-//     struct repo const *const restrict repo,
-//     struct wanted_object const *const restrict wanted_object,
-//     struct work_directory *const restrict workdir_archives,
-//     struct work_directory *const restrict workdir_checkouts
-// ) {
-//     if (wanted_object_guarantee_symlinks(
-//         wanted_object, repo,
-//         config->archive_suffix, config->len_archive_suffix,
-//         workdir_archives->links_dirfd,
-//         workdir_checkouts->links_dirfd)) {
-//         pr_error("Failed to guarantee symlinks for wanted object '%s' "
-//             "of repo '%s'\n", wanted_object->name, repo->url);
-//         return -1;
-//     }
-//     switch (wanted_object->type) {
-//     case WANTED_TYPE_BRANCH:
-//     case WANTED_TYPE_TAG:
-//     case WANTED_TYPE_REFERENCE:
-//         if (!((struct wanted_reference const *)wanted_object)
-//             ->commit_resolved) {
-//             pr_error("Reference '%s' is not resolved into commit\n",
-//                     wanted_object->name);
-//             return -1;
-//         }
-//         __attribute__((fallthrough));
-//     case WANTED_TYPE_HEAD:
-//         if (!((struct wanted_reference const *)wanted_object)
-//             ->commit_resolved) {
-//             pr_warn("Reference '%s' is not resolved into commit\n",
-//                     wanted_object->name);
-//             break;
-//         }
-//         __attribute__((fallthrough));
-//     case WANTED_TYPE_COMMIT: {
-//         if (wanted_object->parsed_commit_id == (unsigned long) -1) {
-//             pr_error("Commit %s is not parsed yet\n",
-//                 wanted_object->id_hex_string);
-//             return -1;
-//         }
-//         if (export_commit(config, repo,
-//             repo->parsed_commits + wanted_object->parsed_commit_id,
-//             wanted_object->archive, wanted_object->checkout)) {
-//             pr_error("Failed to export commit %s of repo '%s'\n",
-//                 wanted_object->id_hex_string, repo->url);
-//             return -1;
-//         }
-//         break;
-//     }
-//     default:
-//         break;
-//     }
-//     return 0;
-// }
-
 int export_wanted_object_with_symlinks_atomic_optional(
     struct config const *const restrict config,
     struct repo const *const restrict repo,
@@ -6317,26 +6249,6 @@ int export_wanted_object_with_symlinks_atomic_optional(
     return 0;
 }
 
-// struct export_wanted_object_thread_arg {
-//     struct config const *restrict config;
-//     struct repo const *restrict repo;
-//     struct wanted_object const *restrict wanted_object;
-//     struct work_directory *restrict workdir_archives;
-//     struct work_directory *restrict workdir_checkouts;
-// };
-
-// void *export_wanted_object_thread(void *arg) {
-//     struct export_wanted_object_thread_arg *private_arg = 
-//         (struct export_wanted_object_thread_arg *)arg;
-//     pr_debug("Starting exporting thread %ld for '%s': '%s'\n", 
-//             pthread_self(), private_arg->repo->url, 
-//             private_arg->wanted_object->name);
-//     return (void *)(long)export_wanted_object(
-//         private_arg->config, private_arg->repo,
-//         private_arg->wanted_object, 
-//         private_arg->workdir_archives, private_arg->workdir_checkouts);
-// }
-
 int repo_guarantee_all_wanted_objects_symlinks(
     struct repo const *const restrict repo,
     char const *const restrict archive_suffix,
@@ -6396,66 +6308,6 @@ free_commits:
     }
     return r;
 }
-
-// int export_all_repos_multi_threaded_symlinks(
-//     struct config const *const restrict config,
-//     struct work_directory *const restrict workdir_archives,
-//     struct work_directory *const restrict workdir_checkouts
-// ) {
-
-// }
-
-// int export_all_repos_multi_threaded_files(
-//     struct config const *const restrict config,
-//     struct work_directory *const restrict workdir_archives,
-//     struct work_directory *const restrict workdir_checkouts
-// ) {
-
-// }
-
-// int export_repo_prepare_lookup_commits_and_guarantee_symlinks(
-//     struct config const *const restrict config,
-//     struct repo const *const restrict repo,
-//     struct work_directory *const restrict workdir_archives,
-//     struct work_directory *const restrict workdir_checkouts
-// ) {
-//     for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
-//         struct wanted_object const *const restrict wanted_object = 
-//             repo->wanted_objects + i;
-//         if (wanted_object_guarantee_symlinks(
-//             wanted_object, repo, 
-//             config->archive_suffix, config->len_archive_suffix,
-//             workdir_archives->links_dirfd, workdir_checkouts->links_dirfd)) {
-//             pr_error("Failed to guarantee symlinks for wanted object '%s' "
-//             "of repo '%s'", wanted_object->name, repo->url);
-//             return -1;
-//         }
-//     }
-//     if (repo_lookup_all_parsed_commits(repo)) {
-//         pr_error("Failed to lookup all parsed commits in repo '%s'\n",
-//                     repo->url);
-//         return -1;
-//     }
-//     return 0;
-// }
-
-// struct export_repo_prepare_lookup_commits_and_guarantee_symlinks_arg {
-//     struct config const *restrict config;
-//     struct repo const *restrict repo;
-//     struct work_directory *restrict workdir_archives;
-//     struct work_directory *restrict workdir_checkouts;
-// };
-
-// void *export_repo_prepare_lookup_commits_and_guarantee_symlinks_thread(
-//     void *arg
-// ) {
-//     struct export_repo_prepare_lookup_commits_and_guarantee_symlinks_arg
-//         *private_arg = arg;
-//     return (void *)(long)
-//         export_repo_prepare_lookup_commits_and_guarantee_symlinks(
-//             private_arg->config, private_arg->repo, 
-//             private_arg->workdir_archives, private_arg->workdir_checkouts);
-// }
 
 int guanrantee_all_repos_wanted_objects_symlinks(
     struct config const *const restrict config,
@@ -6886,136 +6738,6 @@ free_commits:
         repo_free_all_parsed_commits(config->repos + i);
     }
     return r;
-
-//     struct export_thread_complex {
-//         pthread_t thread;
-//         bool active;
-//         struct export_wanted_object_thread_arg arg;
-//     };
-//     struct export_thread_complex *export_threads_complex = 
-//         calloc(config->export_threads,
-//                 sizeof *export_threads_complex);
-//     if (export_threads_complex == NULL) {
-//         pr_error_with_errno("Failed to allocate memory for exporting threads");
-//         return -1;
-//     }
-//     unsigned short export_threads_count = 0;
-//     long thread_ret;
-//     int r = -1;
-
-
-
-//     pr_info("Exporting all repos (%hu threads)...\n", config->export_threads);
-//     for (unsigned long i = 0; i < config->repos_count; ++i) {
-//         struct repo const *const restrict repo = config->repos + i;
-//         for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
-//             struct wanted_object const *const restrict wanted_object =
-//                 repo->wanted_objects + j;
-//             if (wanted_object->archive || wanted_object->checkout);
-//             else continue;
-//             struct export_thread_complex *export_thread_complex = NULL;
-//             while (export_threads_count >= config->export_threads) {
-//                 for (unsigned short i = 0; i < config->export_threads; ++i) {
-//                     struct export_thread_complex *export_thread_complex_running 
-//                         = export_threads_complex + i;
-//                     if (!export_thread_complex_running->active) continue;
-//                     r = pthread_tryjoin_np(
-//                             export_thread_complex_running->thread, 
-//                                             (void **)&thread_ret);
-//                     switch (r) {
-//                     case 0:
-//                         pr_debug("Ended exporting thread %ld\n",
-//                             export_thread_complex->thread);
-//                         export_thread_complex_running->active = false;
-//                         if (thread_ret) {
-//                             pr_error("Thread %ld returned with %ld\n", 
-//                                     export_thread_complex_running->thread, 
-//                                     thread_ret);
-//                             r = -1;
-//                             goto kill_threads;
-//                         }
-//                         export_thread_complex = export_thread_complex_running;
-//                         --export_threads_count;
-//                         break;
-//                     case EBUSY:
-//                         break;
-//                     default:
-//                         pr_error("Failed to non-blocking wait for thread %ld, "
-//                                 "pthread returned %ld\n", 
-//                                 export_thread_complex_running->thread, 
-//                                 thread_ret);
-//                         r = -1;
-//                         goto kill_threads;
-//                     }
-//                 }
-//                 sleep(1);
-//             }
-//             if (!export_thread_complex) {
-//                 for (unsigned short i = 0; i < config->export_threads; ++i) {
-//                     struct export_thread_complex *export_thread_complex_running 
-//                         = export_threads_complex + i;
-//                     if (!export_thread_complex_running->active) {
-//                         export_thread_complex = export_thread_complex_running;
-//                         break;
-//                     }
-//                 }
-//                 if (!export_thread_complex) {
-//                     pr_error("Failed to find empty thread slot\n");
-//                     r = -1;
-//                     goto kill_threads;
-//                 }
-//             }
-//             export_thread_complex->arg.config = config;
-//             export_thread_complex->arg.repo = repo;
-//             export_thread_complex->arg.wanted_object = wanted_object;
-//             export_thread_complex->arg.workdir_archives = workdir_archives;
-//             export_thread_complex->arg.workdir_checkouts = workdir_checkouts;
-//             r = pthread_create(
-//                 &export_thread_complex->thread, NULL, 
-//                 export_wanted_object_thread, 
-//                 &export_thread_complex->arg);
-//             if (r) {
-//                 pr_error("Failed to create thread, pthread return %d\n", r);
-//                 goto kill_threads;
-//             }
-//             export_thread_complex->active = true;
-//             ++export_threads_count;
-//         }
-//     }
-//     for (unsigned short i = 0; i < config->export_threads; ++i) {
-//         struct export_thread_complex *export_thread_complex = 
-//                         export_threads_complex + i;
-//         if (!export_thread_complex->active) continue;
-//         pr_debug("Joining thread %ld\n", export_thread_complex->thread);
-//         r = pthread_join(export_thread_complex->thread, (void **)&thread_ret);
-//         switch (r) {
-//         case 0:
-//             if (thread_ret) {
-//                 pr_error("Thread %ld returned %ld\n", 
-//                     export_thread_complex->thread, thread_ret);
-//                 r = -1;
-//                 goto free_threads;
-//             }
-//             export_thread_complex->active = false;
-//             break;
-//         default:
-//             pr_error("Failed to join thread %ld, pthread return %d\n", 
-//                     export_thread_complex->thread, r);
-//             r = -1;
-//             goto free_threads;
-//         }
-//     }
-//     pr_info("Exported all repos\n");
-//     r = 0;
-// kill_threads:
-//     for (unsigned short i = 0; i < config->export_threads; ++i) {
-//         if (export_threads_complex[i].active) {
-//             pthread_kill(export_threads_complex[i].thread, SIGKILL);
-//         }
-//     }
-// free_threads:
-//     free(export_threads_complex);
-//     return r;
 }
 
 int export_all_repos(
