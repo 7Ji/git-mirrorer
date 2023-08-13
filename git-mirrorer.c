@@ -6536,19 +6536,73 @@ kill_threads:
     for (unsigned short i = 0; i < config->export_threads; ++i) {
         struct prepare_thread_handle *handle = handles + i;
         if (handle->active) {
-            r = pthread_kill(handle->thread, SIGKILL);
-            if (r) {
-                pr_error("Failed to kill thread %ld for preparing repo '%s', "
-                    "pthread return %d\n",
+            r = pthread_tryjoin_np(handle->thread, (void**)&thread_ret);
+            switch (r) {
+            case 0:
+                if (thread_ret) {
+                    pr_error("Thread %ld for looking up commits in repo '%s' "
+                        "returned with %ld\n", 
+                        handle->thread, handle->repo->url, thread_ret);
+                }
+                break;
+            default:
+                pr_error("Failed to try join thread %ld for looking up commits"
+                    "in repo '%s', pthread return %d\n", 
                     handle->thread, handle->repo->url, r);
+                __attribute__((fallthrough));
+            case EBUSY:
+                r = pthread_kill(handle->thread, SIGKILL);
+                if (r) {
+                    pr_error(
+                        "Failed to kill thread %ld for preparing repo '%s', "
+                        "pthread return %d\n",
+                        handle->thread, handle->repo->url, r);
+                }
+                r = pthread_join(handle->thread, (void **)&thread_ret);
+                if (r) {
+                    pr_error("Failed to join killed thread %ld for preparing "
+                        "repo '%s', pthread return %d\n",
+                        handle->thread, handle->repo->url, r);
+                } else if (thread_ret) {
+                    pr_error("Killed thread %ld for preparing repo '%s' "
+                            "returned with %ld\n",
+                            handle->thread, handle->repo->url, thread_ret);
+                }
+                break;
             }
         }
     }
 kill_symlink_thread:
-    r = pthread_kill(symlinks_thread, SIGKILL);
-    if (r) {
-        pr_error("Failed to kill thread for symlinks\n");
+    r = pthread_tryjoin_np(symlinks_thread, (void**)&thread_ret);
+    switch (r) {
+    case 0:
+        if (thread_ret) {
+            pr_error("Thread %ld for symlinks returned with %ld\n",
+                symlinks_thread, thread_ret);
+        }
+        break;
+    default:
+        pr_error(
+            "Failed to try join symlinks thread %ld, pthread return %d\n", 
+            symlinks_thread, r);
+        __attribute__((fallthrough));
+    case EBUSY:
+        r = pthread_kill(symlinks_thread, SIGKILL);
+        if (r) {
+            pr_error(
+                "Failed to kill thread for symlinks, pthread return %d\n", r);
+        }
+        r = pthread_join(symlinks_thread, (void **)&thread_ret);
+        if (r) {
+            pr_error("Failed to join killed symlinks thread %ld, "
+            "pthread return %d\n", symlinks_thread, r);
+        } else if (thread_ret) {
+            pr_error("Killed symlinks thread %ld returned with %ld\n",
+                    symlinks_thread, thread_ret);
+        }
+        break;
     }
+    
 free_handles:
     if (handles) free(handles);
     for (unsigned long i = 0; i < repo_prepared_count; ++i) {
