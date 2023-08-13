@@ -1454,9 +1454,26 @@ int wanted_object_guarantee_symlinks(
         case WANTED_TYPE_HEAD:
             break;
     }
-    if (!wanted_object->commit_resolved) {
-        pr_error("Commit not resolved yet\n");
-        return -1;
+    switch (wanted_object->type) {
+    case WANTED_TYPE_BRANCH:
+    case WANTED_TYPE_TAG:
+    case WANTED_TYPE_REFERENCE:
+        if (!wanted_object->commit_resolved) {
+#ifdef ALL_REFERENCES_MUST_BE_RESOLVED
+            pr_error(
+#else
+            pr_warn(
+#endif
+                "Commit not resolved yet\n");
+#ifdef ALL_REFERENCES_MUST_BE_RESOLVED
+            return -1;
+#else
+            return 0;
+#endif
+        }
+        break;
+    default:
+        break;
     }
     for (unsigned short i = 0; i < wanted_object->len_name; ++i) {
         switch (wanted_object->name[i]) {
@@ -3693,7 +3710,11 @@ int repo_parse_wanted_reference_common(
         if ((r = git_reference_peel(&object, reference, GIT_OBJECT_COMMIT))) {
             pr_error("Failed to peel reference '%s' into commit object even "
             "after updating, libgit return %d\n", wanted_reference->name, r);
+#ifdef ALL_REFERENCES_MUST_BE_RESOLVED
             return -1;
+#else
+            return 0;
+#endif
         }
     }
     git_commit *commit = (git_commit *)object;
