@@ -4483,7 +4483,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
         *(get_last(update_status.repo_ids)) = i;
     }
     // If there's only 1 thread needed, going this routine just wastes time
-    if (update_status.repo_ids_count <= 1) {
+    if (update_status.repo_ids_count <= 1 || config->update_threads <= 1) {
         r = 0;
         goto free_servers_and_ids_maybe;
     }
