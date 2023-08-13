@@ -5223,7 +5223,7 @@ int export_commit_treewalk_callback(
     }
     char const *const restrict mtime = private_payload->mtime;
     int const fd_archive = private_payload->fd_archive;
-    int const dirfd_checkout = dirfd_checkout;
+    int const dirfd_checkout = private_payload->dirfd_checkout;
     switch (git_tree_entry_type(entry)) {
     case GIT_OBJECT_BLOB:
         return export_commit_tree_entry_blob(
