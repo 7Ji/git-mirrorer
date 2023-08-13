@@ -411,7 +411,7 @@ struct config const CONFIG_INIT = {
     },
     .archive_suffix = ".tar",
     .len_archive_suffix = 4,
-    .export_threads = 1,
+    .export_threads = 10,
     .clean_links = true,
 };
 
@@ -5859,6 +5859,11 @@ int repo_lookup_all_parsed_commits(
     return 0;
 }
 
+void *repo_lookup_all_parsed_commits_thread(void *arg) {
+    return (void *)(long)
+        repo_lookup_all_parsed_commits((struct repo const *)arg);
+}
+
 int repo_free_all_parsed_commits(
     struct repo const *const restrict repo
 ) {
@@ -6255,8 +6260,9 @@ int export_wanted_object_with_symlinks_atomic_optional(
 // }
 
 int repo_guarantee_all_wanted_objects_symlinks(
-    struct config const *const restrict config,
     struct repo const *const restrict repo,
+    char const *const restrict archive_suffix,
+    unsigned short const len_archive_suffix,
     int const archives_links_dirfd,
     int const checkouts_links_dirfd
 ) {
@@ -6265,7 +6271,7 @@ int repo_guarantee_all_wanted_objects_symlinks(
             repo->wanted_objects + i;
         if (wanted_object_guarantee_symlinks(
             wanted_object, repo,
-            config->archive_suffix, config->len_archive_suffix,
+            archive_suffix, len_archive_suffix,
             archives_links_dirfd,
             checkouts_links_dirfd)) {
             pr_error("Failed to guarantee symlinks for wanted object '%s' "
@@ -6329,22 +6335,262 @@ free_commits:
 
 // }
 
-// int export_all_repos_multi_threaded(
+// int export_repo_prepare_lookup_commits_and_guarantee_symlinks(
 //     struct config const *const restrict config,
+//     struct repo const *const restrict repo,
 //     struct work_directory *const restrict workdir_archives,
 //     struct work_directory *const restrict workdir_checkouts
 // ) {
-//     /*
-//       Multi-thread exporting is done in thress stages:
-//         1. Every repo has its thread to prepare symlinks for 
-//         all its wanted objects. Why not MT on object? Because 
-//         there will be race-condition involved on createing/
-//         reading the symlinks, and introducing locks will just 
-//         slow down the whole process
-//         2. Every wanted object, should it be expoted, has its
-//         own thread. Note however, there will also be archive-
-//         child forked processes.
-//     */
+//     for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
+//         struct wanted_object const *const restrict wanted_object = 
+//             repo->wanted_objects + i;
+//         if (wanted_object_guarantee_symlinks(
+//             wanted_object, repo, 
+//             config->archive_suffix, config->len_archive_suffix,
+//             workdir_archives->links_dirfd, workdir_checkouts->links_dirfd)) {
+//             pr_error("Failed to guarantee symlinks for wanted object '%s' "
+//             "of repo '%s'", wanted_object->name, repo->url);
+//             return -1;
+//         }
+//     }
+//     if (repo_lookup_all_parsed_commits(repo)) {
+//         pr_error("Failed to lookup all parsed commits in repo '%s'\n",
+//                     repo->url);
+//         return -1;
+//     }
+//     return 0;
+// }
+
+// struct export_repo_prepare_lookup_commits_and_guarantee_symlinks_arg {
+//     struct config const *restrict config;
+//     struct repo const *restrict repo;
+//     struct work_directory *restrict workdir_archives;
+//     struct work_directory *restrict workdir_checkouts;
+// };
+
+// void *export_repo_prepare_lookup_commits_and_guarantee_symlinks_thread(
+//     void *arg
+// ) {
+//     struct export_repo_prepare_lookup_commits_and_guarantee_symlinks_arg
+//         *private_arg = arg;
+//     return (void *)(long)
+//         export_repo_prepare_lookup_commits_and_guarantee_symlinks(
+//             private_arg->config, private_arg->repo, 
+//             private_arg->workdir_archives, private_arg->workdir_checkouts);
+// }
+
+int guanrantee_all_repos_wanted_objects_symlinks(
+    struct config const *const restrict config,
+    int const archives_links_dirfd,
+    int const checkouts_links_dirfd
+) {
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        struct repo const *const restrict repo = config->repos + i;
+        if (repo_guarantee_all_wanted_objects_symlinks(
+            repo, config->archive_suffix, config->len_archive_suffix,
+            archives_links_dirfd, checkouts_links_dirfd)) {
+            pr_error("Failed to guarantee symlinks for all wanted objects of "
+            "repo '%s'\n", repo->url);
+            return -1;
+        }
+    }
+    return 0;
+}
+struct guanrantee_all_repos_wanted_objects_symlinks_arg {
+    struct config const *restrict config;
+    int const archives_links_dirfd;
+    int const checkouts_links_dirfd;
+};
+
+void *guanrantee_all_repos_wanted_objects_symlinks_thread(void *arg) {
+    struct guanrantee_all_repos_wanted_objects_symlinks_arg *private_arg = 
+        (struct guanrantee_all_repos_wanted_objects_symlinks_arg *)arg;
+    return (void *)(long)
+                guanrantee_all_repos_wanted_objects_symlinks(
+                    private_arg->config, 
+                    private_arg->archives_links_dirfd, 
+                    private_arg->checkouts_links_dirfd);
+}
+
+int export_all_repos_multi_threaded_prepare(
+    struct config const *const restrict config,
+    struct work_directory *const restrict workdir_archives,
+    struct work_directory *const restrict workdir_checkouts
+) {
+   struct prepare_thread_handle {
+        pthread_t thread;
+        struct repo const *repo;
+        bool active;
+    };
+    struct prepare_thread_handle *handles = calloc(
+        config->export_threads, sizeof *handles);
+    if (handles == NULL) {
+        pr_error("Failed to allocate memory for prepare threads\n");
+        return -1;
+    }
+    struct guanrantee_all_repos_wanted_objects_symlinks_arg 
+        symlinks_thread_arg = {
+            .config = config, 
+            .archives_links_dirfd = workdir_archives->links_dirfd,
+            .checkouts_links_dirfd = workdir_checkouts->links_dirfd
+        };
+    pthread_t symlinks_thread;
+    unsigned long repo_prepared_count = 0;
+    int r = pthread_create(&symlinks_thread, NULL, 
+                guanrantee_all_repos_wanted_objects_symlinks_thread,
+                &symlinks_thread_arg);
+    if (r) {
+        pr_error("Failed to create thread for generating symlinks, pthread "
+            "return %d\n", r);
+        goto free_handles;
+    }
+    long thread_ret;
+    for (; repo_prepared_count < config->repos_count; 
+        ++repo_prepared_count) {
+        struct repo const *const restrict repo = 
+            config->repos + repo_prepared_count;
+        bool thread_added = false;
+        unsigned short threads_active_count = 0;
+        while (!thread_added) {
+            for (unsigned short i = 0; i < config->export_threads; ++i) {
+                struct prepare_thread_handle *handle = handles + i;
+                if (handle->active) {
+                    r = pthread_tryjoin_np(
+                        handle->thread, (void **)&thread_ret);
+                    switch (r) {
+                    case 0:
+                        handle->active = false;
+                        if (thread_ret) {
+                            pr_error("Thread %ld for preparing repo '%s' "
+                            "returned with %ld\n", handle->thread, 
+                            handle->repo->url, thread_ret);
+                            goto kill_threads;
+                        }
+                        break;
+                    case EBUSY:
+                        break;
+                    default:
+                        pr_error("Failed to nonblocking wait for thread %ld "
+                        "for preparing repo '%s', pthread return %d\n",
+                        handle->thread, handle->repo->url, r);
+                        goto kill_threads;
+                    }
+                }
+                // If it's already running, ofc inc it;
+                // If it's not, then we put a thread to it, also inc it
+                ++threads_active_count;
+                if (!handle->active) {
+                    handle->repo = repo;
+                    r = pthread_create(&handle->thread, NULL,
+                        repo_lookup_all_parsed_commits_thread, (void *)repo);
+                    if (r) {
+                        pr_error("Failed to create thread to prepare repo "
+                        "'%s', pthread return '%d'\n", repo->url, r);
+                        goto kill_threads;
+                    }
+                    handle->active = true;
+                    thread_added = true;
+                    break;
+                }
+            }
+            if (threads_active_count == config->export_threads) {
+                pr_info("Sleeping!!\n");
+                sleep(1);
+            }
+        }
+    }
+    for (unsigned short i = 0; i < config->export_threads; ++i) {
+        struct prepare_thread_handle *handle = handles + i;
+        if (handle->active) {
+            r = pthread_join(handle->thread, (void **)&thread_ret);
+            if (r) {
+                pr_error("Failed to join thread %ld for preparing repo '%s', "
+                            "pthread return %d\n",
+                            handle->thread, handle->repo->url, r);
+                goto kill_threads;
+            }
+            handle->active = false;
+            if (thread_ret) {
+                pr_error(
+                    "Thread %ld for preparing repo '%s' returned with %ld\n", 
+                    handle->thread, handle->repo->url, thread_ret);
+                goto kill_threads;
+            }
+        }
+    }
+    free(handles);
+    handles = NULL;
+    r = pthread_join(symlinks_thread, (void **)&thread_ret);
+    if (r) {
+        pr_error("Failed to join thread %ld for symlinks, pthread return %d\n",
+            symlinks_thread, r);
+        goto kill_symlink_thread;
+    }
+    if (thread_ret) {
+        pr_error("Thread %ld for guaranteeing symlinks returned with %ld\n",
+                symlinks_thread, thread_ret);
+        return -1;
+    }
+    return 0;
+kill_threads:
+    for (unsigned short i = 0; i < config->export_threads; ++i) {
+        struct prepare_thread_handle *handle = handles + i;
+        if (handle->active) {
+            r = pthread_kill(handle->thread, SIGKILL);
+            if (r) {
+                pr_error("Failed to kill thread %ld for preparing repo '%s', "
+                    "pthread return %d\n",
+                    handle->thread, handle->repo->url, r);
+            }
+        }
+    }
+kill_symlink_thread:
+    r = pthread_kill(symlinks_thread, SIGKILL);
+    if (r) {
+        pr_error("Failed to kill thread for symlinks\n");
+    }
+free_handles:
+    if (handles) free(handles);
+    for (unsigned long i = 0; i < repo_prepared_count; ++i) {
+        if (repo_free_all_parsed_commits(config->repos + i)) {
+            pr_error("Failed to free all parsed commits in repo '%s'\n",
+                config->repos[i].url);
+        }
+    }
+    return -1;
+}
+
+int export_all_repos_multi_threaded(
+    struct config const *const restrict config,
+    struct work_directory *const restrict workdir_archives,
+    struct work_directory *const restrict workdir_checkouts
+) {
+    /*
+      Multi-thread exporting is done in thress stages:
+        1. Every repo has its thread to prepare symlinks for 
+        all its wanted objects. Why not MT on object? Because 
+        there will be race-condition involved on createing/
+        reading the symlinks, and introducing locks will just 
+        slow down the whole process
+        2. Every wanted object, should it be expoted, has its
+        own thread. Note however, there will also be archive-
+        child forked processes.
+    */
+    pr_info("Exporting all repos (%hu threads)\n", config->export_threads);
+    if (export_all_repos_multi_threaded_prepare(
+        config, workdir_archives, workdir_checkouts)) {
+        pr_error("Failed to prepare repos (multi-threaded)\n");
+        return -1;
+    }
+    int r = -1;
+    pr_warn("Early quit as we're still WIP\n");
+    r = 0;
+// free_commits:
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        repo_free_all_parsed_commits(config->repos + i);
+    }
+    return r;
+
 //     struct export_thread_complex {
 //         pthread_t thread;
 //         bool active;
@@ -6474,7 +6720,7 @@ free_commits:
 // free_threads:
 //     free(export_threads_complex);
 //     return r;
-// }
+}
 
 int export_all_repos(
     struct config const *const restrict config,
@@ -6484,12 +6730,10 @@ int export_all_repos(
     if (config->export_threads <= 1) {
         return export_all_repos_single_threaded(config,
             workdir_archives, workdir_checkouts);
+    } else {
+        return export_all_repos_multi_threaded(config, 
+            workdir_archives, workdir_checkouts);
     }
-
-    pr_error("WIP!!!!");
-    return -1;
-    // return export_all_repos_multi_threaded(config, 
-    //         workdir_archives, workdir_checkouts);
 }
 
 int raise_nofile_limit() {
