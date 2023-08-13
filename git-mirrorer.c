@@ -6845,19 +6845,20 @@ int raise_nofile_limit() {
 int clean_all_dirs(
     struct work_directory *const restrict workdir_repos,
     struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts
+    struct work_directory *const restrict workdir_checkouts,
+    struct config const *const restrict config
 ) {
     int r = 0;
-    if (work_directory_clean(workdir_repos)) {
+    if (config->clean_repos && work_directory_clean(workdir_repos)) {
         pr_error("Failed to clean repos workdir '%s'\n", workdir_repos->path);
         r = -1;
     }
-    if (work_directory_clean(workdir_archives)) {
+    if (config->clean_archives && work_directory_clean(workdir_archives)) {
         pr_error("Failed to clean archives workdir '%s'\n", 
                 workdir_archives->path);
         r = -1;
     }
-    if (work_directory_clean(workdir_checkouts)) {
+    if (config->clean_checkouts && work_directory_clean(workdir_checkouts)) {
         pr_error("Failed to clean checkouts workdir '%s'\n", 
                 workdir_repos->path);
         r = -1;
@@ -6929,7 +6930,7 @@ int main(int const argc, char *argv[]) {
         goto shutdown;
     }
     if ((r = clean_all_dirs(
-        &workdir_repos, &workdir_archives, &workdir_checkouts))) {
+        &workdir_repos, &workdir_archives, &workdir_checkouts, &config))) {
         pr_error("Failed to clean up all folders\n");
         goto shutdown;
     }
