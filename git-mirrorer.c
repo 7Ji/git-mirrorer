@@ -5677,16 +5677,7 @@ int export_handle_init_common(
                 r = -1;
                 goto set_no_export;
             }
-        } else {
-            if (ensure_parent_dir_at(dir_fd, handle->path_work, 
-                handle->len_path_work)) {
-                pr_error("Failed to ensure parent dir for work file '%s'\n",
-                        handle->path_work);
-                r = -1;
-                goto set_no_export;
-            }
         }
-        // if (mkdir_re)
         if ((handle->fd = openat(
             dir_fd, handle->path_work, flags, mode)) < 0) {
             pr_error_with_errno("Failed to open '%s'", handle->path_work);
@@ -5961,7 +5952,9 @@ int export_commit_write(
 
 int export_commit_finish(
     struct export_handle *archive_handle,
+    struct work_directory *const restrict workdir_archives,
     struct export_handle *checkout_handle,
+    struct work_directory *const restrict workdir_checkouts,
     bool const force
 ) {
     int r = 0;
@@ -6009,7 +6002,8 @@ int export_commit_finish(
             archive_handle->child = -1;
         }
         if (!force && 
-            rename(archive_handle->path_work, archive_handle->path)) {
+            renameat(workdir_archives->dirfd, archive_handle->path_work,
+                    workdir_archives->dirfd, archive_handle->path)) {
             pr_error_with_errno("Failed to move '%s' to '%s'",
                 archive_handle->path_work, archive_handle->path);
             r = -1;
@@ -6021,7 +6015,8 @@ int export_commit_finish(
             r = -1;
         }
         if (!force && 
-            rename(checkout_handle->path_work, checkout_handle->path)) {
+            renameat(workdir_checkouts->dirfd, checkout_handle->path_work, 
+                workdir_checkouts->dirfd, checkout_handle->path)) {
             pr_error_with_errno("Failed to move '%s' to '%s'",
                 checkout_handle->path_work, checkout_handle->path);
             r = -1;
@@ -6099,10 +6094,12 @@ int export_commit_single_threaded(
                     &archive_handle, &checkout_handle)) {
         pr_error("Failed to write export commit '%s'\n", 
                     parsed_commit->id_hex_string);
-        export_commit_finish(&archive_handle, &checkout_handle, true);
+        export_commit_finish(&archive_handle, workdir_archives, 
+                    &checkout_handle, workdir_checkouts, true);
         return -1;
     }
-    if (export_commit_finish(&archive_handle, &checkout_handle, false)) {
+    if (export_commit_finish(&archive_handle, workdir_archives, 
+                    &checkout_handle, workdir_checkouts, false)) {
         pr_error("Failed to finish exporting of commit\n");
         return -1;
     }
