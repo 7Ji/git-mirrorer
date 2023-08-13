@@ -2929,7 +2929,8 @@ int work_directory_add_keep(
 int work_directory_from_path(
     struct work_directory *const restrict work_directory,
     char const *const restrict path,
-    unsigned short const len_path
+    unsigned short const len_path,
+    bool init_keep
 ) {
     if (len_path >= PATH_MAX) {
         pr_error("Path too long\n");
@@ -2987,6 +2988,12 @@ int work_directory_from_path(
     work_directory->keeps = NULL;
     work_directory->keeps_allocated = 0;
     work_directory->keeps_count = 0;
+    if (init_keep) {
+        if (work_directory_add_keep(work_directory, "links", 5)) {
+            pr_error("Faild to init keeps\n");
+            goto close_dirfd;
+        }
+    }
     return 0;
 close_dirfd:
     if (close(work_directory->dirfd)) {
@@ -2995,43 +3002,42 @@ close_dirfd:
     return -1;
 }
 
-int work_directories_from_paths(
+int work_directories_from_config(
     struct work_directory *const restrict workdir_repos,
     struct work_directory *const restrict workdir_archives,
     struct work_directory *const restrict workdir_checkouts,
-    char const *const restrict dir_repos,
-    char const *const restrict dir_archives,
-    char const *const restrict dir_checkouts,
-    unsigned short const len_dir_repos,
-    unsigned short const len_dir_archives,
-    unsigned short const len_dir_checkouts
+    struct config const *const restrict config
 ) {
-    if (work_directory_from_path(workdir_repos, dir_repos, len_dir_repos)) {
-        pr_error("Failed to open work directory '%s' for repos\n", dir_repos);
+    if (work_directory_from_path(workdir_repos, config->dir_repos, 
+            config->len_dir_repos, config->clean_repos)) {
+        pr_error("Failed to open work directory '%s' for repos\n", 
+            config->dir_repos);
         return -1;
     }
-    if (work_directory_from_path(workdir_archives, dir_archives, 
-                                len_dir_archives)) {
+    if (work_directory_from_path(workdir_archives, config->dir_archives, 
+                        config->len_dir_archives, config->clean_archives)) {
         pr_error("Failed to open work directory '%s' for archives\n",
-                dir_archives);
-        goto close_repos_dirfd;
+                config->dir_archives);
+        goto free_workdir_repos;
     }
-    if (work_directory_from_path(workdir_checkouts, dir_checkouts,
-                                    len_dir_checkouts)) {
+    if (work_directory_from_path(workdir_checkouts, config->dir_checkouts,
+                        config->len_dir_checkouts, config->clean_checkouts)) {
         
         pr_error("Failed to open work directory '%s' for checkouts\n",
-                dir_checkouts);
-        goto close_archives_dirfd;
+                config->dir_checkouts);
+        goto free_workdir_archives;
     }
     return 0;
-close_archives_dirfd:
+free_workdir_archives:
     if (close(workdir_archives->dirfd)) {
         pr_error_with_errno("Failed to close dirfd for archives workdir");
     }
-close_repos_dirfd:
+    if (workdir_archives->keeps) free(workdir_archives->keeps);
+free_workdir_repos:
     if (close(workdir_repos->dirfd)) {
         pr_error_with_errno("Failed to close dirfd for repos workdir");
     }
+    if (workdir_repos->keeps) free(workdir_repos->keeps);
     return -1;
 }
 
@@ -6911,11 +6917,8 @@ int main(int const argc, char *argv[]) {
         r = -1;
     }
     struct work_directory workdir_repos, workdir_archives, workdir_checkouts;
-    if (work_directories_from_paths(
-        &workdir_repos, &workdir_archives, &workdir_checkouts,
-        config.dir_repos, config.dir_archives, config.dir_checkouts,
-        config.len_dir_repos, config.len_dir_archives, config.len_dir_checkouts
-    )) {
+    if (work_directories_from_config(
+        &workdir_repos, &workdir_archives, &workdir_checkouts, &config)) {
         pr_error("Failed to open work directories\n");
         goto free_config;
     }
