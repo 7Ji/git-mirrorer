@@ -3144,21 +3144,23 @@ int repo_update(
         if (try == proxy_after) {
             if (try)
                 pr_warn(
-                    "Failed for %hu times, use proxy\n", proxy_after);
+                    "Failed to fetch from '%s' for %hu times, use proxy\n",
+                    repo->url, proxy_after);
             fetch_options_dup.proxy_opts.type = GIT_PROXY_SPECIFIED;
             // config->fetch_options.proxy_opts.
         }
         r = git_remote_fetch(remote, NULL, &fetch_options_dup, NULL);
         if (r) {
             pr_error(
-                "Failed to fetch, libgit return %d%s\n",
+                "Failed to fetch from '%s', libgit return %d%s\n",
+                repo->url,
                 r, try < max_try ? ", will retry" : "");
         } else {
             break;
         }
     }
     if (r) {
-        pr_error("Failed to update repo, considered failure\n");
+        pr_error("Failed to update repo '%s', considered failure\n", repo->url);
         r = -1;
         goto free_strarray;
     }
