@@ -413,11 +413,32 @@ struct config const CONFIG_INIT = {
     .clean_links = true,
 };
 
+char const *yaml_event_type_strings[] = {
+    "no",
+    "stream start",
+    "stream end",
+    "document start",
+    "document end",
+    "alias",
+    "scalar",
+    "sequence start",
+    "sequence end",
+    "mapping start",
+    "mapping end",
+};
+
 enum yaml_config_wanted_type {
     YAML_CONFIG_WANTED_UNKNOWN,
     YAML_CONFIG_WANTED_GLOBAL_EMPTY,
     YAML_CONFIG_WANTED_GLOBAL_ALWAYS,
     YAML_CONFIG_WANTED_REPO,
+};
+
+char const *yaml_config_wanted_type_strings[] = {
+    "unknown",
+    "global, when repo empty",
+    "global, always to repo",
+    "repo",
 };
 
 enum yaml_config_parsing_status {
@@ -456,7 +477,44 @@ enum yaml_config_parsing_status {
     YAML_CONFIG_PARSING_STATUS_REPO_URL,
     YAML_CONFIG_PARSING_STATUS_REPO_AFTER_URL,
     YAML_CONFIG_PARSING_STATUS_REPO_SECTION,
+};
 
+char const *yaml_config_parsing_status_strings[] = {
+    "none",
+    "stream",
+    "document",
+    "section",
+    "proxy",
+    "proxy after",
+    "dir repos",
+    "dir archives",
+    "dir checkouts",
+    "archive",
+    "archive section",
+    "archive github-like prefix",
+    "archive suffix",
+    "archive pipe",
+    "archive pipe list",
+    "clean",
+    "clean section",
+    "clean repos",
+    "clean archives",
+    "clean checkouts",
+    "wanted",
+    "wanted section",
+    "wanted section start",
+    "wanted list",
+    "wanted object",
+    "wanted object start",
+    "wanted object section",
+    "wanted object type",
+    "wanted object archive",
+    "wanted object checkout",
+    "repos",
+    "repos list",
+    "repo url",
+    "repo after url",
+    "repo section",
 };
 
 struct export_commit_treewalk_payload {
@@ -2277,12 +2335,14 @@ wanted_type_unknown:
                 "this shouldn't happen\n");
     return -1;
 impossible_status:
-    pr_error("Impossible status %d\n", *status);
+    pr_error("Impossible status %d (%s)\n", *status, 
+        yaml_config_parsing_status_strings[*status]);
     return -1;
 unexpected_event_type:
     pr_error(
-        "Unexpected YAML event type %d for current status %d\n",
-        event->type, *status);
+        "Unexpected YAML event type %d (%s) for current status %d (%s)\n",
+        event->type, yaml_event_type_strings[event->type],
+        *status, yaml_config_parsing_status_strings[*status]);
     return -1;
 }
 
