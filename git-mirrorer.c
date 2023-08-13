@@ -524,6 +524,7 @@ struct update_status {
                   repo_ids_allocated,
                   thread_handles_allocated,
                   threads_active_count;
+    bool changed;
 };
 
 #define get_last(x) x + x##_count - 1
@@ -4345,6 +4346,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
         arg->proxy_after = proxy_after;
     }
     while (update_status.repo_ids_count || update_status.threads_active_count) {
+        update_status.changed = false;
         for (unsigned long i = 0; i < update_status.repo_ids_count; ++i) {
             struct repo *const restrict repo = 
                 config->repos + update_status.repo_ids[i];
@@ -4400,6 +4402,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
             handle->checked = 0;
             update_status.repo_ids[i] = 
                 update_status.repo_ids[--update_status.repo_ids_count];
+            update_status.changed = true;
         }
         // Here there must be at least one active, no need to check
         for (unsigned long i = 0; 
@@ -4421,6 +4424,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
                     r = -1;
                     goto kill_threads;
                 }
+                update_status.changed = true;
                 break;
             case EBUSY:
                 if (++handle->checked % 100 == 0)  {
@@ -4436,17 +4440,19 @@ int open_and_update_all_dynamic_repos_threaded_optional(
                 goto kill_threads;
             }
         }
-        if (update_status.threads_active_count) {
-            if (update_status.repo_ids_count) {
-                pr_info("Updating %lu repos, "
-                    "%lu more repos needs to be updated "
-                    "(max %u connections each server)...\n",
-                    update_status.threads_active_count,
-                    update_status.repo_ids_count,
-                    MAX_CONNECTIONS_TO_SINGLE_SERVER);
-            } else {
-                pr_info("Updating %lu repos...\n",
-                    update_status.threads_active_count);
+        if (update_status.changed) {
+            if (update_status.threads_active_count) {
+                if (update_status.repo_ids_count) {
+                    pr_info("Updating %lu repos, "
+                        "%lu more repos (max %u connections per server) "
+                        "needs to be updated...\n",
+                        update_status.threads_active_count,
+                        update_status.repo_ids_count,
+                        MAX_CONNECTIONS_TO_SINGLE_SERVER);
+                } else {
+                    pr_info("Updating %lu repos...\n",
+                        update_status.threads_active_count);
+                }
             }
         }
         sleep(1);
