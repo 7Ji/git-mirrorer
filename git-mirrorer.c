@@ -661,8 +661,9 @@ declare_func_add_object_and_realloc_if_necessary_no_init_typed(
     update_status, repo_id, unsigned long *repo_ids_new)
 
 int sideband_progress(char const *string, int len, void *payload) {
-	(void)payload; /* unused */
-    pr_info("Remote: %.*s", len, string);
+	// (void)payload; /* unused */
+    pr_info("Repo '%s': Remote: %.*s", 
+        ((struct repo const*)payload)->url, len, string);
 	return 0;
 }
 
@@ -684,11 +685,13 @@ declare_func_size_to_human_readable_type(unsigned int, uint)
 
 
 static inline void print_progress(
-    git_indexer_progress const *const restrict stats) {
-
+    git_indexer_progress const *const restrict stats,
+    struct repo const *const restrict repo
+) {
 	if (stats->total_objects &&
 		stats->received_objects == stats->total_objects) {
-		pr_info("Resolving deltas %u%% (%u/%u)\r",
+		pr_info("Repo '%s': Resolving deltas %u%% (%u/%u)\r",
+                repo->url,
                 stats->total_deltas > 0 ?
                     100 * stats->indexed_deltas / stats->total_deltas :
                     0,
@@ -699,9 +702,10 @@ static inline void print_progress(
         unsigned int size_human_readable = size_to_human_readable_uint(
             stats->received_bytes, &suffix);
 		pr_info(
-            "Receiving objects %u%% (%u%c, %u); "
+            "Repo '%s': Receiving objects %u%% (%u%c, %u); "
             "Indexing objects %u%% (%u); "
-            "Total objects %u;\r",
+            "Total objects %u.\r",
+            repo->url,
             stats->total_objects > 0 ?
                 100 * stats->received_objects / stats->total_objects :
                 0,
@@ -716,8 +720,7 @@ static inline void print_progress(
 }
 
 int fetch_progress(git_indexer_progress const *stats, void *payload) {
-	(void)payload; /* unused */
-	print_progress(stats);
+	print_progress(stats, (struct repo const *)payload);
 	return 0;
 }
 
@@ -3085,7 +3088,7 @@ int repo_open_or_init_bare(
 
 int repo_update(
     struct repo *const restrict repo,
-    git_fetch_options *const restrict fetch_options,
+    git_fetch_options const *const restrict fetch_options,
     unsigned short const proxy_after
 ) {
     pr_info("Updating: '%s' ...\n", repo->url);
@@ -3130,17 +3133,22 @@ int repo_update(
         goto free_strarray;
     }
     pr_debug("Beginning fetching from '%s'\n", repo->url);
-    fetch_options->proxy_opts.type = GIT_PROXY_NONE;
+    git_fetch_options fetch_options_dup = *fetch_options;
+    if (fetch_options->callbacks.sideband_progress ||
+        fetch_options->callbacks.transfer_progress) {
+        fetch_options_dup.callbacks.payload = repo;
+    }
+    fetch_options_dup.proxy_opts.type = GIT_PROXY_NONE;
     unsigned short max_try = proxy_after + 3;
     for (unsigned short try = 0; try < max_try; ++try) {
         if (try == proxy_after) {
             if (try)
                 pr_warn(
                     "Failed for %hu times, use proxy\n", proxy_after);
-            fetch_options->proxy_opts.type = GIT_PROXY_SPECIFIED;
+            fetch_options_dup.proxy_opts.type = GIT_PROXY_SPECIFIED;
             // config->fetch_options.proxy_opts.
         }
-        r = git_remote_fetch(remote, NULL, fetch_options, NULL);
+        r = git_remote_fetch(remote, NULL, &fetch_options_dup, NULL);
         if (r) {
             pr_error(
                 "Failed to fetch, libgit return %d%s\n",
