@@ -303,6 +303,7 @@ struct parsed_commit_submodule const PARSED_COMMIT_SUBMODULE_INIT = {
 struct parsed_commit {
     git_oid id;
     char id_hex_string[GIT_OID_MAX_HEXSIZE + 1];
+    git_commit *commit;
     struct parsed_commit_submodule *submodules;
     unsigned long   submodules_count,
                     submodules_allocated;
@@ -469,7 +470,9 @@ struct export_commit_treewalk_payload {
     int const fd_archive;
     char const *const restrict archive_prefix;
     bool const checkout;
-    char const *const restrict dir_checkout;
+    int dirfd_checkout;
+    // hash_type ;
+    // char const *const restrict dir_checkout;
 };
 
 int export_commit_treewalk_callback(
@@ -1516,9 +1519,19 @@ int wanted_object_guarantee_symlinks(
     r = 0;
 
 close_checkouts_repo_links_dirfd:
-    if (checkout) close(checkouts_repo_links_dirfd);
+    if (checkout) {
+        if (close(checkouts_repo_links_dirfd)) {
+            pr_error_with_errno(
+                "Failed to close file descriptor for checkouts/repo/links dir");
+        }
+    }
 close_archives_repo_links_dirfd:
-    if (archive) close(archives_repo_links_dirfd);
+    if (archive) {
+        if (close(archives_repo_links_dirfd)) {
+            pr_error_with_errno(
+                "Failed to close file descriptor for archives/repo/links dir");
+        }
+    }
     return r;
 }
 
@@ -2836,8 +2849,7 @@ int work_directory_from_path(
             if (mkdirat(work_directory->dirfd, "links", 0755) < 0) {
                 pr_error_with_errno(
                     "Failed to create links subdir under '%s'", path);
-                close(work_directory->dirfd);
-                return -1;
+                goto close_dirfd;
             }
             if ((work_directory->links_dirfd = openat(
                         work_directory->dirfd, "links",
@@ -2845,15 +2857,13 @@ int work_directory_from_path(
                 pr_error_with_errno(
                     "Failed to open links subdir under '%s' as directory after "
                     "creating it", path);
-                close(work_directory->dirfd);
-                return -1;
+                goto close_dirfd;
             }
             break;
         default:
             pr_error_with_errno(
                 "Failed to open links subdir under '%s' as directory", path);
-            close(work_directory->dirfd);
-            return -1;
+            goto close_dirfd;
         }
     }
     work_directory->path = path;
@@ -2861,6 +2871,11 @@ int work_directory_from_path(
     work_directory->keeps_allocated = 0;
     work_directory->keeps_count = 0;
     return 0;
+close_dirfd:
+    if (close(work_directory->dirfd)) {
+        pr_error_with_errno("Failed to close dir fd for work directory");
+    }
+    return -1;
 }
 
 int work_directories_from_paths(
@@ -2880,27 +2895,38 @@ int work_directories_from_paths(
     }
     if (work_directory_from_path(workdir_archives, dir_archives, 
                                 len_dir_archives)) {
-        close(workdir_repos->dirfd);
         pr_error("Failed to open work directory '%s' for archives\n",
                 dir_archives);
-        return -1;
+        goto close_repos_dirfd;
     }
     if (work_directory_from_path(workdir_checkouts, dir_checkouts,
                                     len_dir_checkouts)) {
-        close(workdir_archives->dirfd);
-        close(workdir_repos->dirfd);
+        
         pr_error("Failed to open work directory '%s' for checkouts\n",
                 dir_checkouts);
-        return -1;
+        goto close_archives_dirfd;
     }
     return 0;
+close_archives_dirfd:
+    if (close(workdir_archives->dirfd)) {
+        pr_error_with_errno("Failed to close dirfd for archives workdir");
+    }
+close_repos_dirfd:
+    if (close(workdir_repos->dirfd)) {
+        pr_error_with_errno("Failed to close dirfd for repos workdir");
+    }
+    return -1;
 }
 
 static inline
 void work_directory_free(
     struct work_directory const *const restrict workdir
 ) {
-    if (workdir->dirfd) close(workdir->dirfd);
+    if (workdir->dirfd) {
+        if (close(workdir->dirfd)) {
+            pr_error_with_errno("Failed to close dirfd for workdir");
+        }
+    }
     if (workdir->keeps) free(workdir->keeps);
 }
 
@@ -4772,20 +4798,16 @@ int export_commit_tree_entry_blob_file_regular_to_checkout(
     void const *const restrict ro_buffer,
     git_object_size_t size,
     char const *const restrict path,
-    char const *const restrict dir_checkout,
+    int const dirfd_checkout,
     mode_t mode
 ){
-    char path_checkout[PATH_MAX];
-    if (snprintf(path_checkout, PATH_MAX, "%s/%s", dir_checkout, path) < 0) {
-        pr_error_with_errno("Failed to format checkout name");
-        return -1;
-    }
-    int blob_fd = open(path_checkout, O_WRONLY | O_CREAT, mode);
+    int blob_fd = openat(dirfd_checkout, path, O_WRONLY | O_CREAT, mode);
     if (blob_fd < 0) {
         pr_error("Failed to create file '%s' with mode 0o%o\n",
-            path_checkout, mode);
+            path, mode);
         return -1;
     }
+    int r = -1;
     if (size) {
         git_object_size_t size_written = 0;
         while (size_written < size) {
@@ -4805,17 +4827,20 @@ int export_commit_tree_entry_blob_file_regular_to_checkout(
                     pr_error_with_errno(
                         "Failed to write %lu bytes to file '%s'",
                         size - size_written,
-                        path_checkout);
-                    close(blob_fd);
-                    return -1;
+                        path);
+                    goto close_blob_fd;
                 }
             } else {
                 size_written += size_written_this;
             }
         }
     }
-    close(blob_fd);
-    return 0;
+    r = 0;
+close_blob_fd:
+    if (close(blob_fd)) {
+        pr_error_with_errno("Failed to close fd for blob");
+    }
+    return r;
 }
 
 int export_commit_tree_entry_blob_file_regular(
@@ -4827,7 +4852,7 @@ int export_commit_tree_entry_blob_file_regular(
     char const *const restrict path_archive,
     unsigned short const len_path_archive,
     bool const checkout,
-    char const *const restrict dir_checkout,
+    int const dirfd_checkout,
     char const *const restrict path_checkout,
     mode_t mode
 ) {
@@ -4842,7 +4867,7 @@ int export_commit_tree_entry_blob_file_regular(
     }
     if (checkout) {
         if (export_commit_tree_entry_blob_file_regular_to_checkout(
-            ro_buffer, size, path_checkout, dir_checkout, mode)) {
+            ro_buffer, size, path_checkout, dirfd_checkout, mode)) {
             pr_error("Failed to checkout commit tree entry blob regular file "
                 "at '%s'\n", path_checkout);
             return -1;
@@ -4874,16 +4899,11 @@ int export_commit_tree_entry_blob_file_symlink_to_archive(
 int export_commit_tree_entry_blob_file_symlink_to_checkout(
     char const *const restrict ro_buffer,
     char const *const restrict path,
-    char const *const restrict dir_checkout
+    int const dirfd_checkout
 ) {
-    char path_checkout[PATH_MAX];
-    if (snprintf(path_checkout, PATH_MAX, "%s/%s", dir_checkout, path) < 0) {
-        pr_error_with_errno("Failed to format checkout name");
-        return -1;
-    }
-    if (symlink(ro_buffer, path_checkout) < 0) {
+    if (symlinkat(ro_buffer, dirfd_checkout, path) < 0) {
         pr_error_with_errno("Failed to create symlink '%s' -> '%s'",
-            path_checkout, ro_buffer);
+            path, ro_buffer);
         return -1;
     }
     return 0;
@@ -4897,7 +4917,7 @@ int export_commit_tree_entry_blob_file_symlink(
     char const *const restrict path_archive,
     unsigned short const len_path_archive,
     bool const checkout,
-    char const *const restrict dir_checkout,
+    int const dirfd_checkout,
     char const *const restrict path_checkout
 ) {
     if (archive) {
@@ -4910,7 +4930,7 @@ int export_commit_tree_entry_blob_file_symlink(
     }
     if (checkout) {
         if (export_commit_tree_entry_blob_file_symlink_to_checkout(
-            ro_buffer, path_checkout, dir_checkout)) {
+            ro_buffer, path_checkout, dirfd_checkout)) {
             pr_error("Failed to checkout commit tree entry blob file symlink "
                 "at '%s'\n", path_checkout);
             return -1;
@@ -4928,7 +4948,7 @@ int export_commit_tree_entry_blob(
     char const *const restrict path_archive,
     unsigned short const len_path_archive,
     bool const checkout,
-    char const *const restrict dir_checkout,
+    int const dirfd_checkout,
     char const *const restrict path_checkout
 ) {
     git_object *object;
@@ -4949,7 +4969,7 @@ int export_commit_tree_entry_blob(
             git_blob_rawsize((git_blob *)object),
             archive, mtime, fd_archive,
             path_archive, len_path_archive,
-            checkout, dir_checkout,
+            checkout, dirfd_checkout,
             path_checkout,
             0644);
         break;
@@ -4959,7 +4979,7 @@ int export_commit_tree_entry_blob(
             git_blob_rawsize((git_blob *)object),
             archive, mtime, fd_archive,
             path_archive, len_path_archive,
-            checkout, dir_checkout,
+            checkout, dirfd_checkout,
             path_checkout,
             0755);
         break;
@@ -4967,7 +4987,7 @@ int export_commit_tree_entry_blob(
         r = export_commit_tree_entry_blob_file_symlink(
             ro_buffer,
             archive, mtime, fd_archive, path_archive, len_path_archive,
-            checkout, dir_checkout, path_checkout);
+            checkout, dirfd_checkout, path_checkout);
         break;
     default:
         pr_error("Impossible tree entry filemode %d\n",
@@ -4998,16 +5018,11 @@ int export_commit_tree_entry_tree_to_archive(
 
 int export_commit_tree_entry_tree_to_checkout(
     char const *const restrict path,
-    char const *const restrict dir_checkout
+    int const dirfd_checkout
 ) {
-    char path_checkout[PATH_MAX];
-    if (snprintf(path_checkout, PATH_MAX, "%s/%s", dir_checkout, path) < 0) {
-        pr_error_with_errno("Failed to format checkout name");
-        return -1;
-    }
-    if (mkdir(path_checkout, 0755)) {
+    if (mkdirat(dirfd_checkout, path, 0755)) {
         pr_error_with_errno("Failed to create folder '%s'",
-            path_checkout);
+            path);
         return -1;
     }
     return 0;
@@ -5021,7 +5036,7 @@ int export_commit_tree_entry_tree(
     char const *const restrict path_archive,
     unsigned short const len_path_archive,
     bool const checkout,
-    char const *const restrict dir_checkout,
+    int const dirfd_checkout,
     char const *const restrict path_checkout
 ) {
     if (archive) {
@@ -5033,7 +5048,7 @@ int export_commit_tree_entry_tree(
     }
     if (checkout) {
         if (export_commit_tree_entry_tree_to_checkout(
-            path_checkout, dir_checkout)) {
+            path_checkout, dirfd_checkout)) {
             pr_error("Failed to export '%s' to checkout\n", path_checkout);
             return -1;
         }
@@ -5055,13 +5070,13 @@ int export_commit_tree_entry_commit(
     char const *const restrict path_archive,
     unsigned short const len_path_archive,
     bool const checkout,
-    char const *const restrict dir_checkout,
+    int const dirfd_checkout,
     char const *const restrict path_checkout
 ) {
     // Export self as a tree (folder)
     if (export_commit_tree_entry_tree(
         archive, mtime, fd_archive, path_archive, len_path_archive,
-        checkout, dir_checkout, path_checkout)) {
+        checkout, dirfd_checkout, path_checkout)) {
         pr_error("Failed to export submodule '%s' as a tree\n", path_archive);
         return -1;
     }
@@ -5140,7 +5155,7 @@ int export_commit_tree_entry_commit(
         .fd_archive = fd_archive,
         .archive_prefix = archive_prefix,
         .checkout = checkout,
-        .dir_checkout = dir_checkout,
+        .dirfd_checkout = dirfd_checkout,
     };
     if (git_tree_walk(
         tree, GIT_TREEWALK_PRE, export_commit_treewalk_callback,
@@ -5195,24 +5210,24 @@ int export_commit_treewalk_callback(
     }
     char const *const restrict mtime = private_payload->mtime;
     int const fd_archive = private_payload->fd_archive;
-    char const *const restrict dir_checkout = private_payload->dir_checkout;
+    int const dirfd_checkout = dirfd_checkout;
     switch (git_tree_entry_type(entry)) {
     case GIT_OBJECT_BLOB:
         return export_commit_tree_entry_blob(
             entry, private_payload->repo,
             archive, mtime, fd_archive, path_archive, len_path_archive,
-            checkout, dir_checkout, path_checkout);
+            checkout, dirfd_checkout, path_checkout);
     case GIT_OBJECT_TREE:
         return export_commit_tree_entry_tree(
             archive, mtime, fd_archive, path_archive, len_path_archive,
-            checkout, dir_checkout, path_checkout);
+            checkout, dirfd_checkout, path_checkout);
     case GIT_OBJECT_COMMIT:
         return export_commit_tree_entry_commit(
             root, entry, private_payload->config,
             private_payload->parsed_commit, private_payload->submodule_path,
             private_payload->len_submodule_path, archive, mtime, fd_archive,
             archive_prefix, path_archive, len_path_archive,
-            checkout, dir_checkout, path_checkout);
+            checkout, dirfd_checkout, path_checkout);
     default:
         pr_error("Impossible tree entry type %d\n", git_tree_entry_type(entry));
         return -1;
@@ -5255,16 +5270,20 @@ int remove_dir_recursively(
             if (dir_p_r == NULL) {
                 pr_error_with_errno(
                     "Failed to open '%s' as subdir", entry->d_name);
-                close(dir_fd_r);
+                if (close(dir_fd_r)) {
+                    pr_error_with_errno("Failed to close fd for recursive dir");
+                }
                 return -1;
             }
-            if (remove_dir_recursively(dir_p_r)) {
+            int r = remove_dir_recursively(dir_p_r);
+            if (closedir(dir_p_r)) {
+                pr_error_with_errno("Faild to close dir");
+            }
+            if (r) {
                 pr_error("Failed to remove dir '%s' recursively\n",
                     entry->d_name);
-                closedir(dir_p_r);
                 return -1;
             }
-            closedir(dir_p_r);
             if (unlinkat(dir_fd, entry->d_name, AT_REMOVEDIR)) {
                 pr_error_with_errno(
                     "Failed to rmdir '%s' recursively", entry->d_name);
@@ -5307,12 +5326,14 @@ int ensure_path_non_exist( // essentially rm -rf
             pr_error_with_errno("Failed to opendir '%s'", path);
             return -1;
         }
-        if (remove_dir_recursively(dir_p)) {
+        int r = remove_dir_recursively(dir_p);
+        if (closedir(dir_p)) {
+            pr_error_with_errno("Failed to close dir");
+        }
+        if (r) {
             pr_error("Failed to remove '%s' recursively\n", path);
-            closedir(dir_p);
             return -1;
         }
-        closedir(dir_p);
         if (rmdir(path)) {
             pr_error_with_errno("Failed to rmdir '%s'", path);
             return -1;
@@ -5358,15 +5379,19 @@ int ensure_path_non_exist_at( // essentially rm -rf
         DIR *const restrict dir_p = fdopendir(subdir_fd);
         if (dir_p == NULL) {
             pr_error_with_errno("Failed to opendir '%s'", path);
-            close(subdir_fd);
+            if (close(subdir_fd)) {
+                pr_error_with_errno("Failed to close fd for subdir");
+            }
             return -1;
         }
-        if (remove_dir_recursively(dir_p)) {
+        int r = remove_dir_recursively(dir_p);
+        if (closedir(dir_p)) {
+            pr_error_with_errno("Failed to close dir");
+        }
+        if (r) {
             pr_error("Failed to remove '%s' recursively\n", path);
-            closedir(dir_p);
             return -1;
         }
-        closedir(dir_p);
         if (unlinkat(dir_fd, path, AT_REMOVEDIR)) {
             pr_error_with_errno("Failed to rmdir '%s'", path);
             return -1;
@@ -5523,9 +5548,10 @@ struct export_handle {
     unsigned short  len_path,
                     len_path_work;
     int fd;
+    pid_t child;
 };
 
-int export_handle_init(
+int export_handle_init_common(
     struct export_handle *restrict handle,
     int const dir_fd,
     char const commit_string[GIT_OID_MAX_HEXSIZE + 1],
@@ -5557,7 +5583,7 @@ int export_handle_init(
         memcpy(handle->path_work + handle->len_path, ".work", 6);
         handle->len_path_work += 5;
         if (ensure_path_non_exist_at(dir_fd, handle->path_work)) {
-            pr_error("Failed to ensure '%s' non-existing\n");
+            pr_error("Failed to ensure '%s' non-existing\n", handle->path_work);
             r = -1;
             goto set_no_export;
         }
@@ -5603,248 +5629,193 @@ set_no_export:
     return -1;
 }
 
+#define export_handle_init_checkout(\
+    handle, dir_fd, commit_string, suffix, len_suffix) \
+        export_handle_init_common(\
+        handle, dir_fd, commit_string, suffix, len_suffix, true)
+
+int export_handle_init_archive(
+    struct export_handle *restrict handle,
+    int const dir_fd,
+    char const commit_string[GIT_OID_MAX_HEXSIZE + 1],
+    char const *const restrict suffix,
+    unsigned short const len_suffix,
+    char *const *const restrict pipe_args,
+    unsigned short const pipe_args_count
+) {
+    if (export_handle_init_common(
+        handle, dir_fd, commit_string, suffix, len_suffix, false)) {
+        pr_error("Failed to init export handle for archive, common part\n");
+        return -1;
+    }
+    if (!handle->should_export) return 0;
+    if (pipe_args && pipe_args[0] && pipe_args_count) {
+        int fd_pipes[2];
+        if (pipe2(fd_pipes, O_CLOEXEC)) {
+            pr_error_with_errno("Failed to create pipe\n");
+            return -1;
+        }
+        switch ((handle->child = fork())) {
+        case 0: // Child
+            if (dup2(handle->fd, STDOUT_FILENO) < 0) {
+                pr_error_with_errno_file(stderr,
+                    "[Child %ld] Failed to dup archive fd to stdout",
+                    pthread_self());
+                exit(EXIT_FAILURE);
+            }
+            if (dup2(fd_pipes[0], STDIN_FILENO) < 0) {
+                pr_error_with_errno_file(stderr,
+                    "[Child %ld] Failed to dup pipe read end to stdin",
+                    pthread_self());
+                exit(EXIT_FAILURE);
+            }
+            // fd_pipes[0] (pipe read), fd_pipes[1] (pipe write)
+            // and fd_archive will all be closed as they've been
+            // opened/created with O_CLOEXEC
+            if (execvp(pipe_args[0],
+                pipe_args)) {
+                pr_error_with_errno_file(
+                    stderr, "[Child %ld] Failed to execute piper",
+                            pthread_self());
+                exit(EXIT_FAILURE);
+            }
+            pr_error_file(stderr, 
+                "[Child %ld] We should not be here\n", pthread_self());
+            exit(EXIT_FAILURE);
+            break;
+        case -1:
+            pr_error_with_errno("Failed to fork");
+            goto close_fd;
+        default: // Parent
+            pr_debug("Forked piper to child %d\n", pid);
+            if (close(fd_pipes[0])) { // Close the read end
+                pr_error_with_errno("Failed to close read end of the pipe");
+                goto kill_child;
+            }
+            if (close(handle->fd)) { // Close the original archive fd
+                pr_error_with_errno(
+                    "Failed to close the original archive fd");
+                goto kill_child;
+            }
+            handle->fd = fd_pipes[1]; // write to pipe write end
+            break;
+        }
+    }
+    return 0;
+// These upper tags are only reachable from archive routines, no need to check
+kill_child:
+    kill(handle->child, SIGKILL);
+close_fd:
+    if (close(handle->fd)) {
+        pr_error_with_errno("Failed to close archive fd");
+    }
+    return -1;
+}
+
 int export_commit_prepare(
     struct config const *const restrict config,
-    struct repo const *const restrict repo,
     struct parsed_commit const *const restrict parsed_commit,
-    bool *archive,
     struct export_handle *archive_handle,
     struct work_directory *const restrict workdir_archives,
-    bool *checkout,
     struct export_handle *checkout_handle,
     struct work_directory *const restrict workdir_checkouts
 ) {
-    if (*archive || *checkout); else {
-        pr_error("Commit '%s' should neither be archived or checked out\n");
+    if (archive_handle->should_export || checkout_handle->should_export); 
+    else {
+        pr_error("Commit '%s' should neither be archived or checked out\n", 
+                    parsed_commit->id_hex_string);
         return -1;
     }
-    struct stat stat_buffer;
-    int r = -1;
-    if (*archive) {
-        if (export_handle_init(archive_handle, workdir_archives->dirfd, 
-            parsed_commit->id_hex_string, config->archive_suffix, 
-            config->len_archive_suffix, false)) {
+    if (checkout_handle->should_export) {
+        if (export_handle_init_checkout(
+            checkout_handle, workdir_checkouts->dirfd,
+            parsed_commit->id_hex_string, NULL, 0)) {
+            pr_error("Failed to init export handle for checkout\n");
             return -1;
         }
-        *archive = archive_handle->should_export;
-    } 
-    if (*checkout) {
-        if (export_handle_init(checkout_handle, workdir_checkouts->dirfd,
-            parsed_commit->id_hex_string, NULL, 0, true)) {
+    }
+    if (archive_handle->should_export) {
+        if (export_handle_init_archive(
+            archive_handle, workdir_archives->dirfd, 
+            parsed_commit->id_hex_string, 
+            config->archive_suffix, config->len_archive_suffix, 
+            config->archive_pipe_args, config->archive_pipe_args_count)) {
+            pr_error("Failed to init export handle for archive\n");
+            goto close_checkout_fd;
+        }
+    }
+    return 0;
+close_checkout_fd:
+    if (checkout_handle->should_export) {
+        if (close(checkout_handle->fd)) {
+            pr_error_with_errno("Failed to close checkout dirfd");
+        }
+    }
+    return -1;
+}
+
+/* This should be only be called AFTER the repo is updated */
+/* Updating the repo might break the commits */
+int repo_lookup_all_parsed_commits(
+    struct repo const *const restrict repo
+) {
+    for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
+        struct parsed_commit *const restrict parsed_commit = 
+            repo->parsed_commits + i;
+        if (parsed_commit->commit != NULL) {
+            pr_error("Commit '%s' already looked up, no commit should've been "
+                    "looked up when this func is called\n", 
+                    parsed_commit->id_hex_string);
+            return -1;
+        }
+        int r = git_commit_lookup(
+            &parsed_commit->commit, repo->repository, &parsed_commit->id);
+        if (r) {
+            pr_error("Failed to lookup commit '%s' in repo '%s', libgit return "
+            "%d\n", parsed_commit->id_hex_string, repo->url, r);
+            for (unsigned long j = 0; j < i; ++j) {
+                git_commit_free(repo->parsed_commits[j].commit);
+                repo->parsed_commits[j].commit = NULL;
+            }
             return -1;
         }
     }
     return 0;
 }
 
-int export_commit(
+int repo_free_all_parsed_commits(
+    struct repo const *const restrict repo
+) {
+    for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
+        struct parsed_commit *const restrict parsed_commit = 
+            repo->parsed_commits + i;
+        if (parsed_commit->commit == NULL) {
+            pr_warn("Commit '%s' already freed, this shouldn't happen",
+                    parsed_commit->id_hex_string);
+        } else {
+            git_commit_free(parsed_commit->commit);
+            parsed_commit->commit = NULL;
+        }
+    }
+    return 0;
+}
+
+int export_commit_write(
     struct config const *const restrict config,
     struct repo const *const restrict repo,
     struct parsed_commit const *const restrict parsed_commit,
-    bool const archive_config,
-    bool const checkout_config
+    struct export_handle const *const restrict archive_handle,
+    struct export_handle const *const restrict checkout_handle
 ) {
-    bool archive = archive_config,
-         checkout = checkout_config;
-    char dir_checkout[PATH_MAX];
-    char dir_checkout_work[PATH_MAX];
-    char file_archive[PATH_MAX];
-    char file_archive_work[PATH_MAX];
-    int fd_archive = -1;
-    int r;
-    struct stat stat_buffer;
-    if (checkout) {
-        r = snprintf(
-            dir_checkout, PATH_MAX, "%s/%s",
-            config->dir_checkouts, parsed_commit->id_hex_string);
-        if (r < 0) {
-            pr_error_with_errno("Failed to format checkout dir");
-            return -1;
-        } else if (r >= PATH_MAX - 6) {
-            pr_error("Dir checkout path '%s' too long\n",
-            dir_checkout);
-            return -1;
-        }
-        pr_debug(
-            "Will checkout repo '%s' commit %s to '%s'\n",
-            repo->url, parsed_commit->id_hex_string,
-            dir_checkout);
-        if (stat(dir_checkout, &stat_buffer)) {
-            switch (errno) {
-            case ENOENT:
-                break;
-            default:
-                pr_error_with_errno(
-                    "Failed to check stat of existing '%s'", dir_checkout);
-                return -1;
-            }
-        } else {
-            if ((stat_buffer.st_mode & S_IFMT) == S_IFDIR) {
-                pr_debug("Already checked out to '%s', no neeed to "
-                    "checkout for this run\n", dir_checkout);
-                checkout = false;
-            } else {
-                if (ensure_path_non_exist(dir_checkout)) {
-                    pr_error_with_errno(
-                        "Failed to remove existing non-folder '%s'",
-                        dir_checkout);
-                    return -1;
-                }
-            }
-        }
-    };
-    if (archive) {
-        r = snprintf(
-            file_archive, PATH_MAX, "%s/%s%s",
-            config->dir_archives, parsed_commit->id_hex_string,
-            config->archive_suffix);
-        if (r < 0) {
-            pr_error_with_errno("Failed to format archive file");
-            return -1;
-        } else if (r >= PATH_MAX - 6) {
-            pr_error("Archive file path '%s' too long\n",
-            file_archive);
-            return -1;
-        }
-        pr_debug(
-            "Will archive repo '%s' commit %s into '%s'\n",
-            repo->url, parsed_commit->id_hex_string,
-            file_archive);
-        if (stat(file_archive, &stat_buffer)) {
-            switch (errno) {
-            case ENOENT:
-                break;
-            default:
-                pr_error_with_errno(
-                    "Failed to check stat of existing '%s'", file_archive);
-                return -1;
-            }
-        } else {
-            if ((stat_buffer.st_mode & S_IFMT) == S_IFREG) {
-                pr_debug("Already archived '%s', no neeed to "
-                    "archive for this run\n", file_archive);
-                archive = false;
-            } else {
-                if (ensure_path_non_exist(file_archive)) {
-                    pr_error_with_errno(
-                        "Failed to remove existing '%s'",
-                        file_archive);
-                    return -1;
-                }
-            }
-        }
-
-    }
-    if (checkout) {
-        r = snprintf(dir_checkout_work, PATH_MAX, "%s.work", dir_checkout);
-        if (r < 0) {
-            pr_error_with_errno("Failed to format work dir");
-            return -1;
-        }
-        if (ensure_path_non_exist(dir_checkout_work)) {
-            pr_error_with_errno("Failed to ensure '%s' non-exist",
-                dir_checkout_work);
-            return -1;
-        }
-        if (mkdir_recursively(dir_checkout_work)) {
-            pr_error("Failed to mkdir work folder '%s.work'\n",
-                dir_checkout);
-            return -1;
-        }
-    }
-    pid_t pid = 0;
-    if (archive) {
-        r = snprintf(file_archive_work, PATH_MAX, "%s.work", file_archive);
-        if (r < 0) {
-            pr_error_with_errno("Failed to format archive work file");
-            return -1;
-        }
-        if (ensure_parent_dir(file_archive_work, r)) {
-            pr_error("Failed to ensure parent folder of '%s'\n",
-                file_archive_work);
-            return -1;
-        }
-        if (ensure_path_non_exist(file_archive_work)) {
-            pr_error_with_errno("Failed to ensure '%s' non-exist",
-                file_archive_work);
-            return -1;
-        }
-        fd_archive = open(file_archive_work,
-                            O_WRONLY | O_CREAT | O_CLOEXEC,
-                            0644);
-        if (fd_archive < 0) {
-            pr_error_with_errno(
-                "Failed to create file '%s.work' and open it as write-only",
-                file_archive_work);
-            return -1;
-        }
-        if (config->archive_pipe_args[0] && config->archive_pipe_args_count) {
-            int fd_pipes[2];
-            if (pipe2(fd_pipes, O_CLOEXEC)) {
-                pr_error_with_errno("Failed to create pipe\n");
-                return -1;
-            }
-            pid = fork();
-            switch (pid) {
-            case 0: // Child
-                if (dup2(fd_archive, STDOUT_FILENO) < 0) {
-                    pr_error_with_errno_file(stderr,
-                        "Failed to dup archive fd to stdout");
-                    exit(EXIT_FAILURE);
-                }
-                if (dup2(fd_pipes[0], STDIN_FILENO) < 0) {
-                    pr_error_with_errno_file(stderr,
-                        "Failed to dup pipe read end to stdin");
-                    exit(EXIT_FAILURE);
-                }
-                // fd_pipes[0] (pipe read), fd_pipes[1] (pipe write)
-                // and fd_archive will all be closed as they've been
-                // opened/created with O_CLOEXEC
-                if (execvp(config->archive_pipe_args[0],
-                    config->archive_pipe_args)) {
-                    pr_error_with_errno_file(stderr, "Failed to execute piper");
-                    exit(EXIT_FAILURE);
-                }
-                pr_error_file(stderr, "We should not be here\n");
-                exit(EXIT_FAILURE);
-                break;
-            case -1:
-                pr_error_with_errno("Failed to fork");
-                return -1;
-            default: // Parent
-                pr_debug("Forked piper to child %d\n", pid);
-                if (close(fd_pipes[0])) { // Close the read end
-                    pr_error_with_errno("Failed to close read end of the pipe");
-                    kill(pid, SIGKILL);
-                    return -1;
-                }
-                if (close(fd_archive)) { // Close the original archive fd
-                    pr_error_with_errno(
-                        "Failed to close the original archive fd");
-                    kill(pid, SIGKILL);
-                    return -1;
-                }
-                fd_archive = fd_pipes[1]; // write to pipe write end
-                break;
-            }
-        }
-    }
-    if (!archive && !checkout) {
-        if (fd_archive >= 0) close(fd_archive);
-        return 0;
-    }
     git_commit *commit;
-    if (git_commit_lookup(
-            &commit, repo->repository, &parsed_commit->id)) {
-        pr_error("Failed to lookup commit\n");
-        if (fd_archive >= 0) close(fd_archive);
+    if (git_commit_dup(&commit, parsed_commit->commit)) {
+        pr_error("Failed to dup commit\n");
         return -1;
     }
     git_tree *tree;
     if (git_commit_tree(&tree, commit)) {
         pr_error("Failed to get the tree pointed by commit\n");
         git_commit_free(commit);
-        if (fd_archive >= 0) close(fd_archive);
         return -1;
     }
     pr_info("Exporting: '%s': %s ...\n",
@@ -5853,11 +5824,10 @@ int export_commit(
     unsigned short len_submodule_path = 0;
     char archive_prefix[PATH_MAX] = "";
     if (config->archive_gh_prefix) {
-        if ((r = snprintf(archive_prefix, PATH_MAX, "%s-%s/", repo->short_name,
-        parsed_commit->id_hex_string)) < 0) {
+        if (snprintf(archive_prefix, PATH_MAX, "%s-%s/", repo->short_name,
+        parsed_commit->id_hex_string) < 0) {
             pr_error_with_errno("Failed to generate github-like prefix\n");
             git_commit_free(commit);
-            if (fd_archive >= 0) close(fd_archive);
             return -1;
         }
         pr_debug("Will add github-like prefix '%s' to tar\n", archive_prefix);
@@ -5868,15 +5838,13 @@ int export_commit(
     ) < 0) {
         pr_error("Failed to format mtime\n");
         git_commit_free(commit);
-        if (fd_archive >= 0) close(fd_archive);
         return -1;
     }
-    if (archive) {
-        if (export_commit_add_global_comment_to_tar(fd_archive,
+    if (archive_handle->should_export) {
+        if (export_commit_add_global_comment_to_tar(archive_handle->fd,
             repo->url, parsed_commit->id_hex_string, mtime)) {
             pr_error("Failed to add pax global header comment\n");
             git_commit_free(commit);
-            if (fd_archive >= 0) close(fd_archive);
             return -1;
         }
     }
@@ -5886,61 +5854,172 @@ int export_commit(
         .parsed_commit = parsed_commit,
         .submodule_path = submodule_path,
         .len_submodule_path = len_submodule_path,
-        .archive = archive,
+        .archive = archive_handle->should_export,
         .mtime = mtime, // second,
         // there's also git_commit_time_offset(commit), one offset for a minute
-        .fd_archive = fd_archive,
+        .fd_archive = archive_handle->fd,
         .archive_prefix = archive_prefix,
-        .checkout = checkout,
-        .dir_checkout = dir_checkout_work,
+        .checkout = checkout_handle->should_export,
+        .dirfd_checkout = checkout_handle->fd,
     };
     if (git_tree_walk(
         tree, GIT_TREEWALK_PRE, export_commit_treewalk_callback,
         (void *)&export_commit_treewalk_payload)) {
         pr_error("Failed to walk through tree\n");
         git_commit_free(commit);
-        if (fd_archive >= 0) close(fd_archive);
         return -1;
     }
     git_commit_free(commit);
     pr_debug("Ended exporting repo '%s' commit %s\n",
         repo->url, parsed_commit->id_hex_string);
-    if (checkout) {
-        if (rename(dir_checkout_work, dir_checkout)) {
-            pr_error("Failed to move '%s' to '%s'\n", dir_checkout_work,
-                dir_checkout);
-            return -1;
+}
+
+int export_commit_finish(
+    struct export_handle *archive_handle,
+    struct export_handle *checkout_handle,
+    bool const force
+) {
+    int r = 0;
+    if (archive_handle->should_export) {
+        if (close(archive_handle->fd)) {
+            pr_error_with_errno("Failed to clsoe archive fd");
+            r = -1;
         }
-        pr_debug("Atomic checkout finish, '%s' <- '%s'\n",
-                dir_checkout, dir_checkout_work);
-    }
-    if (archive) {
-        if (tar_finish(fd_archive)) {
-            pr_error("Failed to finish tar\n");
-            close (fd_archive);
-            return -1;
-        }
-        close(fd_archive);
-        int status;
-        if (pid) {
-            pr_debug("Waiting for piper %d to finish...\n", pid);
-            r = waitpid(pid, &status, 0);
-            if (r != pid) {
-                pr_error("Waited piper %d is not the same as %d we've created",
-                    r, pid);
-                return -1;
+        if (archive_handle->child > 0) {
+            int status = 0;
+            pid_t child_waited = waitpid(
+                archive_handle->child, &status,
+                force ? WNOHANG : 0);
+            bool waited = false;
+            switch (child_waited) {
+            case -1:
+                pr_error("Failed to wait for child\n");
+                break;
+            case 0:
+                if (!force) {
+                    pr_warn("Waited child is 0 but we're not waiting nohang\n");
+                }
+                break;
+            default:
+                if (child_waited == archive_handle->child) {
+                    waited = true;
+                } else {
+                    pr_warn("Waited child %d is not what we expected %d\n",
+                            child_waited, archive_handle->child);
+                }
+                break;
+            }
+            if (!waited) {
+                pr_warn("Child not properly ended (yet), force to kill it");
+                if (kill(archive_handle->child, SIGKILL)) {
+                    pr_error_with_errno("Failed to force kill child %d", 
+                        archive_handle->child);
+                }
+                r = -1;
             }
             if (status) {
-                pr_error("Piper exited with error %d\n", status);
-                return -1;
+                pr_error("Piper child returned with %d\n", status);
+                r = -1;
+            }
+            archive_handle->child = -1;
+        }
+        if (!force && 
+            rename(archive_handle->path_work, archive_handle->path)) {
+            pr_error_with_errno("Failed to move '%s' to '%s'",
+                archive_handle->path_work, archive_handle->path);
+            r = -1;
+        }
+    }
+    if (checkout_handle->should_export) {
+        if (close(checkout_handle->fd)) {
+            pr_error_with_errno("Failed to close checkout dirfd");
+            r = -1;
+        }
+        if (!force && 
+            rename(checkout_handle->path_work, checkout_handle->path)) {
+            pr_error_with_errno("Failed to move '%s' to '%s'",
+                checkout_handle->path_work, checkout_handle->path);
+            r = -1;
+        }
+    }
+    return r;
+}
+
+int export_commit_finish_force(
+    struct export_handle *archive_handle,
+    struct export_handle *checkout_handle
+) {
+    int r = 0;
+    if (archive_handle->should_export) {
+        if (close(archive_handle->fd)) {
+            pr_error_with_errno("Failed to clsoe archive fd");
+            r = -1;
+        }
+        if (archive_handle->child > 0) {
+            int status = 0;
+            pid_t child_waited = waitpid(archive_handle->child, &status, WNOHANG);
+            if (child_waited != archive_handle->child) {
+                pr_error_with_errno("Waited child is not the same");
+                r = -1;
+            }
+            if (status) {
+                pr_error("Piper returned with %d\n", status);
+                r = -1;
             }
         }
-        if (rename(file_archive_work, file_archive)) {
-            pr_error("Failed to move '%s' to '%s'\n", file_archive_work,
-                file_archive);
+        if (rename(archive_handle->path_work, archive_handle->path)) {
+            pr_error_with_errno("Failed to move '%s' to '%s'",
+                archive_handle->path_work, archive_handle->path);
+            r = -1;
         }
-        pr_debug("Atomic archive finish, '%s' <- '%s'\n",
-                file_archive, file_archive_work);
+    }
+    if (checkout_handle->should_export) {
+        if (close(checkout_handle->fd)) {
+            pr_error_with_errno("Failed to close checkout dirfd");
+            r = -1;
+        }
+        if (rename(checkout_handle->path_work, checkout_handle->path)) {
+            pr_error_with_errno("Failed to move '%s' to '%s'",
+                checkout_handle->path_work, checkout_handle->path);
+            r = -1;
+        }
+    }
+    return r;
+}
+
+int export_commit_single_threaded(
+    struct config const *const restrict config,
+    struct repo const *const restrict repo,
+    struct parsed_commit const *const restrict parsed_commit,
+    bool const should_archive,
+    struct work_directory *const restrict workdir_archives,
+    bool const should_checkout,
+    struct work_directory *const restrict workdir_checkouts
+) {
+    struct export_handle archive_handle = {.should_export = should_archive};
+    struct export_handle checkout_handle = {.should_export = should_checkout};
+    if (export_commit_prepare(
+            config, parsed_commit,
+            &archive_handle, workdir_archives, 
+            &checkout_handle, workdir_checkouts)) {
+        pr_error("Failed to preapre to export commit '%s'\n", 
+                        parsed_commit->id_hex_string);
+        return -1;
+    }
+    if (archive_handle.should_export || checkout_handle.should_export);
+    else {
+        return 0;
+    }
+    if (export_commit_write(config, repo, parsed_commit, 
+                    &archive_handle, &checkout_handle)) {
+        pr_error("Failed to write export commit '%s'\n", 
+                    parsed_commit->id_hex_string);
+        export_commit_finish(&archive_handle, &checkout_handle, true);
+        return -1;
+    }
+    if (export_commit_finish(&archive_handle, &checkout_handle, false)) {
+        pr_error("Failed to finish exporting of commit\n");
+        return -1;
     }
     pr_info("Exported: '%s': %s\n",
         repo->url, parsed_commit->id_hex_string);
@@ -6060,25 +6139,25 @@ int export_wanted_object(
     return 0;
 }
 
-struct export_wanted_object_thread_arg {
-    struct config const *restrict config;
-    struct repo const *restrict repo;
-    struct wanted_object const *restrict wanted_object;
-    struct work_directory *restrict workdir_archives;
-    struct work_directory *restrict workdir_checkouts;
-};
+// struct export_wanted_object_thread_arg {
+//     struct config const *restrict config;
+//     struct repo const *restrict repo;
+//     struct wanted_object const *restrict wanted_object;
+//     struct work_directory *restrict workdir_archives;
+//     struct work_directory *restrict workdir_checkouts;
+// };
 
-void *export_wanted_object_thread(void *arg) {
-    struct export_wanted_object_thread_arg *private_arg = 
-        (struct export_wanted_object_thread_arg *)arg;
-    pr_debug("Starting exporting thread %ld for '%s': '%s'\n", 
-            pthread_self(), private_arg->repo->url, 
-            private_arg->wanted_object->name);
-    return (void *)(long)export_wanted_object(
-        private_arg->config, private_arg->repo,
-        private_arg->wanted_object, 
-        private_arg->workdir_archives, private_arg->workdir_checkouts);
-}
+// void *export_wanted_object_thread(void *arg) {
+//     struct export_wanted_object_thread_arg *private_arg = 
+//         (struct export_wanted_object_thread_arg *)arg;
+//     pr_debug("Starting exporting thread %ld for '%s': '%s'\n", 
+//             pthread_self(), private_arg->repo->url, 
+//             private_arg->wanted_object->name);
+//     return (void *)(long)export_wanted_object(
+//         private_arg->config, private_arg->repo,
+//         private_arg->wanted_object, 
+//         private_arg->workdir_archives, private_arg->workdir_checkouts);
+// }
 
 int repo_guarantee_all_wanted_objects_symlinks(
     struct config const *const restrict config,
@@ -6108,7 +6187,15 @@ int export_all_repos_single_threaded(
     struct work_directory *const restrict workdir_checkouts
 ) {
     pr_info("Exporting all repos (single-threaded)...\n");
-        // Single-threaded exporting
+    int r = -1;
+    unsigned long repo_free_count = config->repos_count;
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        struct repo const *const restrict repo = config->repos + i;
+        if (repo_lookup_all_parsed_commits(repo)) {
+            repo_free_count = i;
+            goto free_commits;
+        }
+    }
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         struct repo const *const restrict repo = config->repos + i;
         for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
@@ -6125,171 +6212,175 @@ int export_all_repos_single_threaded(
         }
     }
     pr_info("Exported all repos\n");
-    return 0;
-}
-
-int export_all_repos_multi_threaded_symlinks(
-    struct config const *const restrict config,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts
-) {
-
-}
-
-int export_all_repos_multi_threaded_files(
-    struct config const *const restrict config,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts
-) {
-
-}
-
-int export_all_repos_multi_threaded(
-    struct config const *const restrict config,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts
-) {
-    /*
-      Multi-thread exporting is done in two stages:
-        1. Every repo has its thread to prepare symlinks for 
-        all its wanted objects. Why not MT on object? Because 
-        there will be race-condition involved on createing/
-        reading the symlinks, and introducing locks will just 
-        slow down the whole process
-        2. Every wanted object, should it be expoted, has its
-        own thread. Note however, there will also be archive-
-        child forked processes.
-    */
-    struct export_thread_complex {
-        pthread_t thread;
-        bool active;
-        struct export_wanted_object_thread_arg arg;
-    };
-    struct export_thread_complex *export_threads_complex = 
-        calloc(config->export_threads,
-                sizeof *export_threads_complex);
-    if (export_threads_complex == NULL) {
-        pr_error_with_errno("Failed to allocate memory for exporting threads");
-        return -1;
-    }
-    unsigned short export_threads_count = 0;
-    long thread_ret;
-    int r = -1;
-
-
-
-    pr_info("Exporting all repos (%hu threads)...\n", config->export_threads);
+free_commits:
     for (unsigned long i = 0; i < config->repos_count; ++i) {
-        struct repo const *const restrict repo = config->repos + i;
-        for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
-            struct wanted_object const *const restrict wanted_object =
-                repo->wanted_objects + j;
-            if (wanted_object->archive || wanted_object->checkout);
-            else continue;
-            struct export_thread_complex *export_thread_complex = NULL;
-            while (export_threads_count >= config->export_threads) {
-                for (unsigned short i = 0; i < config->export_threads; ++i) {
-                    struct export_thread_complex *export_thread_complex_running 
-                        = export_threads_complex + i;
-                    if (!export_thread_complex_running->active) continue;
-                    r = pthread_tryjoin_np(
-                            export_thread_complex_running->thread, 
-                                            (void **)&thread_ret);
-                    switch (r) {
-                    case 0:
-                        pr_debug("Ended exporting thread %ld\n",
-                            export_thread_complex->thread);
-                        export_thread_complex_running->active = false;
-                        if (thread_ret) {
-                            pr_error("Thread %ld returned with %ld\n", 
-                                    export_thread_complex_running->thread, 
-                                    thread_ret);
-                            r = -1;
-                            goto kill_threads;
-                        }
-                        export_thread_complex = export_thread_complex_running;
-                        --export_threads_count;
-                        break;
-                    case EBUSY:
-                        break;
-                    default:
-                        pr_error("Failed to non-blocking wait for thread %ld, "
-                                "pthread returned %ld\n", 
-                                export_thread_complex_running->thread, 
-                                thread_ret);
-                        r = -1;
-                        goto kill_threads;
-                    }
-                }
-                sleep(1);
-            }
-            if (!export_thread_complex) {
-                for (unsigned short i = 0; i < config->export_threads; ++i) {
-                    struct export_thread_complex *export_thread_complex_running 
-                        = export_threads_complex + i;
-                    if (!export_thread_complex_running->active) {
-                        export_thread_complex = export_thread_complex_running;
-                        break;
-                    }
-                }
-                if (!export_thread_complex) {
-                    pr_error("Failed to find empty thread slot\n");
-                    r = -1;
-                    goto kill_threads;
-                }
-            }
-            export_thread_complex->arg.config = config;
-            export_thread_complex->arg.repo = repo;
-            export_thread_complex->arg.wanted_object = wanted_object;
-            export_thread_complex->arg.workdir_archives = workdir_archives;
-            export_thread_complex->arg.workdir_checkouts = workdir_checkouts;
-            r = pthread_create(
-                &export_thread_complex->thread, NULL, 
-                export_wanted_object_thread, 
-                &export_thread_complex->arg);
-            if (r) {
-                pr_error("Failed to create thread, pthread return %d\n", r);
-                goto kill_threads;
-            }
-            export_thread_complex->active = true;
-            ++export_threads_count;
-        }
+        repo_free_all_parsed_commits(config->repos + i);
     }
-    for (unsigned short i = 0; i < config->export_threads; ++i) {
-        struct export_thread_complex *export_thread_complex = 
-                        export_threads_complex + i;
-        if (!export_thread_complex->active) continue;
-        pr_debug("Joining thread %ld\n", export_thread_complex->thread);
-        r = pthread_join(export_thread_complex->thread, (void **)&thread_ret);
-        switch (r) {
-        case 0:
-            if (thread_ret) {
-                pr_error("Thread %ld returned %ld\n", 
-                    export_thread_complex->thread, thread_ret);
-                r = -1;
-                goto free_threads;
-            }
-            export_thread_complex->active = false;
-            break;
-        default:
-            pr_error("Failed to join thread %ld, pthread return %d\n", 
-                    export_thread_complex->thread, r);
-            r = -1;
-            goto free_threads;
-        }
-    }
-    pr_info("Exported all repos\n");
-    r = 0;
-kill_threads:
-    for (unsigned short i = 0; i < config->export_threads; ++i) {
-        if (export_threads_complex[i].active) {
-            pthread_kill(export_threads_complex[i].thread, SIGKILL);
-        }
-    }
-free_threads:
-    free(export_threads_complex);
     return r;
 }
+
+// int export_all_repos_multi_threaded_symlinks(
+//     struct config const *const restrict config,
+//     struct work_directory *const restrict workdir_archives,
+//     struct work_directory *const restrict workdir_checkouts
+// ) {
+
+// }
+
+// int export_all_repos_multi_threaded_files(
+//     struct config const *const restrict config,
+//     struct work_directory *const restrict workdir_archives,
+//     struct work_directory *const restrict workdir_checkouts
+// ) {
+
+// }
+
+// int export_all_repos_multi_threaded(
+//     struct config const *const restrict config,
+//     struct work_directory *const restrict workdir_archives,
+//     struct work_directory *const restrict workdir_checkouts
+// ) {
+//     /*
+//       Multi-thread exporting is done in thress stages:
+//         1. Every repo has its thread to prepare symlinks for 
+//         all its wanted objects. Why not MT on object? Because 
+//         there will be race-condition involved on createing/
+//         reading the symlinks, and introducing locks will just 
+//         slow down the whole process
+//         2. Every wanted object, should it be expoted, has its
+//         own thread. Note however, there will also be archive-
+//         child forked processes.
+//     */
+//     struct export_thread_complex {
+//         pthread_t thread;
+//         bool active;
+//         struct export_wanted_object_thread_arg arg;
+//     };
+//     struct export_thread_complex *export_threads_complex = 
+//         calloc(config->export_threads,
+//                 sizeof *export_threads_complex);
+//     if (export_threads_complex == NULL) {
+//         pr_error_with_errno("Failed to allocate memory for exporting threads");
+//         return -1;
+//     }
+//     unsigned short export_threads_count = 0;
+//     long thread_ret;
+//     int r = -1;
+
+
+
+//     pr_info("Exporting all repos (%hu threads)...\n", config->export_threads);
+//     for (unsigned long i = 0; i < config->repos_count; ++i) {
+//         struct repo const *const restrict repo = config->repos + i;
+//         for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
+//             struct wanted_object const *const restrict wanted_object =
+//                 repo->wanted_objects + j;
+//             if (wanted_object->archive || wanted_object->checkout);
+//             else continue;
+//             struct export_thread_complex *export_thread_complex = NULL;
+//             while (export_threads_count >= config->export_threads) {
+//                 for (unsigned short i = 0; i < config->export_threads; ++i) {
+//                     struct export_thread_complex *export_thread_complex_running 
+//                         = export_threads_complex + i;
+//                     if (!export_thread_complex_running->active) continue;
+//                     r = pthread_tryjoin_np(
+//                             export_thread_complex_running->thread, 
+//                                             (void **)&thread_ret);
+//                     switch (r) {
+//                     case 0:
+//                         pr_debug("Ended exporting thread %ld\n",
+//                             export_thread_complex->thread);
+//                         export_thread_complex_running->active = false;
+//                         if (thread_ret) {
+//                             pr_error("Thread %ld returned with %ld\n", 
+//                                     export_thread_complex_running->thread, 
+//                                     thread_ret);
+//                             r = -1;
+//                             goto kill_threads;
+//                         }
+//                         export_thread_complex = export_thread_complex_running;
+//                         --export_threads_count;
+//                         break;
+//                     case EBUSY:
+//                         break;
+//                     default:
+//                         pr_error("Failed to non-blocking wait for thread %ld, "
+//                                 "pthread returned %ld\n", 
+//                                 export_thread_complex_running->thread, 
+//                                 thread_ret);
+//                         r = -1;
+//                         goto kill_threads;
+//                     }
+//                 }
+//                 sleep(1);
+//             }
+//             if (!export_thread_complex) {
+//                 for (unsigned short i = 0; i < config->export_threads; ++i) {
+//                     struct export_thread_complex *export_thread_complex_running 
+//                         = export_threads_complex + i;
+//                     if (!export_thread_complex_running->active) {
+//                         export_thread_complex = export_thread_complex_running;
+//                         break;
+//                     }
+//                 }
+//                 if (!export_thread_complex) {
+//                     pr_error("Failed to find empty thread slot\n");
+//                     r = -1;
+//                     goto kill_threads;
+//                 }
+//             }
+//             export_thread_complex->arg.config = config;
+//             export_thread_complex->arg.repo = repo;
+//             export_thread_complex->arg.wanted_object = wanted_object;
+//             export_thread_complex->arg.workdir_archives = workdir_archives;
+//             export_thread_complex->arg.workdir_checkouts = workdir_checkouts;
+//             r = pthread_create(
+//                 &export_thread_complex->thread, NULL, 
+//                 export_wanted_object_thread, 
+//                 &export_thread_complex->arg);
+//             if (r) {
+//                 pr_error("Failed to create thread, pthread return %d\n", r);
+//                 goto kill_threads;
+//             }
+//             export_thread_complex->active = true;
+//             ++export_threads_count;
+//         }
+//     }
+//     for (unsigned short i = 0; i < config->export_threads; ++i) {
+//         struct export_thread_complex *export_thread_complex = 
+//                         export_threads_complex + i;
+//         if (!export_thread_complex->active) continue;
+//         pr_debug("Joining thread %ld\n", export_thread_complex->thread);
+//         r = pthread_join(export_thread_complex->thread, (void **)&thread_ret);
+//         switch (r) {
+//         case 0:
+//             if (thread_ret) {
+//                 pr_error("Thread %ld returned %ld\n", 
+//                     export_thread_complex->thread, thread_ret);
+//                 r = -1;
+//                 goto free_threads;
+//             }
+//             export_thread_complex->active = false;
+//             break;
+//         default:
+//             pr_error("Failed to join thread %ld, pthread return %d\n", 
+//                     export_thread_complex->thread, r);
+//             r = -1;
+//             goto free_threads;
+//         }
+//     }
+//     pr_info("Exported all repos\n");
+//     r = 0;
+// kill_threads:
+//     for (unsigned short i = 0; i < config->export_threads; ++i) {
+//         if (export_threads_complex[i].active) {
+//             pthread_kill(export_threads_complex[i].thread, SIGKILL);
+//         }
+//     }
+// free_threads:
+//     free(export_threads_complex);
+//     return r;
+// }
 
 int export_all_repos(
     struct config const *const restrict config,
