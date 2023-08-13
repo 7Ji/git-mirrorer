@@ -6057,7 +6057,7 @@ int repo_free_all_parsed_commits(
         struct parsed_commit *const restrict parsed_commit = 
             repo->parsed_commits + i;
         if (parsed_commit->commit == NULL) {
-            pr_warn("Commit '%s' already freed, this shouldn't happen",
+            pr_warn("Commit '%s' already freed, this shouldn't happen\n",
                     parsed_commit->id_hex_string);
         } else {
             git_commit_free(parsed_commit->commit);
