@@ -4813,7 +4813,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
             }
             if (server_id == (unsigned long) -1) {
                 pr_error("Failed to find server hash\n");
-                goto kill_threads;
+                goto wait_threads;
             }
             // Already at max concurrent connection
             if (update_status.servers[server_id].repos_updating_count >= 
@@ -4827,7 +4827,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
                     "Allocated memory for threads not enough %lu / %lu\n",
                     update_status.threads_active_count, 
                     update_status.thread_handles_allocated);
-                goto kill_threads;
+                goto wait_threads;
             }
             struct update_thread_handle *handle = NULL;
             for (unsigned long j = 0; 
@@ -4840,7 +4840,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
             }
             if (handle == NULL) {
                 pr_error("Failed to find empty handle\n");
-                goto kill_threads; 
+                goto wait_threads; 
             }
             handle->arg.repo = repo;
             r = pthread_create(&handle->thread, 
@@ -4849,7 +4849,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
                 pr_error("Failed to create thread, pthread return %d\n", r);
                 --update_status.threads_active_count;
                 r = -1;
-                goto kill_threads;
+                goto wait_threads;
             }
             handle->server_id = server_id;
             handle->active = true;
@@ -4876,7 +4876,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
                     pr_error(
                         "Repo update thread bad return %ld\n", thread_ret);
                     r = -1;
-                    goto kill_threads;
+                    goto wait_threads;
                 }
                 update_status.changed = true;
                 break;
@@ -4891,7 +4891,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
             default:
                 pr_error("Failed to join thread, pthread return %d\n", r);
                 r = -1;
-                goto kill_threads;
+                goto wait_threads;
             }
         }
         if (update_status.changed) {
@@ -4912,13 +4912,30 @@ int open_and_update_all_dynamic_repos_threaded_optional(
         }
     }
     r = 0;
-kill_threads:
+wait_threads:
+    pr_info("Waiting for all update threads to end...\n");
     for (unsigned long i = 0; 
         i < update_status.thread_handles_allocated; ++i) {
         struct update_thread_handle *handle = update_status.thread_handles + i;
-        if (handle->active)
-            pthread_kill(handle->thread, SIGKILL);
+        if (handle->active) {
+            long thread_ret;
+            int r2 = pthread_join(handle->thread, (void **)&thread_ret);
+            if (r2) {
+                pr_error("Faiiled to join updating thread %ld for repo '%s', "
+                    "pthread return %d\n", 
+                    handle->thread, handle->arg.repo->url, r2);
+                r = -1;
+            }
+            handle->active = false;
+            if (thread_ret) {
+                pr_error(
+                    "Thread %ld for updating repo '%s' returned with %ld\n",
+                    handle->thread, handle->arg.repo->url, thread_ret);
+                r = -1;
+            }
+        }
     }
+    pr_info("All update threads ended\n");
 free_thread_handles:
     free(update_status.thread_handles);
 // free_servers_and_ids:
@@ -6508,7 +6525,7 @@ int export_all_repos_multi_threaded_lookup(
         return -1;
     }
     unsigned long repo_prepared_count = 0;
-    int r;
+    int r = -1;
     long thread_ret;
     for (; repo_prepared_count < config->repos_count; 
         ++repo_prepared_count) {
@@ -6529,7 +6546,8 @@ int export_all_repos_multi_threaded_lookup(
                             pr_error("Thread %ld for preparing repo '%s' "
                             "returned with %ld\n", handle->thread, 
                             handle->repo->url, thread_ret);
-                            goto kill_threads;
+                            r = -1;
+                            goto wait_threads;
                         }
                         break;
                     case EBUSY:
@@ -6538,7 +6556,8 @@ int export_all_repos_multi_threaded_lookup(
                         pr_error("Failed to nonblocking wait for thread %ld "
                         "for preparing repo '%s', pthread return %d\n",
                         handle->thread, handle->repo->url, r);
-                        goto kill_threads;
+                        r = -1;
+                        goto wait_threads;
                     }
                 }
                 // If it's already running, ofc inc it;
@@ -6551,7 +6570,8 @@ int export_all_repos_multi_threaded_lookup(
                     if (r) {
                         pr_error("Failed to create thread to prepare repo "
                         "'%s', pthread return '%d'\n", repo->url, r);
-                        goto kill_threads;
+                        r = -1;
+                        goto wait_threads;
                     }
                     handle->active = true;
                     thread_added = true;
@@ -6567,76 +6587,36 @@ int export_all_repos_multi_threaded_lookup(
                             threads_active_count);
         }
     }
+    r = 0;
+wait_threads:
+    pr_info("Waiting for all exporting preparation threads to end...\n");
     for (unsigned short i = 0; i < config->export_threads; ++i) {
         struct prepare_thread_handle *handle = handles + i;
         if (handle->active) {
-            r = pthread_join(handle->thread, (void **)&thread_ret);
-            if (r) {
+            int r2 = pthread_join(handle->thread, (void **)&thread_ret);
+            if (r2) {
                 pr_error("Failed to join thread %ld for preparing repo '%s', "
                             "pthread return %d\n",
                             handle->thread, handle->repo->url, r);
-                goto kill_threads;
+                r = -1;
             }
             handle->active = false;
             if (thread_ret) {
                 pr_error(
                     "Thread %ld for preparing repo '%s' returned with %ld\n", 
                     handle->thread, handle->repo->url, thread_ret);
-                goto kill_threads;
+                r = -1;
             }
         }
     }
     free(handles);
-    handles = NULL;
-    return 0;
-kill_threads:
-    for (unsigned short i = 0; i < config->export_threads; ++i) {
-        struct prepare_thread_handle *handle = handles + i;
-        if (handle->active) {
-            r = pthread_tryjoin_np(handle->thread, (void**)&thread_ret);
-            switch (r) {
-            case 0:
-                if (thread_ret) {
-                    pr_error("Thread %ld for looking up commits in repo '%s' "
-                        "returned with %ld\n", 
-                        handle->thread, handle->repo->url, thread_ret);
-                }
-                break;
-            default:
-                pr_error("Failed to try join thread %ld for looking up commits"
-                    "in repo '%s', pthread return %d\n", 
-                    handle->thread, handle->repo->url, r);
-                __attribute__((fallthrough));
-            case EBUSY:
-                r = pthread_kill(handle->thread, SIGKILL);
-                if (r) {
-                    pr_error(
-                        "Failed to kill thread %ld for preparing repo '%s', "
-                        "pthread return %d\n",
-                        handle->thread, handle->repo->url, r);
-                }
-                r = pthread_join(handle->thread, (void **)&thread_ret);
-                if (r) {
-                    pr_error("Failed to join killed thread %ld for preparing "
-                        "repo '%s', pthread return %d\n",
-                        handle->thread, handle->repo->url, r);
-                } else if (thread_ret) {
-                    pr_error("Killed thread %ld for preparing repo '%s' "
-                            "returned with %ld\n",
-                            handle->thread, handle->repo->url, thread_ret);
-                }
-                break;
-            }
-        }
-    }
-    if (handles) free(handles);
     for (unsigned long i = 0; i < repo_prepared_count; ++i) {
         if (repo_free_all_parsed_commits(config->repos + i)) {
             pr_error("Failed to free all parsed commits in repo '%s'\n",
                 config->repos[i].url);
         }
     }
-    return -1;
+    return r;
 }
 
 int export_all_repos_multi_threaded_work(
@@ -6683,7 +6663,7 @@ int export_all_repos_multi_threaded_work(
                             &checkout_handle, workdir_checkouts)) {
                 pr_error("Failed to prepare to export commit '%s'\n", 
                             parsed_commit->id_hex_string);
-                goto kill_threads;
+                goto wait_threads;
             }
             if (archive_handle.should_export || checkout_handle.should_export);
             else continue;
@@ -6704,7 +6684,7 @@ int export_all_repos_multi_threaded_work(
                                     "with %ld", handle->thread, 
                                                 parsed_commit->id_hex_string, 
                                                 thread_ret);
-                                goto kill_threads;
+                                goto wait_threads;
                             }
                             break;
                         case EBUSY:
@@ -6713,7 +6693,7 @@ int export_all_repos_multi_threaded_work(
                             pr_error("Failed to nonblocking wait for thread %ld"
                             " for exporting commit %s, pthread return %d\n",
                             handle->thread, parsed_commit->id_hex_string, r);
-                            goto kill_threads;
+                            goto wait_threads;
                         }
                     }
                     ++threads_active_count;
@@ -6729,7 +6709,7 @@ int export_all_repos_multi_threaded_work(
                             pr_error("Failed to create thread to export commit "
                                     "%s, pthread return %d\n", 
                                     parsed_commit->id_hex_string, r);
-                            goto kill_threads;
+                            goto wait_threads;
                         }
                         handle->active = true;
                         thread_added = true;
@@ -6741,15 +6721,18 @@ int export_all_repos_multi_threaded_work(
             }
         }
     }
+    r = 0;
+wait_threads:
+    pr_info("Waiting for all exporting work threads to end...\n");
     for (unsigned short i = 0; i < config->export_threads; ++i) {
         struct thread_handle *handle = handles + i;
         if (handle->active) {
-            r = pthread_join(handle->thread, (void **)&thread_ret);
-            if (r) {
+            int r2 = pthread_join(handle->thread, (void **)&thread_ret);
+            if (r2) {
                 pr_error("Failed to join thread %ld for exporting commit %s , "
                             "pthread return %d\n", handle->thread, 
                                 handle->arg.parsed_commit->id_hex_string, r);
-                goto kill_threads;
+                r = -1;
             }
             handle->active = false;
             if (thread_ret) {
@@ -6757,53 +6740,11 @@ int export_all_repos_multi_threaded_work(
                     "Thread %ld for exporting commit %s returned with %ld\n", 
                     handle->thread, handle->arg.parsed_commit->id_hex_string, 
                     thread_ret);
-                goto kill_threads;
+                r = -1;
             }
         }
     }
     free(handles);
-    return 0;
-kill_threads:
-    for (unsigned short i = 0; i < config->export_threads; ++i) {
-        struct thread_handle *handle = handles + i;
-        if (handle->active) {
-            r = pthread_tryjoin_np(handle->thread, (void**)&thread_ret);
-            switch (r) {
-            case 0:
-                if (thread_ret) {
-                    pr_error("Thread %ld for exporing commit %s"
-                        "returned with %ld\n", handle->thread, 
-                        handle->arg.parsed_commit->id_hex_string, thread_ret);
-                }
-                break;
-            default:
-                pr_error("Failed to try join thread %ld for exporting commit "
-                    "%s, pthread return %d\n", handle->thread, 
-                    handle->arg.parsed_commit->id_hex_string, r);
-                __attribute__((fallthrough));
-            case EBUSY:
-                r = pthread_kill(handle->thread, SIGKILL);
-                if (r) {
-                    pr_error(
-                        "Failed to kill thread %ld for exporting commit %s, "
-                        "pthread return %d\n", handle->thread, 
-                        handle->arg.parsed_commit->id_hex_string, r);
-                }
-                r = pthread_join(handle->thread, (void **)&thread_ret);
-                if (r) {
-                    pr_error("Failed to join killed thread %ld for exporting "
-                        "commit %s, pthread return %d\n", handle->thread, 
-                        handle->arg.parsed_commit->id_hex_string, r);
-                } else if (thread_ret) {
-                    pr_error("Killed thread %ld for exporting commit %s "
-                            "returned with %ld\n", handle->thread, 
-                            handle->arg.parsed_commit->id_hex_string, 
-                            thread_ret);
-                }
-                break;
-            }
-        }
-    }
     return -1;
 }
 
@@ -6829,66 +6770,35 @@ int export_all_repos_multi_threaded(
             "return %d\n", r);
         return -1;
     }
+    r = -1;
     if (export_all_repos_multi_threaded_lookup(config)) {
         pr_error("Failed to prepare repos (multi-threaded)\n");
-        goto kill_symlink_thread;
+        goto wait_symlink_thread;
     }
     if (export_all_repos_multi_threaded_work(
         config, workdir_archives, workdir_checkouts)) {
         pr_error("Failed to export repos (multi-threaded)\n");
         goto free_commits;
     }
-    for (unsigned long i = 0; i < config->repos_count; ++i) {
-        repo_free_all_parsed_commits(config->repos + i);
-    }
-    long thread_ret;
-    r = pthread_join(symlinks_thread, (void **)&thread_ret);
-    if (r) {
-        pr_error("Failed to join thread %ld for symlinks, pthread return %d\n",
-            symlinks_thread, r);
-        goto kill_symlink_thread;
-    }
-    if (thread_ret) {
-        pr_error("Thread %ld for guaranteeing symlinks returned with %ld\n",
-                symlinks_thread, thread_ret);
-        return -1;
-    }
-    return 0;
+    r = 0;
 free_commits:
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         repo_free_all_parsed_commits(config->repos + i);
     }
-kill_symlink_thread:
-    r = pthread_tryjoin_np(symlinks_thread, (void**)&thread_ret);
-    switch (r) {
-    case 0:
-        if (thread_ret) {
-            pr_error("Thread %ld for symlinks returned with %ld\n",
-                symlinks_thread, thread_ret);
-        }
-        break;
-    default:
-        pr_error(
-            "Failed to try join symlinks thread %ld, pthread return %d\n", 
-            symlinks_thread, r);
-        __attribute__((fallthrough));
-    case EBUSY:
-        r = pthread_kill(symlinks_thread, SIGKILL);
-        if (r) {
-            pr_error(
-                "Failed to kill thread for symlinks, pthread return %d\n", r);
-        }
-        r = pthread_join(symlinks_thread, (void **)&thread_ret);
-        if (r) {
-            pr_error("Failed to join killed symlinks thread %ld, "
-            "pthread return %d\n", symlinks_thread, r);
-        } else if (thread_ret) {
-            pr_error("Killed symlinks thread %ld returned with %ld\n",
-                    symlinks_thread, thread_ret);
-        }
-        break;
+wait_symlink_thread:
+    long thread_ret;
+    int r2 = pthread_join(symlinks_thread, (void **)&thread_ret);
+    if (r2) {
+        pr_error("Failed to join thread %ld for symlinks, pthread return %d\n",
+            symlinks_thread, r2);
+        r = -1;
     }
-    return -1;
+    if (thread_ret) {
+        pr_error("Thread %ld for guaranteeing symlinks returned with %ld\n",
+                symlinks_thread, thread_ret);
+        r = -1;
+    }
+    return r;
 }
 
 int export_all_repos(
