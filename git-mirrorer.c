@@ -4429,7 +4429,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
             case EBUSY:
                 if (++handle->checked % 100 == 0)  {
                     pr_warn("Repo '%s' takes too long to update, "
-                        "%lu circles after started it\n",
+                        "%lu cycles after started it\n",
                         handle->arg.repo->url,
                         handle->checked);
                 }
