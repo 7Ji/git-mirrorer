@@ -6745,7 +6745,7 @@ wait_threads:
         }
     }
     free(handles);
-    return -1;
+    return r;
 }
 
 int export_all_repos_multi_threaded(
