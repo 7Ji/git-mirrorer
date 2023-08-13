@@ -6500,7 +6500,7 @@ int export_all_repos_multi_threaded_lookup(
                 }
             }
             if (thread_added) break;
-            sleep(1);
+            usleep(100);
             if (threads_active_count == config->export_threads) {
                 pr_debug("Active threads reached max\n");
             }
@@ -6678,7 +6678,7 @@ int export_all_repos_multi_threaded_work(
                     }
                 }
                 if (thread_added) break;
-                sleep(1);
+                usleep(100);
             }
         }
     }
