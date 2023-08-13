@@ -202,7 +202,7 @@ enum wanted_type {
 
 #define WANTED_TYPE_MAX WANTED_TYPE_HEAD
 
-char const *WANTED_TYPE_STRINGS[] = {
+char const *wanted_type_strings[] = {
     "unknown",
     "all_branches",
     "all_tags",
@@ -410,7 +410,7 @@ struct config const CONFIG_INIT = {
         0,
     },
     .archive_suffix = ".tar",
-    .export_threads = 10,
+    .export_threads = 1,
     .clean_links = true,
 };
 
@@ -1131,7 +1131,7 @@ int wanted_object_fill_type_from_string(
     char const *const restrict type
 ) {
     for (enum wanted_type i = 1; i <= WANTED_TYPE_MAX; ++i) {
-        if (!strcmp(type, WANTED_TYPE_STRINGS[i])) {
+        if (!strcmp(type, wanted_type_strings[i])) {
             wanted_object->type = i;
             return 0;
         }
@@ -2362,7 +2362,7 @@ void print_config_repo_wanted(
             "|            checkout: %s\n",
             wanted_object->name,
             wanted_object->type,
-            WANTED_TYPE_STRINGS[wanted_object->type],
+            wanted_type_strings[wanted_object->type],
             wanted_object->archive ? "yes" : "no",
             wanted_object->checkout ? "yes" : "no"
         );
@@ -6168,61 +6168,73 @@ int export_commit_single_threaded(
 //     return 0;
 // }
 
-// int export_wanted_object(
-//     struct config const *const restrict config,
-//     struct repo const *const restrict repo,
-//     struct wanted_object const *const restrict wanted_object,
-//     struct work_directory *const restrict workdir_archives,
-//     struct work_directory *const restrict workdir_checkouts
-// ) {
-//     if (wanted_object_guarantee_symlinks(
-//         wanted_object, repo,
-//         config->archive_suffix, config->len_archive_suffix,
-//         workdir_archives->links_dirfd,
-//         workdir_checkouts->links_dirfd)) {
-//         pr_error("Failed to guarantee symlinks for wanted object '%s' "
-//             "of repo '%s'\n", wanted_object->name, repo->url);
-//         return -1;
-//     }
-//     switch (wanted_object->type) {
-//     case WANTED_TYPE_BRANCH:
-//     case WANTED_TYPE_TAG:
-//     case WANTED_TYPE_REFERENCE:
-//         if (!((struct wanted_reference const *)wanted_object)
-//             ->commit_resolved) {
-//             pr_error("Reference '%s' is not resolved into commit\n",
-//                     wanted_object->name);
-//             return -1;
-//         }
-//         __attribute__((fallthrough));
-//     case WANTED_TYPE_HEAD:
-//         if (!((struct wanted_reference const *)wanted_object)
-//             ->commit_resolved) {
-//             pr_warn("Reference '%s' is not resolved into commit\n",
-//                     wanted_object->name);
-//             break;
-//         }
-//         __attribute__((fallthrough));
-//     case WANTED_TYPE_COMMIT: {
-//         if (wanted_object->parsed_commit_id == (unsigned long) -1) {
-//             pr_error("Commit %s is not parsed yet\n",
-//                 wanted_object->id_hex_string);
-//             return -1;
-//         }
-//         if (export_commit(config, repo,
-//             repo->parsed_commits + wanted_object->parsed_commit_id,
-//             wanted_object->archive, wanted_object->checkout)) {
-//             pr_error("Failed to export commit %s of repo '%s'\n",
-//                 wanted_object->id_hex_string, repo->url);
-//             return -1;
-//         }
-//         break;
-//     }
-//     default:
-//         break;
-//     }
-//     return 0;
-// }
+int export_wanted_object_with_symlinks_atomic_optional(
+    struct config const *const restrict config,
+    struct repo const *const restrict repo,
+    struct wanted_object const *const restrict wanted_object,
+    struct work_directory *const restrict workdir_archives,
+    struct work_directory *const restrict workdir_checkouts
+) {
+    switch (wanted_object->type) {
+    case WANTED_TYPE_ALL_BRANCHES:
+    case WANTED_TYPE_ALL_TAGS:
+        return 0;
+    default:
+        break;
+    }
+    if (wanted_object->archive | wanted_object->checkout);
+    else return 0;
+    if (wanted_object_guarantee_symlinks(
+        wanted_object, repo,
+        config->archive_suffix, config->len_archive_suffix,
+        workdir_archives->links_dirfd,
+        workdir_checkouts->links_dirfd)) {
+        pr_error("Failed to guarantee symlinks for wanted object '%s' "
+            "of repo '%s'\n", wanted_object->name, repo->url);
+        return -1;
+    }
+    switch (wanted_object->type) {
+    case WANTED_TYPE_BRANCH:
+    case WANTED_TYPE_TAG:
+    case WANTED_TYPE_REFERENCE:
+        if (!((struct wanted_reference const *)wanted_object)
+            ->commit_resolved) {
+            pr_error("Reference '%s' is not resolved into commit\n",
+                    wanted_object->name);
+            return -1;
+        }
+        __attribute__((fallthrough));
+    case WANTED_TYPE_HEAD:
+        if (!((struct wanted_reference const *)wanted_object)
+            ->commit_resolved) {
+            pr_warn("Reference '%s' is not resolved into commit\n",
+                    wanted_object->name);
+            break;
+        }
+        __attribute__((fallthrough));
+    case WANTED_TYPE_COMMIT: {
+        if (wanted_object->parsed_commit_id == (unsigned long) -1) {
+            pr_error("Commit %s is not parsed yet\n",
+                wanted_object->id_hex_string);
+            return -1;
+        }
+        if (export_commit_single_threaded(config, repo,
+            repo->parsed_commits + wanted_object->parsed_commit_id,
+            wanted_object->archive, workdir_archives,
+            wanted_object->checkout, workdir_checkouts)) {
+            pr_error("Failed to export commit %s of repo '%s'\n",
+                wanted_object->id_hex_string, repo->url);
+            return -1;
+        }
+        break;
+    }
+    default:
+        pr_error("Impossible wanted type %d (%s)\n", 
+            wanted_object->type, wanted_type_strings[wanted_object->type]);
+        return -1;
+    }
+    return 0;
+}
 
 // struct export_wanted_object_thread_arg {
 //     struct config const *restrict config;
@@ -6266,43 +6278,42 @@ int repo_guarantee_all_wanted_objects_symlinks(
     return 0;
 }
 
-// int export_all_repos_single_threaded(
-//     struct config const *const restrict config,
-//     struct work_directory *const restrict workdir_archives,
-//     struct work_directory *const restrict workdir_checkouts
-// ) {
-//     pr_info("Exporting all repos (single-threaded)...\n");
-//     int r = -1;
-//     unsigned long repo_free_count = config->repos_count;
-//     for (unsigned long i = 0; i < config->repos_count; ++i) {
-//         struct repo const *const restrict repo = config->repos + i;
-//         if (repo_lookup_all_parsed_commits(repo)) {
-//             repo_free_count = i;
-//             goto free_commits;
-//         }
-//     }
-//     for (unsigned long i = 0; i < config->repos_count; ++i) {
-//         struct repo const *const restrict repo = config->repos + i;
-//         for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
-//             struct wanted_object const *const restrict wanted_object =
-//                 repo->wanted_objects + j;
-//             if (wanted_object->archive || wanted_object->checkout);
-//             else continue;
-//             if (export_wanted_object(config, repo, wanted_object, 
-//                             workdir_archives, workdir_checkouts)) {
-//                 pr_error("Failed to export wanted object '%s'\n", 
-//                         wanted_object->name);
-//                 return -1;
-//             }
-//         }
-//     }
-//     pr_info("Exported all repos\n");
-// free_commits:
-//     for (unsigned long i = 0; i < config->repos_count; ++i) {
-//         repo_free_all_parsed_commits(config->repos + i);
-//     }
-//     return r;
-// }
+int export_all_repos_single_threaded(
+    struct config const *const restrict config,
+    struct work_directory *const restrict workdir_archives,
+    struct work_directory *const restrict workdir_checkouts
+) {
+    pr_info("Exporting all repos (single-threaded)...\n");
+    int r = -1;
+    unsigned long repo_free_count = config->repos_count;
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        if (repo_lookup_all_parsed_commits(config->repos + i)) {
+            repo_free_count = i;
+            goto free_commits;
+        }
+    }
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        struct repo const *const restrict repo = config->repos + i;
+        for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
+            struct wanted_object const *const restrict wanted_object =
+                repo->wanted_objects + j;
+            if (export_wanted_object_with_symlinks_atomic_optional(
+                    config, repo, wanted_object, 
+                    workdir_archives, workdir_checkouts)) {
+                pr_error("Failed to export wanted object '%s'\n", 
+                        wanted_object->name);
+                goto free_commits;
+            }
+        }
+    }
+    pr_info("Exported all repos\n");
+    r = 0;
+free_commits:
+    for (unsigned long i = 0; i < repo_free_count; ++i) {
+        repo_free_all_parsed_commits(config->repos + i);
+    }
+    return r;
+}
 
 // int export_all_repos_multi_threaded_symlinks(
 //     struct config const *const restrict config,
@@ -6467,18 +6478,21 @@ int repo_guarantee_all_wanted_objects_symlinks(
 //     return r;
 // }
 
-// int export_all_repos(
-//     struct config const *const restrict config,
-//     struct work_directory *const restrict workdir_archives,
-//     struct work_directory *const restrict workdir_checkouts
-// ) {
-//     if (config->export_threads <= 1) {
-//         return export_all_repos_single_threaded(config,
-//             workdir_archives, workdir_checkouts);
-//     }
-//     return export_all_repos_multi_threaded(config, 
-//             workdir_archives, workdir_checkouts);
-// }
+int export_all_repos(
+    struct config const *const restrict config,
+    struct work_directory *const restrict workdir_archives,
+    struct work_directory *const restrict workdir_checkouts
+) {
+    if (config->export_threads <= 1) {
+        return export_all_repos_single_threaded(config,
+            workdir_archives, workdir_checkouts);
+    }
+
+    pr_error("WIP!!!!");
+    return -1;
+    // return export_all_repos_multi_threaded(config, 
+    //         workdir_archives, workdir_checkouts);
+}
 
 int raise_nofile_limit() {
     struct rlimit rlimit;
@@ -6566,11 +6580,11 @@ int main(int const argc, char *argv[]) {
         pr_error("Failed to mirro all repos\n");
         goto shutdown;
     }
-    // if ((r = export_all_repos(
-    //         &config, &workdir_archives, &workdir_checkouts))) {
-    //     pr_error("Failed to export all repos (archives and checkouts)\n");
-    //     goto shutdown;
-    // }
+    if ((r = export_all_repos(
+            &config, &workdir_archives, &workdir_checkouts))) {
+        pr_error("Failed to export all repos (archives and checkouts)\n");
+        goto shutdown;
+    }
     r = 0;
 shutdown:
 #ifdef DEBUGGING
