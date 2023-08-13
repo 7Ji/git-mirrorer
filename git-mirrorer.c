@@ -5784,7 +5784,7 @@ int export_handle_init_archive(
             pr_error_with_errno("Failed to fork");
             goto close_fd;
         default: // Parent
-            pr_debug("Forked piper to child %d\n", pid);
+            pr_debug("Forked piper to child %d\n", handle->child);
             if (close(fd_pipes[0])) { // Close the read end
                 pr_error_with_errno("Failed to close read end of the pipe");
                 goto kill_child;
@@ -6480,6 +6480,7 @@ int export_all_repos_multi_threaded_prepare(
                         handle->thread, (void **)&thread_ret);
                     switch (r) {
                     case 0:
+                        --threads_active_count;
                         handle->active = false;
                         if (thread_ret) {
                             pr_error("Thread %ld for preparing repo '%s' "
@@ -6515,9 +6516,11 @@ int export_all_repos_multi_threaded_prepare(
                 }
             }
             if (threads_active_count == config->export_threads) {
-                pr_info("Sleeping!!\n");
+                pr_debug("Sleeping for 1 second as active threads reached max\n");
                 sleep(1);
             }
+            pr_debug("%hu threads running for looking up commits\n", 
+                            threads_active_count);
         }
     }
     for (unsigned short i = 0; i < config->export_threads; ++i) {
