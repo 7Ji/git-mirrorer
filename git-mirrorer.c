@@ -6375,10 +6375,8 @@ void *guanrantee_all_repos_wanted_objects_symlinks_thread(void *arg) {
                     private_arg->checkouts_links_dirfd);
 }
 
-int export_all_repos_multi_threaded_prepare(
-    struct config const *const restrict config,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts
+int export_all_repos_multi_threaded_lookup(
+    struct config const *const restrict config
 ) {
    struct prepare_thread_handle {
         pthread_t thread;
@@ -6391,22 +6389,8 @@ int export_all_repos_multi_threaded_prepare(
         pr_error("Failed to allocate memory for prepare threads\n");
         return -1;
     }
-    struct guanrantee_all_repos_wanted_objects_symlinks_arg 
-        symlinks_thread_arg = {
-            .config = config, 
-            .archives_links_dirfd = workdir_archives->links_dirfd,
-            .checkouts_links_dirfd = workdir_checkouts->links_dirfd
-        };
-    pthread_t symlinks_thread;
     unsigned long repo_prepared_count = 0;
-    int r = pthread_create(&symlinks_thread, NULL, 
-                guanrantee_all_repos_wanted_objects_symlinks_thread,
-                &symlinks_thread_arg);
-    if (r) {
-        pr_error("Failed to create thread for generating symlinks, pthread "
-            "return %d\n", r);
-        goto free_handles;
-    }
+    int r;
     long thread_ret;
     for (; repo_prepared_count < config->repos_count; 
         ++repo_prepared_count) {
@@ -6457,7 +6441,8 @@ int export_all_repos_multi_threaded_prepare(
                 }
             }
             if (threads_active_count == config->export_threads) {
-                pr_debug("Sleeping for 1 second as active threads reached max\n");
+                pr_debug(
+                    "Sleeping for 1 second as active threads reached max\n");
                 sleep(1);
             }
             pr_debug("%hu threads running for looking up commits\n", 
@@ -6485,17 +6470,6 @@ int export_all_repos_multi_threaded_prepare(
     }
     free(handles);
     handles = NULL;
-    r = pthread_join(symlinks_thread, (void **)&thread_ret);
-    if (r) {
-        pr_error("Failed to join thread %ld for symlinks, pthread return %d\n",
-            symlinks_thread, r);
-        goto kill_symlink_thread;
-    }
-    if (thread_ret) {
-        pr_error("Thread %ld for guaranteeing symlinks returned with %ld\n",
-                symlinks_thread, thread_ret);
-        return -1;
-    }
     return 0;
 kill_threads:
     for (unsigned short i = 0; i < config->export_threads; ++i) {
@@ -6537,38 +6511,6 @@ kill_threads:
             }
         }
     }
-kill_symlink_thread:
-    r = pthread_tryjoin_np(symlinks_thread, (void**)&thread_ret);
-    switch (r) {
-    case 0:
-        if (thread_ret) {
-            pr_error("Thread %ld for symlinks returned with %ld\n",
-                symlinks_thread, thread_ret);
-        }
-        break;
-    default:
-        pr_error(
-            "Failed to try join symlinks thread %ld, pthread return %d\n", 
-            symlinks_thread, r);
-        __attribute__((fallthrough));
-    case EBUSY:
-        r = pthread_kill(symlinks_thread, SIGKILL);
-        if (r) {
-            pr_error(
-                "Failed to kill thread for symlinks, pthread return %d\n", r);
-        }
-        r = pthread_join(symlinks_thread, (void **)&thread_ret);
-        if (r) {
-            pr_error("Failed to join killed symlinks thread %ld, "
-            "pthread return %d\n", symlinks_thread, r);
-        } else if (thread_ret) {
-            pr_error("Killed symlinks thread %ld returned with %ld\n",
-                    symlinks_thread, thread_ret);
-        }
-        break;
-    }
-    
-free_handles:
     if (handles) free(handles);
     for (unsigned long i = 0; i < repo_prepared_count; ++i) {
         if (repo_free_all_parsed_commits(config->repos + i)) {
@@ -6753,24 +6695,83 @@ int export_all_repos_multi_threaded(
     struct work_directory *const restrict workdir_archives,
     struct work_directory *const restrict workdir_checkouts
 ) {
-    pr_info("Exporting all repos (%hu threads)\n", config->export_threads);
-    if (export_all_repos_multi_threaded_prepare(
-        config, workdir_archives, workdir_checkouts)) {
-        pr_error("Failed to prepare repos (multi-threaded)\n");
+    pr_info("Exporting all repos (%hu threads + 1 for symlinks)\n", 
+        config->export_threads);
+    struct guanrantee_all_repos_wanted_objects_symlinks_arg 
+        symlinks_thread_arg = {
+            .config = config, 
+            .archives_links_dirfd = workdir_archives->links_dirfd,
+            .checkouts_links_dirfd = workdir_checkouts->links_dirfd
+        };
+    pthread_t symlinks_thread;
+    int r = pthread_create(&symlinks_thread, NULL, 
+                guanrantee_all_repos_wanted_objects_symlinks_thread,
+                &symlinks_thread_arg);
+    if (r) {
+        pr_error("Failed to create thread for generating symlinks, pthread "
+            "return %d\n", r);
         return -1;
     }
-    int r = -1;
+    if (export_all_repos_multi_threaded_lookup(config)) {
+        pr_error("Failed to prepare repos (multi-threaded)\n");
+        goto kill_symlink_thread;
+    }
     if (export_all_repos_multi_threaded_work(
         config, workdir_archives, workdir_checkouts)) {
         pr_error("Failed to export repos (multi-threaded)\n");
         goto free_commits;
     }
-    r = 0;
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        repo_free_all_parsed_commits(config->repos + i);
+    }
+    long thread_ret;
+    r = pthread_join(symlinks_thread, (void **)&thread_ret);
+    if (r) {
+        pr_error("Failed to join thread %ld for symlinks, pthread return %d\n",
+            symlinks_thread, r);
+        goto kill_symlink_thread;
+    }
+    if (thread_ret) {
+        pr_error("Thread %ld for guaranteeing symlinks returned with %ld\n",
+                symlinks_thread, thread_ret);
+        return -1;
+    }
+    return 0;
 free_commits:
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         repo_free_all_parsed_commits(config->repos + i);
     }
-    return r;
+kill_symlink_thread:
+    r = pthread_tryjoin_np(symlinks_thread, (void**)&thread_ret);
+    switch (r) {
+    case 0:
+        if (thread_ret) {
+            pr_error("Thread %ld for symlinks returned with %ld\n",
+                symlinks_thread, thread_ret);
+        }
+        break;
+    default:
+        pr_error(
+            "Failed to try join symlinks thread %ld, pthread return %d\n", 
+            symlinks_thread, r);
+        __attribute__((fallthrough));
+    case EBUSY:
+        r = pthread_kill(symlinks_thread, SIGKILL);
+        if (r) {
+            pr_error(
+                "Failed to kill thread for symlinks, pthread return %d\n", r);
+        }
+        r = pthread_join(symlinks_thread, (void **)&thread_ret);
+        if (r) {
+            pr_error("Failed to join killed symlinks thread %ld, "
+            "pthread return %d\n", symlinks_thread, r);
+        } else if (thread_ret) {
+            pr_error("Killed symlinks thread %ld returned with %ld\n",
+                    symlinks_thread, thread_ret);
+        }
+        break;
+    }
+    return -1;
 }
 
 int export_all_repos(
