@@ -2893,7 +2893,7 @@ int work_directory_add_keep(
         pr_error("Length of keep item '%s' too long\n", keep);
         return -1;
     }
-    char *keep_last = get_last(work_directory->keeps);
+    char *keep_last = (char *)(get_last(work_directory->keeps));
     memcpy(keep_last, keep, len_keep);
     keep_last[len_keep] = '\0';
     return 0;
@@ -3029,6 +3029,16 @@ void work_directories_free(
     work_directory_free(workdir_repos);
     work_directory_free(workdir_archives);
     work_directory_free(workdir_checkouts);
+}
+
+int work_directory_clean(
+    struct work_directory *const restrict workdir
+) {
+    pr_info("Cleaning '%s'\n", workdir->path);
+    for (unsigned long i = 0; i < workdir->keeps_count; ++i) {
+        pr_debug("Keeping '%s'\n", workdir->keeps[i]);
+    }
+    return 0;
 }
 
 // 0 existing and opened, 1 does not exist but created, -1 error
@@ -6802,6 +6812,29 @@ int raise_nofile_limit() {
     return 0;
 }
 
+int clean_all_dirs(
+    struct work_directory *const restrict workdir_repos,
+    struct work_directory *const restrict workdir_archives,
+    struct work_directory *const restrict workdir_checkouts
+) {
+    int r = 0;
+    if (work_directory_clean(workdir_repos)) {
+        pr_error("Failed to clean repos workdir '%s'\n", workdir_repos->path);
+        r = -1;
+    }
+    if (work_directory_clean(workdir_archives)) {
+        pr_error("Failed to clean archives workdir '%s'\n", 
+                workdir_archives->path);
+        r = -1;
+    }
+    if (work_directory_clean(workdir_checkouts)) {
+        pr_error("Failed to clean checkouts workdir '%s'\n", 
+                workdir_repos->path);
+        r = -1;
+    }
+    return r;
+}
+
 int main(int const argc, char *argv[]) {
     char *config_path = NULL;
     struct option const long_options[] = {
@@ -6866,6 +6899,11 @@ int main(int const argc, char *argv[]) {
     if ((r = export_all_repos(
             &config, &workdir_archives, &workdir_checkouts))) {
         pr_error("Failed to export all repos (archives and checkouts)\n");
+        goto shutdown;
+    }
+    if ((r = clean_all_dirs(
+        &workdir_repos, &workdir_archives, &workdir_checkouts))) {
+        pr_error("Failed to clean up all folders\n");
         goto shutdown;
     }
     r = 0;
