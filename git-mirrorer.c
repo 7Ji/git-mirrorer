@@ -844,6 +844,235 @@ int mkdir_recursively_at(
     }
 }
 
+int remove_dir_recursively(
+    DIR * const restrict dir_p
+) {
+    struct dirent *entry;
+    errno = 0;
+    int dir_fd = dirfd(dir_p);
+    while ((entry = readdir(dir_p)) != NULL) {
+        if (entry->d_name[0] == '.') {
+            switch (entry->d_name[1]) {
+            case '\0':
+                continue;
+            case '.':
+                if (entry->d_name[2] == '\0') continue;
+                break;
+            }
+        }
+        switch (entry->d_type) {
+        case DT_REG:
+        case DT_LNK:
+            if (unlinkat(dir_fd, entry->d_name, 0)) {
+                pr_error_with_errno(
+                    "Failed to delete '%s' recursively", entry->d_name);
+                return -1;
+            }
+            break;
+        case DT_DIR: {
+            int dir_fd_r = openat(dir_fd, entry->d_name, O_RDONLY);
+            if (dir_fd_r < 0) {
+                pr_error_with_errno(
+                    "Failed to open dir entry '%s'", entry->d_name);
+                return -1;
+            }
+            DIR *dir_p_r = fdopendir(dir_fd_r);
+            if (dir_p_r == NULL) {
+                pr_error_with_errno(
+                    "Failed to open '%s' as subdir", entry->d_name);
+                if (close(dir_fd_r)) {
+                    pr_error_with_errno("Failed to close fd for recursive dir");
+                }
+                return -1;
+            }
+            int r = remove_dir_recursively(dir_p_r);
+            if (closedir(dir_p_r)) {
+                pr_error_with_errno("Faild to close dir");
+            }
+            if (r) {
+                pr_error("Failed to remove dir '%s' recursively\n",
+                    entry->d_name);
+                return -1;
+            }
+            if (unlinkat(dir_fd, entry->d_name, AT_REMOVEDIR)) {
+                pr_error_with_errno(
+                    "Failed to rmdir '%s' recursively", entry->d_name);
+                return -1;
+            }
+            break;
+        }
+        default:
+            pr_error("Unsupported file type %d for '%s'\n",
+                entry->d_type, entry->d_name);
+            return -1;
+        }
+
+    }
+    if (errno) {
+        pr_error_with_errno("Failed to read dir\n");
+        return -1;
+    }
+    return 0;
+}
+
+int ensure_path_non_exist( // essentially rm -rf
+    char const *const restrict path
+) {
+    struct stat stat_buffer;
+    if (stat(path, &stat_buffer)) {
+        switch(errno) {
+        case ENOENT:
+            return 0;
+        default:
+            pr_error_with_errno("Failed to get stat of path '%s'", path);
+            return -1;
+        }
+    }
+    mode_t mode = stat_buffer.st_mode & S_IFMT;
+    switch (mode) {
+    case S_IFDIR: {
+        DIR *const restrict dir_p = opendir(path);
+        if (dir_p == NULL) {
+            pr_error_with_errno("Failed to opendir '%s'", path);
+            return -1;
+        }
+        int r = remove_dir_recursively(dir_p);
+        if (closedir(dir_p)) {
+            pr_error_with_errno("Failed to close dir");
+        }
+        if (r) {
+            pr_error("Failed to remove '%s' recursively\n", path);
+            return -1;
+        }
+        if (rmdir(path)) {
+            pr_error_with_errno("Failed to rmdir '%s'", path);
+            return -1;
+        }
+        break;
+    }
+    case S_IFREG:
+        if (unlink(path)) {
+            pr_error_with_errno("Failed to remove regular file '%s'", path);
+            return -1;
+        }
+        break;
+    default:
+        pr_error("Cannot remove existing '%s' with type %d\n", path, mode);
+        return -1;
+    }
+    return 0;
+}
+
+int ensure_path_non_exist_at( // essentially rm -rf
+    int const dir_fd,
+    char const *const restrict path
+) {
+    struct stat stat_buffer;
+    if (fstatat(dir_fd, path, &stat_buffer, AT_SYMLINK_NOFOLLOW)) {
+        switch(errno) {
+        case ENOENT:
+            return 0;
+        default:
+            pr_error_with_errno("Failed to get stat of path '%s'", path);
+            return -1;
+        }
+    }
+    mode_t mode = stat_buffer.st_mode & S_IFMT;
+    switch (mode) {
+    case S_IFDIR: {
+        int const subdir_fd = openat(dir_fd, path, O_RDONLY | O_DIRECTORY);
+        // DIR *const restrict dir_p = opendir;
+        if (subdir_fd < 0) {
+            pr_error_with_errno("Failed to open subdir '%s'", path);
+            return -1;
+        }
+        DIR *const restrict dir_p = fdopendir(subdir_fd);
+        if (dir_p == NULL) {
+            pr_error_with_errno("Failed to opendir '%s'", path);
+            if (close(subdir_fd)) {
+                pr_error_with_errno("Failed to close fd for subdir");
+            }
+            return -1;
+        }
+        int r = remove_dir_recursively(dir_p);
+        if (closedir(dir_p)) {
+            pr_error_with_errno("Failed to close dir");
+        }
+        if (r) {
+            pr_error("Failed to remove '%s' recursively\n", path);
+            return -1;
+        }
+        if (unlinkat(dir_fd, path, AT_REMOVEDIR)) {
+            pr_error_with_errno("Failed to rmdir '%s'", path);
+            return -1;
+        }
+        break;
+    }
+    case S_IFREG:
+    case S_IFLNK:
+        if (unlinkat(dir_fd, path, 0)) {
+            pr_error_with_errno("Failed to remove regular file '%s'", path);
+            return -1;
+        }
+        break;
+    default:
+        pr_error("Cannot remove existing '%s' with type %d\n", path, mode);
+        return -1;
+    }
+    return 0;
+}
+
+int ensure_parent_dir(
+    char *const restrict path,
+    unsigned short const len_path
+) {
+    for (unsigned short i = len_path; i > 0; --i) {
+        if (path[i - 1] == '/') {
+            path[i - 1] = '\0';
+            int r = mkdir_recursively(path);
+            path[i - 1] = '/';
+            if (r) {
+                pr_error("Failed to ensure parent dir of '%s'\n", path);
+                return -1;
+            }
+            return 0;
+        }
+    }
+    pr_error("Path '%s' does not have parent\n", path);
+    return -1;
+}
+
+int ensure_parent_dir_at(
+    int const dir_fd,
+    char *const restrict path,
+    unsigned short const len_path
+) {
+    for (unsigned short i = len_path; i > 0; --i) {
+        if (path[i - 1] == '/') {
+            path[i - 1] = '\0';
+            int r = mkdir_recursively_at(dir_fd, path);
+            path[i - 1] = '/';
+            if (r) {
+                pr_error("Failed to ensure parent dir of '%s'\n", path);
+                return -1;
+            }
+            return 0;
+        }
+    }
+    pr_error("Path '%s' does not have parent\n", path);
+    return -1;
+}
+
+unsigned short get_unsigned_short_decimal_width(unsigned short number) {
+    unsigned short width = 0;
+    if (!number) return 1;
+    while (number) {
+        number /= 10;
+        ++width;
+    }
+    return width;
+}
+
 static inline unsigned int
     tar_header_checksum(struct tar_posix_header *header) {
     unsigned int checksum = 0;
@@ -3068,10 +3297,92 @@ int work_directory_clean(
     struct work_directory *const restrict workdir
 ) {
     pr_info("Cleaning '%s'\n", workdir->path);
-    for (unsigned long i = 0; i < workdir->keeps_count; ++i) {
-        pr_debug("Keeping '%s'\n", workdir->keeps[i]);
+    size_t const keeps_size = sizeof *workdir->keeps * workdir->keeps_count;
+    char (*keeps)[NAME_MAX + 1] = malloc(keeps_size);
+    if (keeps == NULL) {
+        pr_error("Failed to duplicate keeps list\n");
+        return -1;
     }
-    return 0;
+    memcpy(keeps, workdir->keeps, keeps_size);
+    int r = -1;
+    int fd_dup = dup(workdir->dirfd);
+    if (fd_dup < 0) {
+        pr_error("Failed to duplicate fd for '%s'\n", workdir->path);
+        goto free_keeps;
+    }
+    DIR *dir_p = fdopendir(fd_dup);
+    if (dir_p == NULL) {
+        pr_error("Failed to opendir '%s'\n", workdir->path);
+        if (close(fd_dup)) {
+            pr_error_with_errno("Failed to close duplicated fd for '%s'",
+                                workdir->path);
+        }
+        goto free_keeps;
+    }
+    // Quick sort the keeps list
+    char keep_dup[sizeof *workdir->keeps];
+
+    pr_error("QUICK SORT WIP!!!\n");
+    r = -1;
+    goto free_keeps;
+
+    // Iterate over the folder to remove things not in kept list
+    unsigned long keeps_count = workdir->keeps_count;
+    struct dirent *entry;
+    errno = 0;
+    while ((entry = readdir(dir_p)) != NULL) {
+        switch (entry->d_name[0]) {
+        case '\0': 
+            continue;
+        case '.':
+            switch (entry->d_name[1]) {
+            case '\0':
+                continue;
+            case '.':
+                if (entry->d_name[2] == '\0')
+                    continue;
+                break;
+            }
+            break;
+        }
+        bool keep = false;
+        if (keeps_count) {
+            unsigned long low = 0;
+            unsigned long high = keeps_count;
+            while (low <= high) {
+                unsigned long mid = (low + high) / 2;
+                r = strcmp(entry->d_name, keeps[mid]);
+                if (r > 0) {
+                    low = mid + 1;
+                } else if (r < 0) {
+                    high = mid - 1;
+                } else {
+                    keep = true;
+                    // To avoid memcpy to itself
+                    // Overlap is not allocwed by memcpy 
+                    if (--keeps_count != mid) {
+                        memcpy(keeps[mid], keeps[keeps_count], sizeof *keeps);
+                    }
+                    break;
+                }
+            }
+        }
+        if (!keep && ensure_path_non_exist_at(workdir->dirfd, entry->d_name)) {
+            pr_error("Failed to remove '%s' which is not needed under work "
+                "folder'%s'\n", entry->d_name, workdir->path);
+            goto close_dir;
+        }
+    }
+    if (errno) {
+        pr_error_with_errno("Failed to read dir\n");
+        goto close_dir;
+    }
+    r = 0;
+close_dir:
+    closedir(dir_p);
+free_keeps:
+    free(keeps);
+    return r;
 }
 
 // 0 existing and opened, 1 does not exist but created, -1 error
@@ -5388,235 +5699,6 @@ int export_commit_treewalk_callback(
         pr_error("Impossible tree entry type %d\n", git_tree_entry_type(entry));
         return -1;
     }
-}
-
-int remove_dir_recursively(
-    DIR * const restrict dir_p
-) {
-    struct dirent *entry;
-    errno = 0;
-    int dir_fd = dirfd(dir_p);
-    while ((entry = readdir(dir_p)) != NULL) {
-        if (entry->d_name[0] == '.') {
-            switch (entry->d_name[1]) {
-            case '\0':
-                continue;
-            case '.':
-                if (entry->d_name[2] == '\0') continue;
-                break;
-            }
-        }
-        switch (entry->d_type) {
-        case DT_REG:
-        case DT_LNK:
-            if (unlinkat(dir_fd, entry->d_name, 0)) {
-                pr_error_with_errno(
-                    "Failed to delete '%s' recursively", entry->d_name);
-                return -1;
-            }
-            break;
-        case DT_DIR: {
-            int dir_fd_r = openat(dir_fd, entry->d_name, O_RDONLY);
-            if (dir_fd_r < 0) {
-                pr_error_with_errno(
-                    "Failed to open dir entry '%s'", entry->d_name);
-                return -1;
-            }
-            DIR *dir_p_r = fdopendir(dir_fd_r);
-            if (dir_p_r == NULL) {
-                pr_error_with_errno(
-                    "Failed to open '%s' as subdir", entry->d_name);
-                if (close(dir_fd_r)) {
-                    pr_error_with_errno("Failed to close fd for recursive dir");
-                }
-                return -1;
-            }
-            int r = remove_dir_recursively(dir_p_r);
-            if (closedir(dir_p_r)) {
-                pr_error_with_errno("Faild to close dir");
-            }
-            if (r) {
-                pr_error("Failed to remove dir '%s' recursively\n",
-                    entry->d_name);
-                return -1;
-            }
-            if (unlinkat(dir_fd, entry->d_name, AT_REMOVEDIR)) {
-                pr_error_with_errno(
-                    "Failed to rmdir '%s' recursively", entry->d_name);
-                return -1;
-            }
-            break;
-        }
-        default:
-            pr_error("Unsupported file type %d for '%s'\n",
-                entry->d_type, entry->d_name);
-            return -1;
-        }
-
-    }
-    if (errno) {
-        pr_error_with_errno("Failed to read dir\n");
-        return -1;
-    }
-    return 0;
-}
-
-int ensure_path_non_exist( // essentially rm -rf
-    char const *const restrict path
-) {
-    struct stat stat_buffer;
-    if (stat(path, &stat_buffer)) {
-        switch(errno) {
-        case ENOENT:
-            return 0;
-        default:
-            pr_error_with_errno("Failed to get stat of path '%s'", path);
-            return -1;
-        }
-    }
-    mode_t mode = stat_buffer.st_mode & S_IFMT;
-    switch (mode) {
-    case S_IFDIR: {
-        DIR *const restrict dir_p = opendir(path);
-        if (dir_p == NULL) {
-            pr_error_with_errno("Failed to opendir '%s'", path);
-            return -1;
-        }
-        int r = remove_dir_recursively(dir_p);
-        if (closedir(dir_p)) {
-            pr_error_with_errno("Failed to close dir");
-        }
-        if (r) {
-            pr_error("Failed to remove '%s' recursively\n", path);
-            return -1;
-        }
-        if (rmdir(path)) {
-            pr_error_with_errno("Failed to rmdir '%s'", path);
-            return -1;
-        }
-        break;
-    }
-    case S_IFREG:
-        if (unlink(path)) {
-            pr_error_with_errno("Failed to remove regular file '%s'", path);
-            return -1;
-        }
-        break;
-    default:
-        pr_error("Cannot remove existing '%s' with type %d\n", path, mode);
-        return -1;
-    }
-    return 0;
-}
-
-int ensure_path_non_exist_at( // essentially rm -rf
-    int const dir_fd,
-    char const *const restrict path
-) {
-    struct stat stat_buffer;
-    if (fstatat(dir_fd, path, &stat_buffer, AT_SYMLINK_NOFOLLOW)) {
-        switch(errno) {
-        case ENOENT:
-            return 0;
-        default:
-            pr_error_with_errno("Failed to get stat of path '%s'", path);
-            return -1;
-        }
-    }
-    mode_t mode = stat_buffer.st_mode & S_IFMT;
-    switch (mode) {
-    case S_IFDIR: {
-        int const subdir_fd = openat(dir_fd, path, O_RDONLY | O_DIRECTORY);
-        // DIR *const restrict dir_p = opendir;
-        if (subdir_fd < 0) {
-            pr_error_with_errno("Failed to open subdir '%s'", path);
-            return -1;
-        }
-        DIR *const restrict dir_p = fdopendir(subdir_fd);
-        if (dir_p == NULL) {
-            pr_error_with_errno("Failed to opendir '%s'", path);
-            if (close(subdir_fd)) {
-                pr_error_with_errno("Failed to close fd for subdir");
-            }
-            return -1;
-        }
-        int r = remove_dir_recursively(dir_p);
-        if (closedir(dir_p)) {
-            pr_error_with_errno("Failed to close dir");
-        }
-        if (r) {
-            pr_error("Failed to remove '%s' recursively\n", path);
-            return -1;
-        }
-        if (unlinkat(dir_fd, path, AT_REMOVEDIR)) {
-            pr_error_with_errno("Failed to rmdir '%s'", path);
-            return -1;
-        }
-        break;
-    }
-    case S_IFREG:
-    case S_IFLNK:
-        if (unlinkat(dir_fd, path, 0)) {
-            pr_error_with_errno("Failed to remove regular file '%s'", path);
-            return -1;
-        }
-        break;
-    default:
-        pr_error("Cannot remove existing '%s' with type %d\n", path, mode);
-        return -1;
-    }
-    return 0;
-}
-
-int ensure_parent_dir(
-    char *const restrict path,
-    unsigned short const len_path
-) {
-    for (unsigned short i = len_path; i > 0; --i) {
-        if (path[i - 1] == '/') {
-            path[i - 1] = '\0';
-            int r = mkdir_recursively(path);
-            path[i - 1] = '/';
-            if (r) {
-                pr_error("Failed to ensure parent dir of '%s'\n", path);
-                return -1;
-            }
-            return 0;
-        }
-    }
-    pr_error("Path '%s' does not have parent\n", path);
-    return -1;
-}
-
-int ensure_parent_dir_at(
-    int const dir_fd,
-    char *const restrict path,
-    unsigned short const len_path
-) {
-    for (unsigned short i = len_path; i > 0; --i) {
-        if (path[i - 1] == '/') {
-            path[i - 1] = '\0';
-            int r = mkdir_recursively_at(dir_fd, path);
-            path[i - 1] = '/';
-            if (r) {
-                pr_error("Failed to ensure parent dir of '%s'\n", path);
-                return -1;
-            }
-            return 0;
-        }
-    }
-    pr_error("Path '%s' does not have parent\n", path);
-    return -1;
-}
-
-unsigned short get_unsigned_short_decimal_width(unsigned short number) {
-    unsigned short width = 0;
-    if (!number) return 1;
-    while (number) {
-        number /= 10;
-        ++width;
-    }
-    return width;
 }
 
 int export_commit_add_global_comment_to_tar(
