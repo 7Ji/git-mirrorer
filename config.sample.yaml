@@ -158,6 +158,11 @@ cleanup:
   # default: yes
   links: yes
 
+# THREADING CONFIG
+threads:
+  update: 10
+  export: 10
+
 # REPOS CONFIG
 # Defines a list of upstream git repositories that should be mirrored, by
 # mirroring here we mean that:

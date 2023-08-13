@@ -393,6 +393,7 @@ struct config {
                     len_dir_checkouts,
                     archive_pipe_args_count,
                     len_archive_suffix,
+                    update_threads,
                     export_threads;
     bool    archive_gh_prefix,
             clean_repos,
@@ -413,6 +414,7 @@ struct config const CONFIG_INIT = {
     },
     .archive_suffix = ".tar",
     .len_archive_suffix = 4,
+    .update_threads = 10,
     .export_threads = 10,
     .clean_links = true,
 };
@@ -466,6 +468,10 @@ enum yaml_config_parsing_status {
     YAML_CONFIG_PARSING_STATUS_CLEAN_REPOS,
     YAML_CONFIG_PARSING_STATUS_CLEAN_ARCHIVES,
     YAML_CONFIG_PARSING_STATUS_CLEAN_CHECKOUTS,
+    YAML_CONFIG_PARSING_STATUS_THREADS,
+    YAML_CONFIG_PARSING_STATUS_THREADS_SECTION,
+    YAML_CONFIG_PARSING_STATUS_THREADS_UPDATE,
+    YAML_CONFIG_PARSING_STATUS_THREADS_EXPORT,
     YAML_CONFIG_PARSING_STATUS_WANTED,
     YAML_CONFIG_PARSING_STATUS_WANTED_SECTION,
     YAML_CONFIG_PARSING_STATUS_WANTED_SECTION_START,
@@ -504,6 +510,10 @@ char const *yaml_config_parsing_status_strings[] = {
     "clean repos",
     "clean archives",
     "clean checkouts",
+    "threads",
+    "threads section",
+    "threads update",
+    "threads export",
     "wanted",
     "wanted section",
     "wanted section start",
@@ -554,8 +564,6 @@ int repo_ensure_first_parsed_commits(
     unsigned long const repo_id,
     unsigned long const stop_before_commit_id
 );
-
-#define MAX_CONNECTIONS_TO_SINGLE_SERVER 10
 
 struct update_server_repo_activity {
     hash_type server_hash;
@@ -1718,6 +1726,8 @@ int config_update_from_yaml_event(
                     *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE;
                 else if (!strcmp(key, "cleanup"))
                     *status = YAML_CONFIG_PARSING_STATUS_CLEAN;
+                else if (!strcmp(key, "threads"))
+                    *status = YAML_CONFIG_PARSING_STATUS_THREADS;
                 break;
             case 9:
                 if (!strcmp(key, "dir_repos"))
@@ -1977,6 +1987,39 @@ int config_update_from_yaml_event(
         default: goto unexpected_event_type;
         }
         break;
+    case YAML_CONFIG_PARSING_STATUS_THREADS:
+        switch (event->type) {
+        case YAML_MAPPING_START_EVENT:
+            *status = YAML_CONFIG_PARSING_STATUS_THREADS_SECTION;
+            break;
+        default: goto unexpected_event_type;
+        }
+        break;
+    case YAML_CONFIG_PARSING_STATUS_THREADS_SECTION:
+        switch (event->type) {
+        case YAML_SCALAR_EVENT: {
+            char const *const key = (char const *)event->data.scalar.value;
+            switch (event->data.scalar.length) {
+            case 6:
+                if (!strcmp(key, "update")) {
+                    *status = YAML_CONFIG_PARSING_STATUS_THREADS_UPDATE;
+                } else if (!strcmp(key, "export")) {
+                    *status = YAML_CONFIG_PARSING_STATUS_THREADS_EXPORT;
+                }
+                break;
+            }
+            if (*status == YAML_CONFIG_PARSING_STATUS_THREADS_SECTION) {
+                pr_error("Unrecognized config key '%s'\n", key);
+                return -1;
+            }
+            break;
+        }
+        case YAML_MAPPING_END_EVENT:
+            *status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            break;
+        default: goto unexpected_event_type;
+        }
+        break;
     case YAML_CONFIG_PARSING_STATUS_WANTED:
         switch (event->type) {
         case YAML_MAPPING_START_EVENT:
@@ -2187,12 +2230,29 @@ int config_update_from_yaml_event(
         }
         break;
     case YAML_CONFIG_PARSING_STATUS_PROXY_AFTER:
+    case YAML_CONFIG_PARSING_STATUS_THREADS_UPDATE:
+    case YAML_CONFIG_PARSING_STATUS_THREADS_EXPORT:
         switch (event->type) {
-        case YAML_SCALAR_EVENT:
-            config->proxy_after = strtoul(
+        case YAML_SCALAR_EVENT: {
+            unsigned long value = strtoul(
                 (char const *)event->data.scalar.value, NULL, 10);
-            *status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            switch (*status) {
+            case YAML_CONFIG_PARSING_STATUS_PROXY_AFTER:
+                config->proxy_after = value;
+                *status = YAML_CONFIG_PARSING_STATUS_SECTION;
+                break;
+            case YAML_CONFIG_PARSING_STATUS_THREADS_UPDATE:
+                config->update_threads = value;
+                *status = YAML_CONFIG_PARSING_STATUS_THREADS_SECTION;
+                break;
+            case YAML_CONFIG_PARSING_STATUS_THREADS_EXPORT:
+                config->export_threads = value;
+                *status = YAML_CONFIG_PARSING_STATUS_THREADS_SECTION;
+                break;
+            default: goto impossible_status;
+            }
             break;
+        }
         default: goto unexpected_event_type;
         }
         break;
@@ -4431,7 +4491,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
     // Here we allocate the most possibly used memory to avoid future
     // realloc calls
     unsigned long const max_possible_connections = 
-        update_status.servers_count * MAX_CONNECTIONS_TO_SINGLE_SERVER;
+        update_status.servers_count * config->update_threads;
     update_status.thread_handles_allocated = 
         max_possible_connections > update_status.repo_ids_count ?
             update_status.repo_ids_count :
@@ -4449,6 +4509,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
         arg->fetch_options = *fetch_options;
         arg->proxy_after = proxy_after;
     }
+    pr_info("Updating repos with %hu threads...\n", config->update_threads);
     while (update_status.repo_ids_count || update_status.threads_active_count) {
         update_status.changed = false;
         for (unsigned long i = 0; i < update_status.repo_ids_count; ++i) {
@@ -4467,7 +4528,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
             }
             // Already at max concurrent connection
             if (update_status.servers[server_id].repos_updating_count >= 
-                MAX_CONNECTIONS_TO_SINGLE_SERVER) {
+                config->update_threads) {
                 continue;
             }
             ++update_status.servers[server_id].repos_updating_count;
@@ -4548,11 +4609,10 @@ int open_and_update_all_dynamic_repos_threaded_optional(
             if (update_status.threads_active_count) {
                 if (update_status.repo_ids_count) {
                     pr_info("Updating %lu repos, "
-                        "%lu more repos (max %u connections per server) "
+                        "%lu more repos "
                         "needs to be updated...\n",
                         update_status.threads_active_count,
-                        update_status.repo_ids_count,
-                        MAX_CONNECTIONS_TO_SINGLE_SERVER);
+                        update_status.repo_ids_count);
                 } else {
                     pr_info("Updating %lu repos...\n",
                         update_status.threads_active_count);
