@@ -670,7 +670,7 @@ declare_func_add_object_and_realloc_if_necessary_no_init_typed(
 
 int sideband_progress(char const *string, int len, void *payload) {
 	// (void)payload; /* unused */
-    pr_info("Repo '%s': Remote: %.*s", 
+    pr_info("Repo '%s': Remote: %.*s",
         ((struct repo const*)payload)->url, len, string);
 	return 0;
 }
@@ -722,7 +722,7 @@ static inline void print_progress(
             stats->total_objects > 0 ?
                 100 * stats->indexed_objects/ stats->total_objects :
                 0,
-            stats->indexed_objects, 
+            stats->indexed_objects,
             stats->total_objects);
 	}
 }
@@ -1702,7 +1702,7 @@ int wanted_object_guarantee_symlinks(
 #else
             pr_warn(
 #endif
-                "Commit not resolved for wanted object '%s' yet\n", 
+                "Commit not resolved for wanted object '%s' yet\n",
                     wanted_object->name);
 #ifdef ALL_REFERENCES_MUST_BE_RESOLVED
             return -1;
@@ -1802,7 +1802,7 @@ int wanted_object_guarantee_symlinks(
     // The named one
     if (wanted_object->type != WANTED_TYPE_COMMIT) {
         char *symlink_path_current = stpcpy(symlink_path, dir_link);
-        symlink_path_current = 
+        symlink_path_current =
             stpcpy(symlink_path_current, wanted_object->name);
         unsigned short len_symlink_path = symlink_path_current - symlink_path;
         char *symlink_target_current = symlink_target;
@@ -2623,7 +2623,7 @@ wanted_type_unknown:
                 "this shouldn't happen\n");
     return -1;
 impossible_status:
-    pr_error("Impossible status %d (%s)\n", *status, 
+    pr_error("Impossible status %d (%s)\n", *status,
         yaml_config_parsing_status_strings[*status]);
     return -1;
 unexpected_event_type:
@@ -3242,13 +3242,13 @@ int work_directories_from_config(
     struct work_directory *const restrict workdir_checkouts,
     struct config const *const restrict config
 ) {
-    if (work_directory_from_path(workdir_repos, config->dir_repos, 
+    if (work_directory_from_path(workdir_repos, config->dir_repos,
             config->len_dir_repos, config->clean_repos)) {
-        pr_error("Failed to open work directory '%s' for repos\n", 
+        pr_error("Failed to open work directory '%s' for repos\n",
             config->dir_repos);
         return -1;
     }
-    if (work_directory_from_path(workdir_archives, config->dir_archives, 
+    if (work_directory_from_path(workdir_archives, config->dir_archives,
                         config->len_dir_archives, config->clean_archives)) {
         pr_error("Failed to open work directory '%s' for archives\n",
                 config->dir_archives);
@@ -3256,7 +3256,7 @@ int work_directories_from_config(
     }
     if (work_directory_from_path(workdir_checkouts, config->dir_checkouts,
                         config->len_dir_checkouts, config->clean_checkouts)) {
-        
+
         pr_error("Failed to open work directory '%s' for checkouts\n",
                 config->dir_checkouts);
         goto free_workdir_archives;
@@ -3394,7 +3394,7 @@ int work_directory_clean(
     if (workdir->keeps_count) {
         while ((entry = readdir(dir_p)) != NULL) {
             switch (entry->d_name[0]) {
-            case '\0': 
+            case '\0':
                 continue;
             case '.':
                 switch (entry->d_name[1]) {
@@ -3443,7 +3443,7 @@ int work_directory_clean(
     } else {
         while ((entry = readdir(dir_p)) != NULL) {
             switch (entry->d_name[0]) {
-            case '\0': 
+            case '\0':
                 continue;
             case '.':
                 switch (entry->d_name[1]) {
@@ -4123,7 +4123,7 @@ int repo_parse_wanted_commit(
     }
     wanted_commit->parsed_commit_id = repo->parsed_commits_count - 1;
 sync_export_setting:
-    struct parsed_commit *parsed_commit = 
+    struct parsed_commit *parsed_commit =
         repo->parsed_commits + wanted_commit->parsed_commit_id;
     if (wanted_commit->archive) parsed_commit->archive = true;
     if (wanted_commit->checkout) parsed_commit->checkout = true;
@@ -4819,14 +4819,14 @@ int update_status_add_server_and_init_with_hash_optional(
     hash_type const server_hash
 ) {
     for (unsigned long i = 0; i < update_status->servers_count; ++i) {
-        if (server_hash == update_status->servers[i].server_hash) 
+        if (server_hash == update_status->servers[i].server_hash)
             return 0;
     }
     if (update_status_add_server_no_init(update_status)) {
         pr_error("Failed to add server\n");
         return -1;
     }
-    struct update_server_repo_activity *const server = 
+    struct update_server_repo_activity *const server =
         get_last(update_status->servers);
     server->server_hash = server_hash;
     server->repos_updating_count = 0;
@@ -4869,13 +4869,13 @@ int open_and_update_all_dynamic_repos_threaded_optional(
     // We only allow 10 concurrent connections to a server
     // Here we allocate the most possibly used memory to avoid future
     // realloc calls
-    unsigned long const max_possible_connections = 
+    unsigned long const max_possible_connections =
         update_status.servers_count * config->connections_per_server;
     if (max_possible_connections <= 1) {
         r = 0;
         goto free_servers_and_ids_maybe;
     }
-    update_status.thread_handles_allocated = 
+    update_status.thread_handles_allocated =
         max_possible_connections > update_status.repo_ids_count ?
             update_status.repo_ids_count :
             max_possible_connections;
@@ -4887,7 +4887,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
         goto free_thread_handles;
     }
     for (unsigned i = 0; i < update_status.thread_handles_allocated; ++i) {
-        struct repo_update_thread_arg *arg = 
+        struct repo_update_thread_arg *arg =
             &update_status.thread_handles[i].arg;
         arg->fetch_options = *fetch_options;
         arg->proxy_after = proxy_after;
@@ -4897,7 +4897,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
     while (update_status.repo_ids_count || update_status.threads_active_count) {
         update_status.changed = false;
         for (unsigned long i = 0; i < update_status.repo_ids_count; ++i) {
-            struct repo *const restrict repo = 
+            struct repo *const restrict repo =
                 config->repos + update_status.repo_ids[i];
             unsigned long server_id = (unsigned long) -1;
             for (unsigned long j = 0; j < update_status.servers_count; ++j) {
@@ -4911,7 +4911,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
                 goto wait_threads;
             }
             // Already at max concurrent connection
-            if (update_status.servers[server_id].repos_updating_count >= 
+            if (update_status.servers[server_id].repos_updating_count >=
                 config->connections_per_server) {
                 continue;
             }
@@ -4920,13 +4920,13 @@ int open_and_update_all_dynamic_repos_threaded_optional(
                     update_status.thread_handles_allocated) {
                 pr_error(
                     "Allocated memory for threads not enough %lu / %lu\n",
-                    update_status.threads_active_count, 
+                    update_status.threads_active_count,
                     update_status.thread_handles_allocated);
                 goto wait_threads;
             }
             struct update_thread_handle *handle = NULL;
-            for (unsigned long j = 0; 
-                j < update_status.thread_handles_allocated; 
+            for (unsigned long j = 0;
+                j < update_status.thread_handles_allocated;
                 ++j) {
                 if (!update_status.thread_handles[j].active) {
                     handle = update_status.thread_handles + j;
@@ -4935,10 +4935,10 @@ int open_and_update_all_dynamic_repos_threaded_optional(
             }
             if (handle == NULL) {
                 pr_error("Failed to find empty handle\n");
-                goto wait_threads; 
+                goto wait_threads;
             }
             handle->arg.repo = repo;
-            r = pthread_create(&handle->thread, 
+            r = pthread_create(&handle->thread,
                             NULL, repo_update_thread, &handle->arg);
             if (r) {
                 pr_error("Failed to create thread, pthread return %d\n", r);
@@ -4949,15 +4949,15 @@ int open_and_update_all_dynamic_repos_threaded_optional(
             handle->server_id = server_id;
             handle->active = true;
             handle->checked = 0;
-            update_status.repo_ids[i] = 
+            update_status.repo_ids[i] =
                 update_status.repo_ids[--update_status.repo_ids_count];
             update_status.changed = true;
         }
         // Here there must be at least one active, no need to check
-        for (unsigned long i = 0; 
-            i < update_status.thread_handles_allocated; 
+        for (unsigned long i = 0;
+            i < update_status.thread_handles_allocated;
             ++i) {
-            struct update_thread_handle *handle = 
+            struct update_thread_handle *handle =
                 update_status.thread_handles + i;;
             if (!handle->active) continue;
             long thread_ret;
@@ -5009,7 +5009,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
     r = 0;
 wait_threads:
     pr_info("Waiting for all update threads to end...\n");
-    for (unsigned long i = 0; 
+    for (unsigned long i = 0;
         i < update_status.thread_handles_allocated; ++i) {
         struct update_thread_handle *handle = update_status.thread_handles + i;
         if (handle->active) {
@@ -5017,7 +5017,7 @@ wait_threads:
             int r2 = pthread_join(handle->thread, (void **)&thread_ret);
             if (r2) {
                 pr_error("Faiiled to join updating thread %ld for repo '%s', "
-                    "pthread return %d\n", 
+                    "pthread return %d\n",
                     handle->thread, handle->arg.repo->url, r2);
                 r = -1;
             }
@@ -5858,7 +5858,7 @@ int export_commit_add_global_comment_to_tar(
     return 0;
 }
 
-// 1 path did not exist, or existed but we removed it, 
+// 1 path did not exist, or existed but we removed it,
 // 0 exists and is of type, -1 error
 int ensure_path_is_type_at(
     int dirfd,
@@ -5952,7 +5952,7 @@ int export_handle_init_common(
         }
         handle->should_export = true;
     } else if (r < 0) {
-        pr_error("Failed to ensure '%s' non-existing or is type %d\n", 
+        pr_error("Failed to ensure '%s' non-existing or is type %d\n",
                 handle->path, type);
         r = -1;
         goto set_no_export;
@@ -6015,7 +6015,7 @@ int export_handle_init_archive(
                             pthread_self());
                 exit(EXIT_FAILURE);
             }
-            pr_error_file(stderr, 
+            pr_error_file(stderr,
                 "[Child %ld] We should not be here\n", pthread_self());
             exit(EXIT_FAILURE);
             break;
@@ -6056,9 +6056,9 @@ int export_commit_prepare(
     struct export_handle *checkout_handle,
     struct work_directory *const restrict workdir_checkouts
 ) {
-    if (archive_handle->should_export || checkout_handle->should_export); 
+    if (archive_handle->should_export || checkout_handle->should_export);
     else {
-        pr_error("Commit '%s' should neither be archived or checked out\n", 
+        pr_error("Commit '%s' should neither be archived or checked out\n",
                     parsed_commit->id_hex_string);
         return -1;
     }
@@ -6070,7 +6070,7 @@ int export_commit_prepare(
             return -1;
         }
         if (config->clean_checkouts) {
-            if (work_directory_add_keep(workdir_checkouts, 
+            if (work_directory_add_keep(workdir_checkouts,
                 checkout_handle->path, checkout_handle->len_path)) {
                 pr_error("Failed to add keep checkout '%s'\n",
                     checkout_handle->path);
@@ -6080,9 +6080,9 @@ int export_commit_prepare(
     }
     if (archive_handle->should_export) {
         if (export_handle_init_archive(
-            archive_handle, workdir_archives->dirfd, 
-            parsed_commit->id_hex_string, 
-            config->archive_suffix, config->len_archive_suffix, 
+            archive_handle, workdir_archives->dirfd,
+            parsed_commit->id_hex_string,
+            config->archive_suffix, config->len_archive_suffix,
             config->archive_pipe_args, config->archive_pipe_args_count)) {
             pr_error("Failed to init export handle for archive\n");
             goto close_checkout_fd;
@@ -6117,11 +6117,11 @@ int repo_lookup_all_parsed_commits(
     struct repo const *const restrict repo
 ) {
     for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
-        struct parsed_commit *const restrict parsed_commit = 
+        struct parsed_commit *const restrict parsed_commit =
             repo->parsed_commits + i;
         if (parsed_commit->commit != NULL) {
             pr_error("Commit '%s' already looked up, no commit should've been "
-                    "looked up when this func is called\n", 
+                    "looked up when this func is called\n",
                     parsed_commit->id_hex_string);
             return -1;
         }
@@ -6149,7 +6149,7 @@ int repo_free_all_parsed_commits(
     struct repo const *const restrict repo
 ) {
     for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
-        struct parsed_commit *const restrict parsed_commit = 
+        struct parsed_commit *const restrict parsed_commit =
             repo->parsed_commits + i;
         if (parsed_commit->commit == NULL) {
             pr_warn("Commit '%s' already freed, this shouldn't happen\n",
@@ -6277,7 +6277,7 @@ int export_commit_finish(
             if (!waited) {
                 pr_warn("Child not properly ended (yet), force to kill it");
                 if (kill(archive_handle->child, SIGKILL)) {
-                    pr_error_with_errno("Failed to force kill child %d", 
+                    pr_error_with_errno("Failed to force kill child %d",
                         archive_handle->child);
                 }
                 r = -1;
@@ -6288,7 +6288,7 @@ int export_commit_finish(
             }
             archive_handle->child = -1;
         }
-        if (!force && 
+        if (!force &&
             renameat(dirfd_archives, archive_handle->path_work,
                     dirfd_archives, archive_handle->path)) {
             pr_error_with_errno("Failed to move '%s' to '%s'",
@@ -6301,8 +6301,8 @@ int export_commit_finish(
             pr_error_with_errno("Failed to close checkout dirfd");
             r = -1;
         }
-        if (!force && 
-            renameat(dirfd_checkouts, checkout_handle->path_work, 
+        if (!force &&
+            renameat(dirfd_checkouts, checkout_handle->path_work,
                 dirfd_checkouts, checkout_handle->path)) {
             pr_error_with_errno("Failed to move '%s' to '%s'",
                 checkout_handle->path_work, checkout_handle->path);
@@ -6367,9 +6367,9 @@ int export_commit_single_threaded(
     struct export_handle checkout_handle = {.should_export = should_checkout};
     if (export_commit_prepare(
             config, parsed_commit,
-            &archive_handle, workdir_archives, 
+            &archive_handle, workdir_archives,
             &checkout_handle, workdir_checkouts)) {
-        pr_error("Failed to preapre to export commit '%s'\n", 
+        pr_error("Failed to preapre to export commit '%s'\n",
                         parsed_commit->id_hex_string);
         return -1;
     }
@@ -6377,15 +6377,15 @@ int export_commit_single_threaded(
     else {
         return 0;
     }
-    if (export_commit_write(config, repo, parsed_commit, 
+    if (export_commit_write(config, repo, parsed_commit,
                     &archive_handle, &checkout_handle)) {
-        pr_error("Failed to write export commit '%s'\n", 
+        pr_error("Failed to write export commit '%s'\n",
                     parsed_commit->id_hex_string);
-        export_commit_finish(&archive_handle, &checkout_handle, 
+        export_commit_finish(&archive_handle, &checkout_handle,
             workdir_archives->dirfd, workdir_checkouts->dirfd, true);
         return -1;
     }
-    if (export_commit_finish(&archive_handle, &checkout_handle, 
+    if (export_commit_finish(&archive_handle, &checkout_handle,
             workdir_archives->dirfd, workdir_checkouts->dirfd, false)) {
         pr_error("Failed to finish exporting of commit\n");
         return -1;
@@ -6406,15 +6406,15 @@ int export_commit_write_and_finish(
     struct export_handle *const restrict checkout_handle,
     int const dirfd_checkouts
 ) {
-    if (export_commit_write(config, repo, parsed_commit, 
+    if (export_commit_write(config, repo, parsed_commit,
                     archive_handle, checkout_handle)) {
-        pr_error("Failed to write export commit '%s'\n", 
+        pr_error("Failed to write export commit '%s'\n",
                     parsed_commit->id_hex_string);
-        export_commit_finish(archive_handle, checkout_handle, 
+        export_commit_finish(archive_handle, checkout_handle,
             dirfd_archives, dirfd_checkouts, true);
         return -1;
     }
-    if (export_commit_finish(archive_handle, checkout_handle, 
+    if (export_commit_finish(archive_handle, checkout_handle,
             dirfd_archives, dirfd_checkouts, false)) {
         pr_error("Failed to finish exporting of commit\n");
         return -1;
@@ -6439,7 +6439,7 @@ void *export_commit_write_and_finish_thread(void *arg) {
         (struct export_commit_write_and_finish_arg *)arg;
     return (void *)(long)export_commit_write_and_finish(
         private_arg->config, private_arg->repo, private_arg->parsed_commit,
-        private_arg->archive_handle, private_arg->dirfd_archives, 
+        private_arg->archive_handle, private_arg->dirfd_archives,
         private_arg->checkout_handle, private_arg->dirfd_checkouts
     );
 }
@@ -6505,7 +6505,7 @@ int export_wanted_object_with_symlinks_atomic_optional(
         break;
     }
     default:
-        pr_error("Impossible wanted type %d (%s)\n", 
+        pr_error("Impossible wanted type %d (%s)\n",
             wanted_object->type, wanted_type_strings[wanted_object->type]);
         return -1;
     }
@@ -6519,8 +6519,8 @@ int repo_guarantee_all_wanted_objects_symlinks(
     int const archives_links_dirfd,
     int const checkouts_links_dirfd
 ) {
-    for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {   
-        struct wanted_object const *const restrict wanted_object = 
+    for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
+        struct wanted_object const *const restrict wanted_object =
             repo->wanted_objects + i;
         if (wanted_object_guarantee_symlinks(
             wanted_object, repo,
@@ -6555,9 +6555,9 @@ int export_all_repos_single_threaded(
             struct wanted_object const *const restrict wanted_object =
                 repo->wanted_objects + j;
             if (export_wanted_object_with_symlinks_atomic_optional(
-                    config, repo, wanted_object, 
+                    config, repo, wanted_object,
                     workdir_archives, workdir_checkouts)) {
-                pr_error("Failed to export wanted object '%s'\n", 
+                pr_error("Failed to export wanted object '%s'\n",
                         wanted_object->name);
                 goto free_commits;
             }
@@ -6596,12 +6596,12 @@ struct guanrantee_all_repos_wanted_objects_symlinks_arg {
 };
 
 void *guanrantee_all_repos_wanted_objects_symlinks_thread(void *arg) {
-    struct guanrantee_all_repos_wanted_objects_symlinks_arg *private_arg = 
+    struct guanrantee_all_repos_wanted_objects_symlinks_arg *private_arg =
         (struct guanrantee_all_repos_wanted_objects_symlinks_arg *)arg;
     return (void *)(long)
                 guanrantee_all_repos_wanted_objects_symlinks(
-                    private_arg->config, 
-                    private_arg->archives_links_dirfd, 
+                    private_arg->config,
+                    private_arg->archives_links_dirfd,
                     private_arg->checkouts_links_dirfd);
 }
 
@@ -6622,9 +6622,9 @@ int export_all_repos_multi_threaded_lookup(
     unsigned long repo_prepared_count = 0;
     int r = -1;
     long thread_ret;
-    for (; repo_prepared_count < config->repos_count; 
+    for (; repo_prepared_count < config->repos_count;
         ++repo_prepared_count) {
-        struct repo const *const restrict repo = 
+        struct repo const *const restrict repo =
             config->repos + repo_prepared_count;
         bool thread_added = false;
         for (;;) {
@@ -6639,7 +6639,7 @@ int export_all_repos_multi_threaded_lookup(
                         handle->active = false;
                         if (thread_ret) {
                             pr_error("Thread %ld for preparing repo '%s' "
-                            "returned with %ld\n", handle->thread, 
+                            "returned with %ld\n", handle->thread,
                             handle->repo->url, thread_ret);
                             r = -1;
                             goto wait_threads;
@@ -6678,7 +6678,7 @@ int export_all_repos_multi_threaded_lookup(
             if (threads_active_count == config->export_threads) {
                 pr_debug("Active threads reached max\n");
             }
-            pr_debug("%hu threads running for looking up commits\n", 
+            pr_debug("%hu threads running for looking up commits\n",
                             threads_active_count);
         }
     }
@@ -6698,7 +6698,7 @@ wait_threads:
             handle->active = false;
             if (thread_ret) {
                 pr_error(
-                    "Thread %ld for preparing repo '%s' returned with %ld\n", 
+                    "Thread %ld for preparing repo '%s' returned with %ld\n",
                     handle->thread, handle->repo->url, thread_ret);
                 r = -1;
             }
@@ -6747,7 +6747,7 @@ int export_all_repos_multi_threaded_work(
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         struct repo const *const restrict repo = config->repos + i;
         for (unsigned long j = 0; j < repo->parsed_commits_count; ++j) {
-            struct parsed_commit const *const restrict parsed_commit = 
+            struct parsed_commit const *const restrict parsed_commit =
                                     repo->parsed_commits + j;
             if (parsed_commit->archive || parsed_commit->checkout);
             else continue;
@@ -6755,10 +6755,10 @@ int export_all_repos_multi_threaded_work(
                 .should_export = parsed_commit->archive};
             struct export_handle checkout_handle = {
                 .should_export = parsed_commit->checkout};
-            if (export_commit_prepare(config, parsed_commit, 
-                            &archive_handle, workdir_archives, 
+            if (export_commit_prepare(config, parsed_commit,
+                            &archive_handle, workdir_archives,
                             &checkout_handle, workdir_checkouts)) {
-                pr_error("Failed to prepare to export commit '%s'\n", 
+                pr_error("Failed to prepare to export commit '%s'\n",
                             parsed_commit->id_hex_string);
                 goto wait_threads;
             }
@@ -6778,8 +6778,8 @@ int export_all_repos_multi_threaded_work(
                             if (thread_ret) {
                                 pr_error(
                                     "Thread %ld for exporting commit %s return"
-                                    "with %ld", handle->thread, 
-                                                parsed_commit->id_hex_string, 
+                                    "with %ld", handle->thread,
+                                                parsed_commit->id_hex_string,
                                                 thread_ret);
                                 goto wait_threads;
                             }
@@ -6799,12 +6799,12 @@ int export_all_repos_multi_threaded_work(
                         handle->checkout_handle = checkout_handle;
                         handle->arg.repo = repo;
                         handle->arg.parsed_commit = parsed_commit;
-                        r = pthread_create(&handle->thread, NULL, 
-                                export_commit_write_and_finish_thread, 
+                        r = pthread_create(&handle->thread, NULL,
+                                export_commit_write_and_finish_thread,
                                 &handle->arg);
                         if (r) {
                             pr_error("Failed to create thread to export commit "
-                                    "%s, pthread return %d\n", 
+                                    "%s, pthread return %d\n",
                                     parsed_commit->id_hex_string, r);
                             goto wait_threads;
                         }
@@ -6827,15 +6827,15 @@ wait_threads:
             int r2 = pthread_join(handle->thread, (void **)&thread_ret);
             if (r2) {
                 pr_error("Failed to join thread %ld for exporting commit %s , "
-                            "pthread return %d\n", handle->thread, 
+                            "pthread return %d\n", handle->thread,
                                 handle->arg.parsed_commit->id_hex_string, r);
                 r = -1;
             }
             handle->active = false;
             if (thread_ret) {
                 pr_error(
-                    "Thread %ld for exporting commit %s returned with %ld\n", 
-                    handle->thread, handle->arg.parsed_commit->id_hex_string, 
+                    "Thread %ld for exporting commit %s returned with %ld\n",
+                    handle->thread, handle->arg.parsed_commit->id_hex_string,
                     thread_ret);
                 r = -1;
             }
@@ -6850,16 +6850,16 @@ int export_all_repos_multi_threaded(
     struct work_directory *const restrict workdir_archives,
     struct work_directory *const restrict workdir_checkouts
 ) {
-    pr_info("Exporting all repos (%hu threads + 1 for symlinks)\n", 
+    pr_info("Exporting all repos (%hu threads + 1 for symlinks)\n",
         config->export_threads);
-    struct guanrantee_all_repos_wanted_objects_symlinks_arg 
+    struct guanrantee_all_repos_wanted_objects_symlinks_arg
         symlinks_thread_arg = {
-            .config = config, 
+            .config = config,
             .archives_links_dirfd = workdir_archives->links_dirfd,
             .checkouts_links_dirfd = workdir_checkouts->links_dirfd
         };
     pthread_t symlinks_thread;
-    int r = pthread_create(&symlinks_thread, NULL, 
+    int r = pthread_create(&symlinks_thread, NULL,
                 guanrantee_all_repos_wanted_objects_symlinks_thread,
                 &symlinks_thread_arg);
     if (r) {
@@ -6907,7 +6907,7 @@ int export_all_repos(
         return export_all_repos_single_threaded(config,
             workdir_archives, workdir_checkouts);
     } else {
-        return export_all_repos_multi_threaded(config, 
+        return export_all_repos_multi_threaded(config,
             workdir_archives, workdir_checkouts);
     }
 }
@@ -6923,7 +6923,7 @@ int raise_nofile_limit() {
             "Current nofile limit too small (%lu), this may result in "
             "unexpeceted behaviours as git-mirrorer caches all repos "
             "with all of their fds kept open during the whole run. "
-            "~10 fds are needed per repo.\n", 
+            "~10 fds are needed per repo.\n",
             rlimit.rlim_cur);
     }
     if (rlimit.rlim_cur == rlimit.rlim_max) return 0;
@@ -6932,7 +6932,7 @@ int raise_nofile_limit() {
         pr_error_with_errno("Failed to raise limit of opened files");
         return -1;
     }
-    pr_info("Raised limit of opened file descriptors to %lu\n", 
+    pr_info("Raised limit of opened file descriptors to %lu\n",
             rlimit.rlim_cur);
     return 0;
 }
@@ -6952,14 +6952,14 @@ int clean_all_dirs(
     if (config->clean_archives && work_directory_clean(
             workdir_archives, config->len_archive_suffix + (
                 GIT_OID_MAX_HEXSIZE > 5 ? GIT_OID_MAX_HEXSIZE + 1 : 6))) {
-        pr_error("Failed to clean archives workdir '%s'\n", 
+        pr_error("Failed to clean archives workdir '%s'\n",
                 workdir_archives->path);
         r = -1;
     }
     if (config->clean_checkouts && work_directory_clean(
-            workdir_checkouts, 
+            workdir_checkouts,
             GIT_OID_MAX_HEXSIZE > 5 ? GIT_OID_MAX_HEXSIZE + 1 : 6)) {
-        pr_error("Failed to clean checkouts workdir '%s'\n", 
+        pr_error("Failed to clean checkouts workdir '%s'\n",
                 workdir_repos->path);
         r = -1;
     }
