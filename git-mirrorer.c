@@ -3404,6 +3404,7 @@ int remove_dead_symlinks_recursively_at(
             if (link_fd < 0) {
                 pr_error_with_errno("Failed to open subdir '%s'", 
                                     entry->d_name);
+                r = -1;
                 goto close_dir;
             }
             r = remove_dead_symlinks_recursively_at(link_fd);
@@ -3434,6 +3435,7 @@ int remove_dead_symlinks_recursively_at(
                     dir_fd, entry->d_name, path, PATH_MAX);
             if (len_path < 0) {
                 pr_error_with_errno("Failed to readlink '%s'", entry->d_name);
+                r = -1;
                 goto close_dir;
             }
             path[len_path] = '\0';
@@ -3443,6 +3445,7 @@ int remove_dead_symlinks_recursively_at(
             errno = 0;
             if (unlinkat(dir_fd, entry->d_name, 0)) {
                 pr_error_with_errno("Failed to remove dead link '%s'", path);
+                r = -1;
                 goto close_dir;
             }
             pr_debug("Removed dead link '%s'\n", path);
@@ -3453,6 +3456,7 @@ int remove_dead_symlinks_recursively_at(
     }
     if (errno) {
         pr_error_with_errno("Failed to read dir");
+        r = -1;
         goto close_dir;
     }
     rewinddir(dir_p);
@@ -3463,6 +3467,7 @@ int remove_dead_symlinks_recursively_at(
     }
     if (entries_count < 2) {
         pr_error("Directory entry count smaller than 2, which is impossible\n");
+        r = -1;
         goto close_dir;
     }
     if (entries_count == 2) r = 1;
