@@ -3277,21 +3277,31 @@ free_workdir_repos:
 
 static inline
 void work_directory_free(
-    struct work_directory const *const restrict workdir
+    struct work_directory *const restrict workdir
 ) {
-    if (workdir->dirfd) {
+    if (workdir->dirfd > 0) {
         if (close(workdir->dirfd)) {
             pr_error_with_errno("Failed to close dirfd for workdir");
         }
+        workdir->dirfd = -1;
     }
-    if (workdir->keeps) free(workdir->keeps);
+    if (workdir->links_dirfd > 0) {
+        if (close(workdir->links_dirfd)) {
+            pr_error_with_errno("Failed to close links dirfd for workdir");
+        }
+        workdir->links_dirfd = -1;
+    }
+    if (workdir->keeps) {
+        free(workdir->keeps);
+        workdir->keeps = NULL;
+    }
 }
 
 static inline
 void work_directories_free(
-    struct work_directory const *const restrict workdir_repos,
-    struct work_directory const *const restrict workdir_archives,
-    struct work_directory const *const restrict workdir_checkouts
+    struct work_directory *const restrict workdir_repos,
+    struct work_directory *const restrict workdir_archives,
+    struct work_directory *const restrict workdir_checkouts
 ) {
     work_directory_free(workdir_repos);
     work_directory_free(workdir_archives);
@@ -3353,14 +3363,126 @@ void keep_list_quick_sort(
     pr_debug("Ended sorting %lu to %lu\n", low, high);
 }
 
+// 1 dir empty (now), 0 dir non empty, -1 error
+int remove_dead_symlinks_recursively_at(
+    int const dir_fd
+) {
+    int dirfd_dup = dup(dir_fd);
+    if (dirfd_dup < 0) {
+        pr_error_with_errno("Failed to duplicate fd");
+        return -1;
+    }
+    DIR *dir_p = fdopendir(dirfd_dup);
+    if (dir_p == NULL) {
+        if (close(dirfd_dup)) {
+            pr_error_with_errno("Failed to close uplicated fd");
+        }
+        return -1;
+    }
+    struct dirent *entry;
+    errno = 0;
+    int r = -1;
+    while ((entry = readdir(dir_p)) != NULL) {
+        switch (entry->d_name[0]) {
+        case '\0':
+            continue;
+        case '.':
+            switch (entry->d_name[1]) {
+            case '\0':
+                continue;
+            case '.':
+                if (entry->d_name[2] == '\0')
+                    continue;
+                break;
+            }
+            break;
+        }
+        switch (entry->d_type) {
+        case DT_DIR: {
+            int const link_fd = openat(
+                dir_fd, entry->d_name, O_RDONLY | O_DIRECTORY);
+            if (link_fd < 0) {
+                pr_error_with_errno("Failed to open subdir '%s'", 
+                                    entry->d_name);
+                goto close_dir;
+            }
+            r = remove_dead_symlinks_recursively_at(link_fd);
+            if (close(link_fd)) {
+                pr_error_with_errno("Failed to close subdir '%s'",
+                    entry->d_name);
+                r = -1;
+            }
+            if (r < 0) {
+                pr_error("Failed to remove dead symlinks recursively at '%s'\n",
+                            entry->d_name);
+                r = -1;
+                goto close_dir;
+            }
+            if (r > 0) {
+                if (unlinkat(dir_fd, entry->d_name, AT_REMOVEDIR)) {
+                    pr_error_with_errno("Failed to remove empty folder '%s'",
+                            entry->d_name);
+                    r = -1;
+                    goto close_dir;
+                }
+            }
+            break;
+        }
+        case DT_LNK: {
+            char path[PATH_MAX];
+            ssize_t len_path = readlinkat(
+                    dir_fd, entry->d_name, path, PATH_MAX);
+            if (len_path < 0) {
+                pr_error_with_errno("Failed to readlink '%s'", entry->d_name);
+                goto close_dir;
+            }
+            path[len_path] = '\0';
+            struct stat stat_buffer;
+            if (fstatat(dir_fd, path, &stat_buffer, 
+                AT_SYMLINK_NOFOLLOW) == 0) break;
+            errno = 0;
+            if (unlinkat(dir_fd, entry->d_name, 0)) {
+                pr_error_with_errno("Failed to remove dead link '%s'", path);
+                goto close_dir;
+            }
+            pr_debug("Removed dead link '%s'\n", path);
+            break;
+        }
+        default: continue;
+        }
+    }
+    if (errno) {
+        pr_error_with_errno("Failed to read dir");
+        goto close_dir;
+    }
+    rewinddir(dir_p);
+    errno = 0;
+    unsigned short entries_count = 0;
+    while ((entry = readdir(dir_p)) != NULL) {
+        if (++entries_count > 2) break;
+    }
+    if (entries_count < 2) {
+        pr_error("Directory entry count smaller than 2, which is impossible\n");
+        goto close_dir;
+    }
+    if (entries_count == 2) r = 1;
+    else r = 0;
+close_dir:
+    if (closedir(dir_p)) {
+        pr_error_with_errno("Failed to close dir");
+    }
+    return r;
+}
+
 int work_directory_clean(
     struct work_directory *const restrict workdir,
+    bool const clean_links,
     unsigned short const keep_memlen // including the terminating \0
 ) {
     pr_info("Cleaning '%s'\n", workdir->path);
     int fd_dup = dup(workdir->dirfd);
     if (fd_dup < 0) {
-        pr_error("Failed to duplicate fd for '%s'\n", workdir->path);
+        pr_error_with_errno("Failed to duplicate fd for '%s'", workdir->path);
         return -1;
     }
     DIR *dir_p = fdopendir(fd_dup);
@@ -3476,7 +3598,13 @@ int work_directory_clean(
     }
     r = 0;
 close_dir:
-    closedir(dir_p);
+    if (closedir(dir_p)) {
+        pr_error_with_errno("Failed to close dir");
+    }
+    if (clean_links && 
+            remove_dead_symlinks_recursively_at(workdir->links_dirfd) < 0)  {
+        pr_error("Failed to remove dead links under '%s'\n", workdir->path);
+    }
     return r;
 }
 
@@ -6945,19 +7073,21 @@ int clean_all_dirs(
 ) {
     int r = 0;
     if (config->clean_repos && work_directory_clean(
-            workdir_repos, HASH_STRING_LEN > 5 ? HASH_STRING_LEN + 1 : 6)) {
+            workdir_repos, config->clean_links, 
+            HASH_STRING_LEN > 5 ? HASH_STRING_LEN + 1 : 6)) {
         pr_error("Failed to clean repos workdir '%s'\n", workdir_repos->path);
         r = -1;
     }
     if (config->clean_archives && work_directory_clean(
-            workdir_archives, config->len_archive_suffix + (
+            workdir_archives, config->clean_links, 
+            config->len_archive_suffix + (
                 GIT_OID_MAX_HEXSIZE > 5 ? GIT_OID_MAX_HEXSIZE + 1 : 6))) {
         pr_error("Failed to clean archives workdir '%s'\n",
                 workdir_archives->path);
         r = -1;
     }
     if (config->clean_checkouts && work_directory_clean(
-            workdir_checkouts,
+            workdir_checkouts, config->clean_links,
             GIT_OID_MAX_HEXSIZE > 5 ? GIT_OID_MAX_HEXSIZE + 1 : 6)) {
         pr_error("Failed to clean checkouts workdir '%s'\n",
                 workdir_repos->path);
