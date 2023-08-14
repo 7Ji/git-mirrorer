@@ -155,8 +155,13 @@ cleanup:
   # will break after branch main was updated.
   # Enabling this will make git-mirrorer clean up these dead symlinks at the end
   # of the run.
-  # default: yes
-  links: yes
+
+  # Different from the above settings, this is a non-negative integer, where 0
+  # means do not clean links, or >= 1 for the times we re-clean the links during
+  # the cleaning routine. As some links might point to stuffs that were alive 
+  # when we're checking it, but the target is then cleaned.
+  # Default: 1
+  links_pass: 1
 
 # THREADING CONFIG
 export_threads: 10

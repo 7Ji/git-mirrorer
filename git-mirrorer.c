@@ -395,12 +395,12 @@ struct config {
                     archive_pipe_args_count,
                     len_archive_suffix,
                     connections_per_server,
-                    export_threads;
+                    export_threads,
+                    clean_links_pass;
     bool    archive_gh_prefix,
             clean_repos,
             clean_archives,
-            clean_checkouts,
-            clean_links;
+            clean_checkouts;
 };
 
 struct config const CONFIG_INIT = {
@@ -417,7 +417,7 @@ struct config const CONFIG_INIT = {
     .len_archive_suffix = 4,
     .connections_per_server = 10,
     .export_threads = 10,
-    .clean_links = true,
+    .clean_links_pass = 1,
 };
 
 char const *yaml_event_type_strings[] = {
@@ -469,6 +469,7 @@ enum yaml_config_parsing_status {
     YAML_CONFIG_PARSING_STATUS_CLEAN_REPOS,
     YAML_CONFIG_PARSING_STATUS_CLEAN_ARCHIVES,
     YAML_CONFIG_PARSING_STATUS_CLEAN_CHECKOUTS,
+    YAML_CONFIG_PARSING_STATUS_CLEAN_LINKS_PASS,
     YAML_CONFIG_PARSING_STATUS_EXPORT_THREADS,
     YAML_CONFIG_PARSING_STATUS_CONNECTIONS_PER_SERVER,
     YAML_CONFIG_PARSING_STATUS_WANTED,
@@ -509,6 +510,7 @@ char const *yaml_config_parsing_status_strings[] = {
     "clean repos",
     "clean archives",
     "clean checkouts",
+    "clean links pass",
     "export threads",
     "connections per server"
     "wanted",
@@ -2209,6 +2211,10 @@ int config_update_from_yaml_event(
                 if (!strcmp(key, "checkouts"))
                     *status = YAML_CONFIG_PARSING_STATUS_CLEAN_CHECKOUTS;
                 break;
+            case 10:
+                if (!strcmp(key, "links_pass"))
+                    *status = YAML_CONFIG_PARSING_STATUS_CLEAN_LINKS_PASS;
+                break;
             }
             if (*status == YAML_CONFIG_PARSING_STATUS_CLEAN_SECTION) {
                 pr_error("Unrecognized config key '%s'\n", key);
@@ -2435,6 +2441,7 @@ int config_update_from_yaml_event(
     case YAML_CONFIG_PARSING_STATUS_PROXY_AFTER:
     case YAML_CONFIG_PARSING_STATUS_EXPORT_THREADS:
     case YAML_CONFIG_PARSING_STATUS_CONNECTIONS_PER_SERVER:
+    case YAML_CONFIG_PARSING_STATUS_CLEAN_LINKS_PASS:
         switch (event->type) {
         case YAML_SCALAR_EVENT: {
             unsigned long value = strtoul(
@@ -2449,9 +2456,22 @@ int config_update_from_yaml_event(
             case YAML_CONFIG_PARSING_STATUS_CONNECTIONS_PER_SERVER:
                 config->connections_per_server = value;
                 break;
+            case YAML_CONFIG_PARSING_STATUS_CLEAN_LINKS_PASS:
+                config->clean_links_pass = value;
+                break;
             default: goto impossible_status;
             }
-            *status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            switch (*status) {
+            case YAML_CONFIG_PARSING_STATUS_PROXY_AFTER:
+            case YAML_CONFIG_PARSING_STATUS_EXPORT_THREADS:
+            case YAML_CONFIG_PARSING_STATUS_CONNECTIONS_PER_SERVER:
+                *status = YAML_CONFIG_PARSING_STATUS_SECTION;
+                break;
+            case YAML_CONFIG_PARSING_STATUS_CLEAN_LINKS_PASS:
+                *status = YAML_CONFIG_PARSING_STATUS_CLEAN_SECTION;
+                break;
+            default: goto impossible_status;
+            }
             break;
         }
         default: goto unexpected_event_type;
@@ -3365,8 +3385,10 @@ void keep_list_quick_sort(
 
 // 1 dir empty (now), 0 dir non empty, -1 error
 int remove_dead_symlinks_recursively_at(
-    int const dir_fd
+    int const dir_fd,
+    unsigned short const pass
 ) {
+    if (pass == 0) return 0;
     int dirfd_dup = dup(dir_fd);
     if (dirfd_dup < 0) {
         pr_error_with_errno("Failed to duplicate fd");
@@ -3382,84 +3404,90 @@ int remove_dead_symlinks_recursively_at(
     struct dirent *entry;
     errno = 0;
     int r = -1;
-    while ((entry = readdir(dir_p)) != NULL) {
-        switch (entry->d_name[0]) {
-        case '\0':
-            continue;
-        case '.':
-            switch (entry->d_name[1]) {
+    for (unsigned short i = 0; i < pass; ++i) {
+        while ((entry = readdir(dir_p)) != NULL) {
+            switch (entry->d_name[0]) {
             case '\0':
                 continue;
             case '.':
-                if (entry->d_name[2] == '\0')
+                switch (entry->d_name[1]) {
+                case '\0':
                     continue;
+                case '.':
+                    if (entry->d_name[2] == '\0')
+                        continue;
+                    break;
+                }
                 break;
             }
-            break;
-        }
-        switch (entry->d_type) {
-        case DT_DIR: {
-            int const link_fd = openat(
-                dir_fd, entry->d_name, O_RDONLY | O_DIRECTORY);
-            if (link_fd < 0) {
-                pr_error_with_errno("Failed to open subdir '%s'", 
-                                    entry->d_name);
-                r = -1;
-                goto close_dir;
-            }
-            r = remove_dead_symlinks_recursively_at(link_fd);
-            if (close(link_fd)) {
-                pr_error_with_errno("Failed to close subdir '%s'",
-                    entry->d_name);
-                r = -1;
-            }
-            if (r < 0) {
-                pr_error("Failed to remove dead symlinks recursively at '%s'\n",
-                            entry->d_name);
-                r = -1;
-                goto close_dir;
-            }
-            if (r > 0) {
-                if (unlinkat(dir_fd, entry->d_name, AT_REMOVEDIR)) {
-                    pr_error_with_errno("Failed to remove empty folder '%s'",
-                            entry->d_name);
+            switch (entry->d_type) {
+            case DT_DIR: {
+                int const link_fd = openat(
+                    dir_fd, entry->d_name, O_RDONLY | O_DIRECTORY);
+                if (link_fd < 0) {
+                    pr_error_with_errno("Failed to open subdir '%s'", 
+                                        entry->d_name);
                     r = -1;
                     goto close_dir;
                 }
+                r = remove_dead_symlinks_recursively_at(link_fd, pass);
+                if (close(link_fd)) {
+                    pr_error_with_errno("Failed to close subdir '%s'",
+                        entry->d_name);
+                    r = -1;
+                }
+                if (r < 0) {
+                    pr_error(
+                        "Failed to remove dead symlinks recursively at '%s'\n",
+                                entry->d_name);
+                    r = -1;
+                    goto close_dir;
+                }
+                if (r > 0) {
+                    if (unlinkat(dir_fd, entry->d_name, AT_REMOVEDIR)) {
+                        pr_error_with_errno(
+                            "Failed to remove empty folder '%s'",
+                                entry->d_name);
+                        r = -1;
+                        goto close_dir;
+                    }
+                }
+                break;
             }
-            break;
-        }
-        case DT_LNK: {
-            char path[PATH_MAX];
-            ssize_t len_path = readlinkat(
-                    dir_fd, entry->d_name, path, PATH_MAX);
-            if (len_path < 0) {
-                pr_error_with_errno("Failed to readlink '%s'", entry->d_name);
-                r = -1;
-                goto close_dir;
+            case DT_LNK: {
+                char path[PATH_MAX];
+                ssize_t len_path = readlinkat(
+                        dir_fd, entry->d_name, path, PATH_MAX);
+                if (len_path < 0) {
+                    pr_error_with_errno(
+                        "Failed to readlink '%s'", entry->d_name);
+                    r = -1;
+                    goto close_dir;
+                }
+                path[len_path] = '\0';
+                struct stat stat_buffer;
+                if (fstatat(dir_fd, path, &stat_buffer, 
+                    AT_SYMLINK_NOFOLLOW) == 0) break;
+                errno = 0;
+                if (unlinkat(dir_fd, entry->d_name, 0)) {
+                    pr_error_with_errno(
+                        "Failed to remove dead link '%s'", path);
+                    r = -1;
+                    goto close_dir;
+                }
+                pr_debug("Removed dead link '%s'\n", path);
+                break;
             }
-            path[len_path] = '\0';
-            struct stat stat_buffer;
-            if (fstatat(dir_fd, path, &stat_buffer, 
-                AT_SYMLINK_NOFOLLOW) == 0) break;
-            errno = 0;
-            if (unlinkat(dir_fd, entry->d_name, 0)) {
-                pr_error_with_errno("Failed to remove dead link '%s'", path);
-                r = -1;
-                goto close_dir;
+            default: continue;
             }
-            pr_debug("Removed dead link '%s'\n", path);
-            break;
         }
-        default: continue;
+        if (errno) {
+            pr_error_with_errno("Failed to read dir");
+            r = -1;
+            goto close_dir;
         }
+        rewinddir(dir_p);
     }
-    if (errno) {
-        pr_error_with_errno("Failed to read dir");
-        r = -1;
-        goto close_dir;
-    }
-    rewinddir(dir_p);
     errno = 0;
     unsigned short entries_count = 0;
     while ((entry = readdir(dir_p)) != NULL) {
@@ -3481,7 +3509,7 @@ close_dir:
 
 int work_directory_clean(
     struct work_directory *const restrict workdir,
-    bool const clean_links,
+    unsigned short clean_links_pass,
     unsigned short const keep_memlen // including the terminating \0
 ) {
     pr_info("Cleaning '%s'\n", workdir->path);
@@ -3606,8 +3634,9 @@ close_dir:
     if (closedir(dir_p)) {
         pr_error_with_errno("Failed to close dir");
     }
-    if (clean_links && 
-            remove_dead_symlinks_recursively_at(workdir->links_dirfd) < 0)  {
+    if (clean_links_pass && 
+            remove_dead_symlinks_recursively_at(
+                workdir->links_dirfd, clean_links_pass) < 0)  {
         pr_error("Failed to remove dead links under '%s'\n", workdir->path);
     }
     return r;
@@ -7078,13 +7107,13 @@ int clean_all_dirs(
 ) {
     int r = 0;
     if (config->clean_repos && work_directory_clean(
-            workdir_repos, config->clean_links, 
+            workdir_repos, config->clean_links_pass, 
             HASH_STRING_LEN > 5 ? HASH_STRING_LEN + 1 : 6)) {
         pr_error("Failed to clean repos workdir '%s'\n", workdir_repos->path);
         r = -1;
     }
     if (config->clean_archives && work_directory_clean(
-            workdir_archives, config->clean_links, 
+            workdir_archives, config->clean_links_pass, 
             config->len_archive_suffix + (
                 GIT_OID_MAX_HEXSIZE > 5 ? GIT_OID_MAX_HEXSIZE + 1 : 6))) {
         pr_error("Failed to clean archives workdir '%s'\n",
@@ -7092,7 +7121,7 @@ int clean_all_dirs(
         r = -1;
     }
     if (config->clean_checkouts && work_directory_clean(
-            workdir_checkouts, config->clean_links,
+            workdir_checkouts, config->clean_links_pass,
             GIT_OID_MAX_HEXSIZE > 5 ? GIT_OID_MAX_HEXSIZE + 1 : 6)) {
         pr_error("Failed to clean checkouts workdir '%s'\n",
                 workdir_repos->path);
