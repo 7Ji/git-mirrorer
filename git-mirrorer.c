@@ -3293,22 +3293,70 @@ void work_directories_free(
     work_directory_free(workdir_checkouts);
 }
 
+static inline
+void keep_list_swap_item(
+    char (*keeps)[NAME_MAX + 1],
+    unsigned long const i,
+    unsigned long const j,
+    unsigned short const memlen // including terminating \0
+) {
+    if (i == j) return;
+    char buffer[NAME_MAX + 1];
+    // keeps[i] and keeps + i points to the same memory address
+    // Type: keeps[i]  : char[256], collapsing to char *
+    //       keeps + i : char (*)[256], won't collapse
+    // Use memcpy instead of strcpy to save strlen call
+    memcpy(buffer, keeps + i, memlen);
+    memcpy(keeps + i, keeps + j, memlen);
+    memcpy(keeps + j, buffer, memlen);
+}
+
+static inline
+unsigned long keep_list_partition(
+    char (*keeps)[NAME_MAX + 1],
+    unsigned long const low,
+    unsigned long const high,
+    unsigned short const memlen
+) {
+    char *pivot = keeps[high];
+    unsigned long i = low - 1;
+    for (unsigned long j = low; j < high; ++j) {
+        pr_debug("Comparing '%s' vs '%s'\n", keeps[j], pivot);
+        if (strcmp(keeps[j], pivot) < 0) {
+            keep_list_swap_item(keeps, ++i, j, memlen);
+        }
+    }
+    keep_list_swap_item(keeps, ++i, high, memlen);
+    return i;
+}
+
+void keep_list_quick_sort(
+    char (*keeps)[NAME_MAX + 1],
+    unsigned long const low,
+    unsigned long const high,
+    unsigned short const memlen
+) {
+    pr_debug("Soring %lu to %lu\n", low, high);
+    if (low < high) {
+        pr_debug("Into %lu to %lu\n", low, high);
+        unsigned long const pivot = keep_list_partition(
+                                keeps, low, high, memlen);
+         // if pivot is 0, that will make the new high (ulong) -1
+        if (pivot) keep_list_quick_sort(keeps, low, pivot - 1, memlen);
+        keep_list_quick_sort(keeps, pivot + 1, high, memlen);
+    }
+    pr_debug("Ended sorting %lu to %lu\n", low, high);
+}
+
 int work_directory_clean(
-    struct work_directory *const restrict workdir
+    struct work_directory *const restrict workdir,
+    unsigned short const keep_memlen // including the terminating \0
 ) {
     pr_info("Cleaning '%s'\n", workdir->path);
-    size_t const keeps_size = sizeof *workdir->keeps * workdir->keeps_count;
-    char (*keeps)[NAME_MAX + 1] = malloc(keeps_size);
-    if (keeps == NULL) {
-        pr_error("Failed to duplicate keeps list\n");
-        return -1;
-    }
-    memcpy(keeps, workdir->keeps, keeps_size);
-    int r = -1;
     int fd_dup = dup(workdir->dirfd);
     if (fd_dup < 0) {
         pr_error("Failed to duplicate fd for '%s'\n", workdir->path);
-        goto free_keeps;
+        return -1;
     }
     DIR *dir_p = fdopendir(fd_dup);
     if (dir_p == NULL) {
@@ -3317,60 +3365,103 @@ int work_directory_clean(
             pr_error_with_errno("Failed to close duplicated fd for '%s'",
                                 workdir->path);
         }
-        goto free_keeps;
+        return -1;
     }
     // Quick sort the keeps list
-    char keep_dup[sizeof *workdir->keeps];
-
-    pr_error("QUICK SORT WIP!!!\n");
-    r = -1;
-    goto free_keeps;
-
+#ifdef DEBUGGING
+    for (unsigned long i = 0; i < workdir->keeps_count; ++i) {
+        pr_debug("[Before] Keeping '%s'\n", workdir->keeps[i]);
+    }
+#endif
+    keep_list_quick_sort(workdir->keeps, 0, workdir->keeps_count - 1,
+        keep_memlen > NAME_MAX + 1 ? NAME_MAX + 1 : keep_memlen);
+#ifdef DEBUGGING
+    for (unsigned long i = 0; i < workdir->keeps_count; ++i) {
+        pr_debug("[After] Keeping '%s'\n", workdir->keeps[i]);
+    }
+#endif
     // Iterate over the folder to remove things not in kept list
-    unsigned long keeps_count = workdir->keeps_count;
+    // unsigned long keeps_count = workdir->keeps_count;
     struct dirent *entry;
     errno = 0;
-    while ((entry = readdir(dir_p)) != NULL) {
-        switch (entry->d_name[0]) {
-        case '\0': 
-            continue;
-        case '.':
-            switch (entry->d_name[1]) {
-            case '\0':
+    int r = -1;
+    // Condition at outer level to reduce comparison
+    if (workdir->keeps_count) {
+        while ((entry = readdir(dir_p)) != NULL) {
+            switch (entry->d_name[0]) {
+            case '\0': 
                 continue;
             case '.':
-                if (entry->d_name[2] == '\0')
+                switch (entry->d_name[1]) {
+                case '\0':
                     continue;
+                case '.':
+                    if (entry->d_name[2] == '\0')
+                        continue;
+                    break;
+                }
                 break;
             }
-            break;
-        }
-        bool keep = false;
-        if (keeps_count) {
+            switch (entry->d_type) {
+            case DT_REG:
+            case DT_DIR:
+            case DT_LNK:
+                break;
+            default: continue;
+            }
+            bool keep = false;
             unsigned long low = 0;
-            unsigned long high = keeps_count;
+            unsigned long high = workdir->keeps_count - 1;
             while (low <= high) {
                 unsigned long mid = (low + high) / 2;
-                r = strcmp(entry->d_name, keeps[mid]);
+                pr_debug("Low @ %lu: %s, High @ %lu: %s, Mid @ %lu: %s"
+                "\n", low, workdir->keeps[low], high, workdir->keeps[high], mid,
+                workdir->keeps[mid]);
+                r = strcmp(entry->d_name, workdir->keeps[mid]);
                 if (r > 0) {
                     low = mid + 1;
                 } else if (r < 0) {
-                    high = mid - 1;
+                    if (mid) high = mid - 1;
+                    else break;
                 } else {
                     keep = true;
-                    // To avoid memcpy to itself
-                    // Overlap is not allocwed by memcpy 
-                    if (--keeps_count != mid) {
-                        memcpy(keeps[mid], keeps[keeps_count], sizeof *keeps);
-                    }
                     break;
                 }
             }
+            if (!keep && ensure_path_non_exist_at(workdir->dirfd, entry->d_name)) {
+                pr_error("Failed to remove '%s' which is not needed under work "
+                    "folder'%s'\n", entry->d_name, workdir->path);
+                goto close_dir;
+            }
         }
-        if (!keep && ensure_path_non_exist_at(workdir->dirfd, entry->d_name)) {
-            pr_error("Failed to remove '%s' which is not needed under work "
-                "folder'%s'\n", entry->d_name, workdir->path);
-            goto close_dir;
+    } else {
+        while ((entry = readdir(dir_p)) != NULL) {
+            switch (entry->d_name[0]) {
+            case '\0': 
+                continue;
+            case '.':
+                switch (entry->d_name[1]) {
+                case '\0':
+                    continue;
+                case '.':
+                    if (entry->d_name[2] == '\0')
+                        continue;
+                    break;
+                }
+                break;
+            }
+            switch (entry->d_type) {
+            case DT_REG:
+            case DT_DIR:
+            case DT_LNK:
+                break;
+            default: continue;
+            }
+            if (ensure_path_non_exist_at(workdir->dirfd, entry->d_name)) {
+                pr_error("Failed to remove '%s' which is not needed under work "
+                    "folder'%s'\n", entry->d_name, workdir->path);
+                goto close_dir;
+            }
         }
     }
     if (errno) {
@@ -3380,8 +3471,6 @@ int work_directory_clean(
     r = 0;
 close_dir:
     closedir(dir_p);
-free_keeps:
-    free(keeps);
     return r;
 }
 
@@ -6849,16 +6938,21 @@ int clean_all_dirs(
     struct config const *const restrict config
 ) {
     int r = 0;
-    if (config->clean_repos && work_directory_clean(workdir_repos)) {
+    if (config->clean_repos && work_directory_clean(
+            workdir_repos, HASH_STRING_LEN > 5 ? HASH_STRING_LEN + 1 : 6)) {
         pr_error("Failed to clean repos workdir '%s'\n", workdir_repos->path);
         r = -1;
     }
-    if (config->clean_archives && work_directory_clean(workdir_archives)) {
+    if (config->clean_archives && work_directory_clean(
+            workdir_archives, config->len_archive_suffix + (
+                GIT_OID_MAX_HEXSIZE > 5 ? GIT_OID_MAX_HEXSIZE + 1 : 6))) {
         pr_error("Failed to clean archives workdir '%s'\n", 
                 workdir_archives->path);
         r = -1;
     }
-    if (config->clean_checkouts && work_directory_clean(workdir_checkouts)) {
+    if (config->clean_checkouts && work_directory_clean(
+            workdir_checkouts, 
+            GIT_OID_MAX_HEXSIZE > 5 ? GIT_OID_MAX_HEXSIZE + 1 : 6)) {
         pr_error("Failed to clean checkouts workdir '%s'\n", 
                 workdir_repos->path);
         r = -1;
