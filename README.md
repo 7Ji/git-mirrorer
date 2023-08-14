@@ -32,7 +32,7 @@ repos
 ```
 _`git-mirrorer` uses 64-bit XXHash 3 to generate local repo names from the url, the above `2c7adc93616e76cd` and `672b80351731823c` are such examples. There will also be symlinks created under `repos/links` which is easier to lookup for humans._
 
-You can then clone/fetch from your local copies under `repos/`. You can also exposing either `repos/` or `repos/links/` as the root of your git deamon and then clone/fetch from the local mirror across your lan/Internet.
+You can then clone/fetch from your local copies under `repos/`. You can also expose either `repos/` or `repos/links/` as the root of your git deamon and then clone/fetch from the local mirror across your lan/Internet.
 
 ## Wanted objects
 If you run `git-mirrorer` with only a simple repos list, you might read the following log:
@@ -264,7 +264,7 @@ You might find it strange at first that `git-mirrorer` does not outputs `.tar.gz
 
 
 ## Cleaning
-As `git-mirrorer` ensures the **robustness** of the wanted objects it fetches all of the repos that're referenced either directly or indirectly in the commits resolved from those wanted objects. Your `repos` folder might become larger and larger. The same applies to `archives` and `checkouts` if the wanted objects are dynamic and they point to new commits as you updates the repos. 
+As `git-mirrorer` ensures the **robustness** of the wanted objects it fetches all of the repos that're referenced either directly or indirectly in the commits resolved from those wanted objects, **for every run**. Your `repos` folder might become larger and larger as you run `git-mirrorer` again and again to keep the repos up-to-date. The same applies to `archives` and `checkouts` if the wanted objects are dynamic and they point to new commits as you update the repos. 
 
 By default `git-mirrorer` does not clean those folders but only the dead symlinks under `[repos/archives/checkouts]/links`, but you can set the following config to change its behaviour:
 
@@ -310,7 +310,7 @@ Note the external program you define in `archive/pipe_through` is not limited by
 
 
 ## stdin advanced usage
-`git-mirrorer` can also read config from stdin, this makes it ideal to be embedded into a build system to handle the 
+`git-mirrorer` can also read config from stdin, this makes it ideal to be embedded into a build system to handle the .git source, especially those with submodules.
 
 You can keep a system-wide config template like following:
 ```
