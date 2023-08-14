@@ -308,6 +308,18 @@ By default this is set to 10, setting it to 0 or 1 would disable the multi-threa
 
 Note the external program you define in `archive/pipe_through` is not limited by this. You'll need to reduce this if you run some heavy compressor, or you set those compressor to run in multi-threading mode.
 
+## Proxy
+A http proxy can be configured globally, but it only affects repos using `http/https` protocol, e.g.
+```
+proxy: http://you_http_proxy
+```
+Addtionally, you can set `proxy_after` to make `git-mirrorer` only use the proxy after a certain number of failures, so you can save bandwidth of proxy if you still have connection to the remove server that's just not stable enough:
+```
+proxy_after: 3
+```
+`proxy_after` is a non-negative interger and it adds up to the total retry count. The default value is `0`, and `git-mirrorer` will try 3 times with proxy, while in the above example `git-mirrorer` will try 3 times without proxy and 3 times with proxy.
+
+It is also possible to set this to a very large number so `git-mirrorer` will retry forever and never bail out due to failed connection.
 
 ## stdin advanced usage
 `git-mirrorer` can also read config from stdin, this makes it ideal to be embedded into a build system to handle the .git source, especially those with submodules.
