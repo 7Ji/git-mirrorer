@@ -7177,8 +7177,13 @@ int main(int const argc, char *argv[]) {
             return -1;
         }
     }
+    int r = setvbuf(stdout, NULL, _IOLBF, 0);
+    if (r) {
+        pr_error_with_errno(
+            "Failed to set stdout to line-buffered, return %d", r);
+        return -1;
+    }
     struct config config = CONFIG_INIT;
-    int r = -1;
     if (config_read(&config, config_path)) {
         pr_error("Failed to read config\n");
         goto free_config;
