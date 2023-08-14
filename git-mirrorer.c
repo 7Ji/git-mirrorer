@@ -1,6 +1,5 @@
 /*
-git-mirrorer, a tool to mirror, archive and checkout git repos and ensure 
-their robustness even across submodules
+git-mirrorer, to mirror, archive and checkout git repos even across submodules
 Copyright (C) 2023-present Guoxin "7Ji" Pu
 
 This program is free software: you can redistribute it and/or modify
