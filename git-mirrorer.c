@@ -42,7 +42,8 @@
     printf("[ERROR] %s:%d: "format, __FUNCTION__, __LINE__, ##arg)
 
 #define pr_error_with_errno_file(file, format, arg...) \
-    pr_error_file(file, format", errno: %d, error: %s\n", ##arg, errno, strerror(errno))
+    pr_error_file(file, format", errno: %d, error: %s\n", \
+        ##arg, errno, strerror(errno))
 
 #define pr_error_with_errno(format, arg...) \
     pr_error(format", errno: %d, error: %s\n", ##arg, errno, strerror(errno))
@@ -1351,7 +1352,9 @@ enum wanted_type wanted_type_guess_from_name(
     return WANTED_TYPE_UNKNOWN;
 }
 
-int wanted_object_guess_type_self_optional(struct wanted_object *wanted_object) {
+int wanted_object_guess_type_self_optional(
+    struct wanted_object *wanted_object
+) {
     if (wanted_object->type != WANTED_TYPE_UNKNOWN) return 0;
     if ((wanted_object->type = wanted_type_guess_from_name(
         wanted_object->name, wanted_object->len_name
@@ -1799,7 +1802,8 @@ int wanted_object_guarantee_symlinks(
     // The named one
     if (wanted_object->type != WANTED_TYPE_COMMIT) {
         char *symlink_path_current = stpcpy(symlink_path, dir_link);
-        symlink_path_current = stpcpy(symlink_path_current, wanted_object->name);
+        symlink_path_current = 
+            stpcpy(symlink_path_current, wanted_object->name);
         unsigned short len_symlink_path = symlink_path_current - symlink_path;
         char *symlink_target_current = symlink_target;
         for (unsigned short i = 0; i < link_depth; ++i) {
@@ -2416,7 +2420,8 @@ int config_update_from_yaml_event(
             }
             char const *const type_string =
                 (char const *)event->data.scalar.value;
-            if (wanted_object_fill_type_from_string(wanted_object, type_string)) {
+            if (wanted_object_fill_type_from_string(
+                    wanted_object, type_string)) {
                 pr_error(
                     "Invalid object type '%s'\n", type_string);
                 return -1;
@@ -3428,7 +3433,8 @@ int work_directory_clean(
                     break;
                 }
             }
-            if (!keep && ensure_path_non_exist_at(workdir->dirfd, entry->d_name)) {
+            if (!keep && ensure_path_non_exist_at(
+                    workdir->dirfd, entry->d_name)) {
                 pr_error("Failed to remove '%s' which is not needed under work "
                     "folder'%s'\n", entry->d_name, workdir->path);
                 goto close_dir;
