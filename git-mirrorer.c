@@ -394,7 +394,8 @@ struct config {
                     empty_wanted_objects_count,
                     empty_wanted_objects_allocated,
                     always_wanted_objects_count,
-                    always_wanted_objects_allocated;
+                    always_wanted_objects_allocated,
+                    repos_count_original;
     git_fetch_options fetch_options;
     char    proxy_url[PATH_MAX],
             dir_repos[PATH_MAX],
@@ -404,6 +405,7 @@ struct config {
             archive_pipe_args_buffer[PATH_MAX],
             archive_suffix[NAME_MAX + 1];
     char *archive_pipe_args[ARCHIVE_PIPE_ARGS_MAX_COUNT];
+    unsigned int    daemon_interval;
     unsigned short  len_archive_pipe_args_buffer,
                     proxy_after,
                     len_proxy_url,
@@ -418,7 +420,8 @@ struct config {
     bool    archive_gh_prefix,
             clean_repos,
             clean_archives,
-            clean_checkouts;
+            clean_checkouts,
+            daemon;
 };
 
 struct config const CONFIG_INIT = {
@@ -436,6 +439,7 @@ struct config const CONFIG_INIT = {
     .connections_per_server = 10,
     .export_threads = 10,
     .clean_links_pass = 1,
+    .daemon_interval = 60,
 };
 
 char const *yaml_event_type_strings[] = {
@@ -471,6 +475,8 @@ enum yaml_config_parsing_status {
     YAML_CONFIG_PARSING_STATUS_STREAM,
     YAML_CONFIG_PARSING_STATUS_DOCUMENT,
     YAML_CONFIG_PARSING_STATUS_SECTION,
+    YAML_CONFIG_PARSING_STATUS_DAEMON,
+    YAML_CONFIG_PARSING_STATUS_DAEMON_INTERVAL,
     YAML_CONFIG_PARSING_STATUS_PROXY,
     YAML_CONFIG_PARSING_STATUS_PROXY_AFTER,
     YAML_CONFIG_PARSING_STATUS_DIR_REPOS,
@@ -512,6 +518,8 @@ char const *yaml_config_parsing_status_strings[] = {
     "stream",
     "document",
     "section",
+    "daemon",
+    "daemon interval",
     "proxy",
     "proxy after",
     "dir repos",
@@ -1969,6 +1977,8 @@ int config_update_from_yaml_event(
             case 6:
                 if (!strcmp(key, "wanted"))
                     *status = YAML_CONFIG_PARSING_STATUS_WANTED;
+                else if (!strcmp(key, "daemon"))
+                    *status = YAML_CONFIG_PARSING_STATUS_DAEMON;
                 break;
             case 7:
                 if (!strcmp(key, "archive"))
@@ -1995,6 +2005,10 @@ int config_update_from_yaml_event(
             case 14:
                 if (!strcmp(key, "export_threads"))
                     *status = YAML_CONFIG_PARSING_STATUS_EXPORT_THREADS;
+                break;
+            case 15:
+                if (!strcmp(key, "daemon_interval"))
+                    *status = YAML_CONFIG_PARSING_STATUS_DAEMON_INTERVAL;
                 break;
             case 22:
                 if (!strcmp(key, "connections_per_server"))
@@ -2456,6 +2470,7 @@ int config_update_from_yaml_event(
         default: goto unexpected_event_type;
         }
         break;
+    case YAML_CONFIG_PARSING_STATUS_DAEMON_INTERVAL:
     case YAML_CONFIG_PARSING_STATUS_PROXY_AFTER:
     case YAML_CONFIG_PARSING_STATUS_EXPORT_THREADS:
     case YAML_CONFIG_PARSING_STATUS_CONNECTIONS_PER_SERVER:
@@ -2465,6 +2480,9 @@ int config_update_from_yaml_event(
             unsigned long value = strtoul(
                 (char const *)event->data.scalar.value, NULL, 10);
             switch (*status) {
+            case YAML_CONFIG_PARSING_STATUS_DAEMON_INTERVAL:
+                config->daemon_interval = value;
+                break;
             case YAML_CONFIG_PARSING_STATUS_PROXY_AFTER:
                 config->proxy_after = value;
                 break;
@@ -2480,6 +2498,7 @@ int config_update_from_yaml_event(
             default: goto impossible_status;
             }
             switch (*status) {
+            case YAML_CONFIG_PARSING_STATUS_DAEMON_INTERVAL:
             case YAML_CONFIG_PARSING_STATUS_PROXY_AFTER:
             case YAML_CONFIG_PARSING_STATUS_EXPORT_THREADS:
             case YAML_CONFIG_PARSING_STATUS_CONNECTIONS_PER_SERVER:
@@ -2586,6 +2605,7 @@ int config_update_from_yaml_event(
         }
         break;
     // Boolean common
+    case YAML_CONFIG_PARSING_STATUS_DAEMON:
     case YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_ARCHIVE:
     case YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_CHECKOUT:
     case YAML_CONFIG_PARSING_STATUS_CLEAN_REPOS:
@@ -2618,6 +2638,9 @@ int config_update_from_yaml_event(
                 }
                 break;
             }
+            case YAML_CONFIG_PARSING_STATUS_DAEMON:
+                config->daemon = bool_value;
+                break;
             case YAML_CONFIG_PARSING_STATUS_CLEAN_REPOS:
                 config->clean_repos = bool_value;
                 break;
@@ -2633,6 +2656,10 @@ int config_update_from_yaml_event(
             default: goto impossible_status;
             }
             switch (*status) {
+            case YAML_CONFIG_PARSING_STATUS_DAEMON:
+                *status = 
+                    YAML_CONFIG_PARSING_STATUS_SECTION;
+                break;
             case YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_ARCHIVE:
             case YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_CHECKOUT:
                 *status =
@@ -3128,6 +3155,7 @@ int config_finish(
             return -1;
         }
     }
+    config->repos_count_original = config->repos_count;
 #ifdef DEBUGGING
     pr_info("Finished config, config is as follows:\n");
     print_config(config);
@@ -3899,21 +3927,52 @@ int repo_prepare_open_or_create_if_needed(
     return 0;
 }
 
-int config_free(
+void parsed_commit_free(
+    struct parsed_commit *const restrict parsed_commit
+) {
+    if (parsed_commit->submodules) {
+        free(parsed_commit->submodules);
+    }
+    if (parsed_commit->commit) {
+        git_commit_free(parsed_commit->commit);
+    }
+    *parsed_commit = PARSED_COMMIT_INIT;
+}
+
+void repo_free(
+    struct repo *const restrict repo
+) {
+    if (repo->parsed_commits) {
+        for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
+            parsed_commit_free(repo->parsed_commits + i);
+        }
+        free (repo->parsed_commits);
+    }
+    if (repo->wanted_objects) {
+        free (repo->wanted_objects);
+    }
+    if (repo->repository) {
+        git_repository_free(repo->repository);
+    }
+    *repo = REPO_INIT;
+}
+
+void config_free(
     struct config *const restrict config
 ) {
     if (config->repos) {
         for (unsigned long i = 0; i < config->repos_count; ++i) {
-            struct repo *const restrict repo = config->repos + i;
-            if (repo->parsed_commits) free (repo->parsed_commits);
-            if (repo->wanted_objects) free (repo->wanted_objects);
-            if (repo->repository) git_repository_free(repo->repository);
+            repo_free(config->repos + i);
         }
         free (config->repos);
     }
-    if (config->always_wanted_objects) free(config->always_wanted_objects);
-    if (config->empty_wanted_objects) free(config->empty_wanted_objects);
-    return 0;
+    if (config->always_wanted_objects) {
+        free(config->always_wanted_objects);
+    }
+    if (config->empty_wanted_objects) {
+        free(config->empty_wanted_objects);
+    }
+    *config = CONFIG_INIT;
 }
 
 int parsed_commit_add_submodule_and_init_with_path_and_url(
@@ -7148,6 +7207,155 @@ int clean_all_dirs(
     return r;
 }
 
+int work_oneshot(
+    struct config *const restrict config,
+    struct work_directory *const restrict workdir_repos,
+    struct work_directory *const restrict workdir_archives,
+    struct work_directory *const restrict workdir_checkouts
+) {
+    if (mirror_all_repos(
+            config, workdir_repos, config->clean_repos)) {
+        pr_error("Failed to mirro all repos\n");
+        return -1;
+    }
+    if (export_all_repos(
+            config, workdir_archives, workdir_checkouts)) {
+        pr_error("Failed to export all repos (archives and checkouts)\n");
+        return -1;
+    }
+    if (clean_all_dirs(
+        workdir_repos, workdir_archives, workdir_checkouts, config)) {
+        pr_error("Failed to clean up all folders\n");
+        return -1;
+    }
+    return 0;
+}
+
+int work_daemon(
+    struct config *const restrict config,
+    struct work_directory *const restrict workdir_repos,
+    struct work_directory *const restrict workdir_archives,
+    struct work_directory *const restrict workdir_checkouts
+) {
+    for (;;) {
+        if (mirror_all_repos(
+                config, workdir_repos, config->clean_repos)) {
+            pr_error("Failed to mirro all repos\n");
+            return -1;
+        }
+        if (export_all_repos(
+                config, workdir_archives, workdir_checkouts)) {
+            pr_error("Failed to export all repos (archives and checkouts)\n");
+            return -1;
+        }
+        if (clean_all_dirs(
+            workdir_repos, workdir_archives, workdir_checkouts, config)) {
+            pr_error("Failed to clean up all folders\n");
+            return -1;
+        }
+        // Cleanup
+        // Free all repos not in config
+        for (unsigned long i = config->repos_count_original; 
+            i < config->repos_count; ++i) {
+            repo_free(config->repos + i);
+        }
+        config->repos_count = config->repos_count_original;
+        // Free some memory
+        if (config->repos_allocated - config->repos_count > ALLOC_BASE) {
+            config->repos_allocated = 
+                (config->repos_count / ALLOC_BASE + 1) * ALLOC_BASE;
+            struct repo *const restrict repos_new = 
+                realloc(config->repos, 
+                    sizeof *config->repos * config->repos_allocated);
+            if (repos_new == NULL) {
+                pr_error_with_errno("Failed to shrink memory used on repos");
+                return -1;
+            }
+            config->repos = repos_new;
+        }
+        for (unsigned long i = 0; i < config->repos_count; ++i) {
+            struct repo *const restrict repo = config->repos + i;
+            if (repo->parsed_commits_allocated - repo->parsed_commits_count
+                 > ALLOC_BASE) {
+                repo->parsed_commits_allocated = 
+                    (repo->parsed_commits_count / ALLOC_BASE + 1) * ALLOC_BASE;
+                struct parsed_commit *const restrict parsed_commits_new =
+                    realloc(repo->parsed_commits,
+                        sizeof *repo->parsed_commits * 
+                            repo->parsed_commits_allocated);
+                if (parsed_commits_new == NULL) {
+                    pr_error_with_errno(
+                        "Failed to shrink memory used on parsed commits");
+                    return -1;
+                }
+                repo->parsed_commits = parsed_commits_new;
+            }
+            for (unsigned long j = 0; j < repo->parsed_commits_count; ++j) {
+                parsed_commit_free(repo->parsed_commits + j);
+            }
+            repo->parsed_commits_count = 0;
+            repo->wanted_objects_count = repo->wanted_objects_count_original;
+            if (repo->wanted_objects_allocated - repo->wanted_objects_count 
+                > ALLOC_BASE) {
+                repo->wanted_objects_allocated = 
+                    (repo->wanted_objects_count / ALLOC_BASE + 1) * ALLOC_BASE;
+                struct wanted_object *const restrict wanted_objects_new = 
+                    realloc(repo->wanted_objects, 
+                        sizeof *repo->wanted_objects * 
+                            repo->wanted_objects_allocated);
+                if (wanted_objects_new == NULL) {
+                    pr_error_with_errno(
+                        "Failed to shrink memory used on wanted objects");
+                    return -1;
+                }
+                repo->wanted_objects = wanted_objects_new;
+            }
+            repo->wanted_dynamic = false;
+            for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
+                struct wanted_object *const restrict wanted_object = 
+                    repo->wanted_objects + j;
+                switch (wanted_object->type) {
+                case WANTED_TYPE_BRANCH:
+                case WANTED_TYPE_TAG:
+                case WANTED_TYPE_REFERENCE:
+                case WANTED_TYPE_HEAD:
+                    wanted_object->commit_resolved = false;
+                    wanted_object->parsed_commit_id = (unsigned long) -1;
+                    wanted_object->id_hex_string[0] = '\0';
+                    memset(wanted_object->id.id, 0, sizeof wanted_object->id.id);
+                    __attribute__((fallthrough));
+                case WANTED_TYPE_ALL_BRANCHES:
+                case WANTED_TYPE_ALL_TAGS:
+                    repo->wanted_dynamic = true;
+                    break;
+                case WANTED_TYPE_COMMIT:
+                    break;
+                case WANTED_TYPE_UNKNOWN:
+                    pr_error("Wanted object '%s' type still unknown?!", 
+                        wanted_object->name);
+                    return -1;
+                }
+                wanted_object->parsed_commit_id = (unsigned long) -1;
+            }
+            repo->updated = false;
+        }
+        if (config->clean_repos) {
+            workdir_repos->keeps_count = 1;
+            memcpy(workdir_repos->keeps, "links", 6);
+        }
+        if (config->clean_archives) {
+            workdir_archives->keeps_count = 1;
+            memcpy(workdir_archives->keeps, "links", 6);
+        }
+        if (config->clean_checkouts) {
+            workdir_checkouts->keeps_count = 1;
+            memcpy(workdir_checkouts->keeps, "links", 6);
+        }
+        sleep(config->daemon_interval);
+    }
+    return -1;
+}
+
 int main(int const argc, char *argv[]) {
     char *config_path = NULL;
     struct option const long_options[] = {
@@ -7206,20 +7414,20 @@ int main(int const argc, char *argv[]) {
     }
     pr_info("Initializing libgit2\n");
     git_libgit2_init();
-    if ((r = mirror_all_repos(
-            &config, &workdir_repos, config.clean_repos))) {
-        pr_error("Failed to mirro all repos\n");
-        goto shutdown;
-    }
-    if ((r = export_all_repos(
-            &config, &workdir_archives, &workdir_checkouts))) {
-        pr_error("Failed to export all repos (archives and checkouts)\n");
-        goto shutdown;
-    }
-    if ((r = clean_all_dirs(
-        &workdir_repos, &workdir_archives, &workdir_checkouts, &config))) {
-        pr_error("Failed to clean up all folders\n");
-        goto shutdown;
+    if (config.daemon) {
+        if (work_daemon(&config, &workdir_repos, &workdir_archives,
+        &workdir_checkouts)) {
+            pr_error("Daemon work failed\n");
+            r = -1;
+            goto shutdown;
+        }
+    } else {
+        if (work_oneshot(&config, &workdir_repos, &workdir_archives,
+        &workdir_checkouts)) {
+            pr_error("One shot work failed\n");
+            r = -1;
+            goto shutdown;
+        }
     }
     r = 0;
 shutdown:
