@@ -373,9 +373,6 @@ sudo pacman -Syu base-devel xxhash libgit2 libyaml
 ```
 
 When the dependencies are all installed, just run `make` in the folder you're reading this `README.md`, the result binary would be `git-mirrorer`. 
-```
-make
-```
 
 ---
 
@@ -386,16 +383,17 @@ sudo apt install build-essential libyaml-dev libgit2-dev libxxhash-dev
 ```
 **However, at least on Ubuntu 22.04 Jammy that I've tested, libgit2 is dramatically outdated (at v1.1.0), the package thus can't be linked to the system-provided `libgit2`**
 
-An alternative build method, mainly for such systems, is to run the following build command, which will fetch these libraries and build them seperately from the system:
-```
-make BUILD_DEPS=1
-```
-Addtionally, `cmake`, `libpcre2-dev`, `libhttp-parser-dev`, `libssh2-1-dev` (for `libgit2`) are needed to compile those depedencies. Install them if they're missing:
+An alternative build method, mainly for such systems, is to run the following build command, which will fetch these libraries and build them seperately from the system. Addtionally, the following dependencies are needed:
 ```
 sudo apt install cmake libpcre2-dev libhttp-parser-dev libssh2-1-dev
 ```
+Use the following comamnd to build with bundled libraries:
 
-To `git-mirrorer` built in this way with its bundled libraries you'll need to preload the libraries:
+```
+make BUILD_DEPS=1
+```
+
+To run `git-mirrorer` built in this way you'll need to preload the libraries:
 ```
 LD_LIBRARY_PATH=lib ./git-mirrorer
 ```
