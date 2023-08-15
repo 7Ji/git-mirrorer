@@ -7415,6 +7415,8 @@ int work_daemon(
                     config_free(config);
                     *config = config_new;
                     *workdir_repos = workdir_repos_new;
+                    *workdir_archives = workdir_archives_new;
+                    *workdir_checkouts = workdir_checkouts_new;
                     pr_info("Starting using new config\n");
                 }
             }
