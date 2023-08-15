@@ -1,6 +1,6 @@
 BINARY = git-mirrorer
-CFLAGS = -Wall -Wextra -v
-LDFLAGS = -lxxhash -lgit2 -lyaml -Wl,--verbose
+CFLAGS = -Wall -Wextra
+LDFLAGS = -lxxhash -lgit2 -lyaml
 STRIP ?= strip
 
 ifdef DEBUGGING
@@ -13,7 +13,7 @@ ifndef VERSION
 VERSION=$(shell ./version.sh)
 endif
 
-ifdef BUILD_LIBRARIES
+ifdef BUILD_DEPS
 LDFLAGS += -Llib
 else
 LDFLAGS += 
@@ -26,9 +26,11 @@ XXHASH_DIR = deps/xxhash-${XXHASH_VER}
 XXHASH_LIB = libxxhash.so.${XXHASH_VER}
 XXHASH_LNK = lib/libxxhash.so
 XXHASH_SRC = lib/${XXHASH_LIB}
-${XXHASH_SRC}: | prepare_deps mkdirs
+XXHASH_BLD = ${XXHASH_DIR}/${XXHASH_LIB}
+${XXHASH_BLD}: | prepare_deps
 	make -C ${XXHASH_DIR} DISPATCH=1 ${XXHASH_LIB}
-	install -m 755 ${XXHASH_DIR}/${XXHASH_LIB} ${XXHASH_SRC}
+${XXHASH_SRC}: ${XXHASH_BLD} | mkdirs
+	install -m 755 $< $@
 ${XXHASH_LNK}: ${XXHASH_SRC}
 	ln -s ${XXHASH_LIB} $@
 
@@ -36,11 +38,13 @@ YAML_DIR = deps/yaml-0.2.5
 YAML_LIB = libyaml-0.so.2.0.9
 YAML_LNK = lib/libyaml.so
 YAML_SRC = lib/${YAML_LIB}
-${YAML_SRC}: | prepare_deps mkdirs
+YAML_BLD = ${YAML_DIR}/src/.libs/${YAML_LIB}
+${YAML_BLD}: | prepare_deps
 	cd ${YAML_DIR} && \
 	./configure --prefix=/usr
 	make -C ${YAML_DIR}
-	install -m 755 ${YAML_DIR}/src/.libs/${YAML_LIB} ${YAML_SRC}
+${YAML_SRC}: ${YAML_BLD} | mkdirs
+	install -m 755 $< $@
 ${YAML_LNK}: ${YAML_SRC}
 	ln -s ${YAML_LIB} $@
 
@@ -48,7 +52,8 @@ GIT2_DIR = deps/libgit2-1.7.1
 GIT2_LIB = libgit2.so.1.7.0
 GIT2_LNK = lib/libgit2.so
 GIT2_SRC = lib/${GIT2_LIB}
-${GIT2_SRC}: | prepare_deps mkdirs
+GIT2_BLD = ${GIT2_DIR}-build/${GIT2_LIB}
+${GIT2_BLD}: | prepare_deps
 	cmake 	-S ${GIT2_DIR} \
 			-B ${GIT2_DIR}-build \
 			-DCMAKE_BUILD_TYPE=None \
@@ -58,7 +63,8 @@ ${GIT2_SRC}: | prepare_deps mkdirs
 			-DUSE_SSH=ON \
 			-Wno-dev
 	cmake --build ${GIT2_DIR}-build --verbose
-	install -m 755  ${GIT2_DIR}-build/${GIT2_LIB} ${GIT2_SRC}
+${GIT2_SRC}: ${GIT2_BLD} | mkdirs
+	install -m 755  $< $@
 ${GIT2_LNK}: ${GIT2_SRC}
 	ln -s ${GIT2_LIB} $@
 
@@ -70,7 +76,7 @@ mkdirs:
 prepare_deps: 
 	./prepare_deps.sh
 
-ifdef BUILD_LIBRARIES
+ifdef BUILD_DEPS
 ${BINARY}: ${BINARY}.c ${DEP_LNKS}
 else
 ${BINARY}: ${BINARY}.c
