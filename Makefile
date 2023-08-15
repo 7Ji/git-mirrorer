@@ -1,6 +1,6 @@
 BINARY = git-mirrorer
-CFLAGS = -Wall -Wextra 
-LDFLAGS = 
+CFLAGS = -Wall -Wextra -v
+LDFLAGS = -lxxhash -lgit2 -lyaml -Wl,--verbose
 STRIP ?= strip
 
 ifdef DEBUGGING
@@ -13,56 +13,73 @@ ifndef VERSION
 VERSION=$(shell ./version.sh)
 endif
 
+ifdef BUILD_LIBRARIES
+LDFLAGS += -Llib
+else
+LDFLAGS += 
+endif
 
-# The normal, non-static routine
-ifndef STATIC
-LDFLAGS += -lxxhash -lgit2 -lyaml
+all: ${BINARY}
+
+XXHASH_VER = 0.8.2
+XXHASH_DIR = deps/xxhash-${XXHASH_VER}
+XXHASH_LIB = libxxhash.so.${XXHASH_VER}
+XXHASH_LNK = lib/libxxhash.so
+XXHASH_SRC = lib/${XXHASH_LIB}
+${XXHASH_SRC}: | prepare_deps
+	make -C ${XXHASH_DIR} DISPATCH=1 ${XXHASH_LIB}
+	mkdir -p libs
+	install -m 755 ${XXHASH_DIR}/${XXHASH_LIB} ${XXHASH_SRC}
+${XXHASH_LNK}: ${XXHASH_SRC}
+	ln -s ${XXHASH_LIB} $@
+
+YAML_DIR = deps/yaml-0.2.5
+YAML_LIB = libyaml-0.so.2.0.9
+YAML_LNK = lib/libyaml.so
+YAML_SRC = lib/${YAML_LIB}
+${YAML_SRC}: | prepare_deps
+	cd ${YAML_DIR} && \
+	./configure --prefix=/usr
+	make -C ${YAML_DIR}
+	install -m 755 ${YAML_DIR}/src/.libs/${YAML_LIB} ${YAML_SRC}
+${YAML_LNK}: ${YAML_SRC}
+	ln -s ${YAML_LIB} $@
+
+GIT2_DIR = deps/libgit2-1.7.1
+GIT2_LIB = libgit2.so.1.7.0
+GIT2_LNK = lib/libgit2.so
+GIT2_SRC = lib/${GIT2_LIB}
+${GIT2_SRC}: | prepare_deps
+	cmake 	-S ${GIT2_DIR} \
+			-B ${GIT2_DIR}-build \
+			-DCMAKE_BUILD_TYPE=None \
+			-DCMAKE_INSTALL_PREFIX=/usr \
+			-DREGEX_BACKEND=pcre2 \
+			-DUSE_HTTP_PARSER=system \
+			-DUSE_SSH=ON \
+			-Wno-dev
+	cmake --build ${GIT2_DIR}-build --verbose
+	install -m 755  ${GIT2_DIR}-build/${GIT2_LIB} ${GIT2_SRC}
+${GIT2_LNK}: ${GIT2_SRC}
+	ln -s ${GIT2_LIB} $@
+
+DEP_LNKS = ${XXHASH_LNK} ${YAML_LNK} ${GIT2_LNK}
+
+prepare_deps: 
+	./prepare_deps.sh
+
+ifdef BUILD_LIBRARIES
+${BINARY}: ${BINARY}.c ${DEP_LNKS}
+else
 ${BINARY}: ${BINARY}.c
+endif
 	${CC} -o $@ -DVERSION=\"${VERSION}\" ${CFLAGS} ${LDFLAGS} $^
 ifndef DEBUGGING
 	$(STRIP) $@
 endif
 
-# The complex static routine, we do it in one go, no middle object, for best optimization
-else # STATIC
-# Yes, I know things will become a lot easier if we use each dep's own making routine
-# to compile them into libraries first, but I just want a static binary and don't want
-# any cross-object calling penalty
-all: ${BINARY}
-# YAML library
-YAML_MAJOR=0
-YAML_MINOR=2
-YAML_PATCH=5
-YAML_VERSION=${YAML_MAJOR}.${YAML_MINOR}.${YAML_PATCH}
-_YAML_SRCS = api dumper emitter loader parser reader scanner writer
-YAML_SRCS = $(patsubst %,deps/yaml-${YAML_VERSION}/src/%.c,${_YAML_SRCS})
-# deps/yaml-${YAML_VERSION}/src/%.c:
-CFLAGS += 	-Ideps/yaml-${YAML_VERSION}/include \
-			-DYAML_VERSION_MAJOR=${YAML_MAJOR} \
-		    -DYAML_VERSION_MINOR=${YAML_MINOR} \
-			-DYAML_VERSION_PATCH=${YAML_PATCH} \
-			-DYAML_VERSION_STRING=\"${YAML_VERSION}\"
 
-_GIT_SRCS = annotated_commit apply attr attr_file attrcache blame blame_git blob branch buf cache checkout cherrypick clone commit commit_graph commit_list config config_cache config_entries config_file config_mem config_parse config_snapshot crlf delta describe diff diff_driver diff_file diff_generate diff_parse diff_print diff_stats diff_tform diff_xdiff email errors fetch fetchhead filter grafts graph hashsig ident idxmap ignore index indexer iterator libgit2 mailmap merge merge_driver merge_file message midx mwindow notes object object_api odb odb_loose odb_mempack odb_pack offmap oid oidarray oidmap pack-objects pack parse patch patch_generate patch_parse path pathspec proxy push reader rebase refdb refdb_fs reflog refs refspec remote reset revert revparse revwalk signature stash status strarray streams/mbedtls streams/openssl streams/openssl_dynamic streams/openssl_legacy streams/registry streams/schannel streams/socket streams/stransport streams/tls submodule sysdir tag threadstate trace trailer transaction transport transports/auth transports/auth_gssapi transports/auth_ntlmclient transports/auth_sspi transports/credential transports/credential_helpers transports/git transports/http transports/httpclient transports/local transports/smart transports/smart_pkt transports/smart_protocol transports/ssh transports/winhttp tree-cache tree worktree repository
-GIT_SRCS = $(patsubst %,deps/libgit2-1.7.1/src/libgit2/%.c,${_GIT_SRCS})
-CFLAGS += -Ideps/libgit2-1.7.1/include/git2
-
-DEP_SRCS = ${YAML_SRCS} ${GIT_SRCS}
-
-${DEP_SRCS}: 
-	./prepare_deps.sh
-
-${BINARY}: ${BINARY}.c ${DEP_SRCS}
-	${CC} -o $@ -static -DVERSION=\"${VERSION}\" ${CFLAGS} $^
-ifndef DEBUGGING
-	$(STRIP) $@
-endif
-
-
-endif #STATIC
-
-
-.PHONY: clean all
+.PHONY: clean all prepare_deps
 
 clean:
 	rm -f ${BINARY}

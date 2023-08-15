@@ -39,23 +39,27 @@ dep_patches=(
 )
 
 # Download
+downloaded=''
 mkdir -p deps
 i=0
 for dep_dlname in "${dep_dlnames[@]}"; do
   if [[ ! -f deps/${dep_dlname} ]]; then
     wget -O deps/"${dep_dlname}" "${dep_urls[$i]}"
+    downloaded='yes'
   fi
   let ++i
 done
 # Integrity check
-verify_sha256sums=$(
-  i=0
-  for dep_dlname in "${dep_dlnames[@]}"; do
-    echo "${dep_sha256sums[$i]}  deps/${dep_dlname}"
-    let ++i
-  done
-)
-sha256sum --check <(printf "$verify_sha256sums")
+if [[ "${downloaded}" ]]; then
+  verify_sha256sums=$(
+    i=0
+    for dep_dlname in "${dep_dlnames[@]}"; do
+      echo "${dep_sha256sums[$i]}  deps/${dep_dlname}"
+      let ++i
+    done
+  )
+  sha256sum --check <(printf "$verify_sha256sums")
+fi
 # Extracting
 i=0
 for dep_name in "${dep_names[@]}"; do
