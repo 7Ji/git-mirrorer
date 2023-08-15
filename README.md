@@ -360,17 +360,46 @@ mv "$CHECKOUT_DIR/$COMMIT_ID" "$BUILD_DIR"
 
 ## Build
 The following libraries are needed on your host:
- - xxhash
- - libgit2
- - libyaml
+ - xxhash _(0.8.2)_
+ - libgit2 _(1.7.1)_
+ - libyaml _(0.2.5)_
 
-On Arch the dependencies could be installed simply with the following command:
-```
-sudo pacman -Syu xxhash libgit2 libyaml
-```
 If you're building in the git tree `git` is also needed to generate the version info.
 
+---
+On Arch (the distro I'm using, and developed `git-mirrorer` on) the dependencies could be installed simply with the following command:
+```
+sudo pacman -Syu base-devel xxhash libgit2 libyaml
+```
+
 When the dependencies are all installed, just run `make` in the folder you're reading this `README.md`, the result binary would be `git-mirrorer`. 
+```
+make
+```
+
+---
+
+On Debian-based distros, these dependencies could be installed via the following command:
+```
+sudo apt update
+sudo apt install build-essential libyaml-dev libgit2-dev libxxhash-dev
+```
+**However, at least on Ubuntu 22.04 Jammy that I've tested, libgit2 is dramatically outdated (at v1.1.0), the package thus can't be linked to the system-provided `libgit2`**
+
+An alternative build method, mainly for such systems, is to run the following build command, which will fetch these libraries and build them seperately from the system:
+```
+make BUILD_DEPS=1
+```
+Addtionally, `cmake`, `libpcre2-dev`, `libhttp-parser-dev`, `libssh2-1-dev` (for `libgit2`) are needed to compile those depedencies. Install them if they're missing:
+```
+sudo apt install cmake libpcre2-dev libhttp-parser-dev libssh2-1-dev
+```
+
+To `git-mirrorer` built in this way with its bundled libraries you'll need to preload the libraries:
+```
+LD_LIBRARY_PATH=lib ./git-mirrorer
+```
+
 
 ## License
 **git-mirrorer**, to mirror, archive and checkout git repos even across submodules
