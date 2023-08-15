@@ -26,9 +26,8 @@ XXHASH_DIR = deps/xxhash-${XXHASH_VER}
 XXHASH_LIB = libxxhash.so.${XXHASH_VER}
 XXHASH_LNK = lib/libxxhash.so
 XXHASH_SRC = lib/${XXHASH_LIB}
-${XXHASH_SRC}: | prepare_deps
+${XXHASH_SRC}: | prepare_deps mkdirs
 	make -C ${XXHASH_DIR} DISPATCH=1 ${XXHASH_LIB}
-	mkdir -p libs
 	install -m 755 ${XXHASH_DIR}/${XXHASH_LIB} ${XXHASH_SRC}
 ${XXHASH_LNK}: ${XXHASH_SRC}
 	ln -s ${XXHASH_LIB} $@
@@ -37,7 +36,7 @@ YAML_DIR = deps/yaml-0.2.5
 YAML_LIB = libyaml-0.so.2.0.9
 YAML_LNK = lib/libyaml.so
 YAML_SRC = lib/${YAML_LIB}
-${YAML_SRC}: | prepare_deps
+${YAML_SRC}: | prepare_deps mkdirs
 	cd ${YAML_DIR} && \
 	./configure --prefix=/usr
 	make -C ${YAML_DIR}
@@ -49,7 +48,7 @@ GIT2_DIR = deps/libgit2-1.7.1
 GIT2_LIB = libgit2.so.1.7.0
 GIT2_LNK = lib/libgit2.so
 GIT2_SRC = lib/${GIT2_LIB}
-${GIT2_SRC}: | prepare_deps
+${GIT2_SRC}: | prepare_deps mkdirs
 	cmake 	-S ${GIT2_DIR} \
 			-B ${GIT2_DIR}-build \
 			-DCMAKE_BUILD_TYPE=None \
@@ -65,6 +64,9 @@ ${GIT2_LNK}: ${GIT2_SRC}
 
 DEP_LNKS = ${XXHASH_LNK} ${YAML_LNK} ${GIT2_LNK}
 
+mkdirs:
+	mkdir -p lib
+
 prepare_deps: 
 	./prepare_deps.sh
 
@@ -79,7 +81,7 @@ ifndef DEBUGGING
 endif
 
 
-.PHONY: clean all prepare_deps
+.PHONY: clean all prepare_deps mkdirs
 
 clean:
 	rm -f ${BINARY}
