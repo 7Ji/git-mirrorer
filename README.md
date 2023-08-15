@@ -14,7 +14,6 @@ repos:
 ```
 After `./git-mirrorer --config config.yaml`, you will have the following directory structure:
 ```
-.
 repos
 ├── 2c7adc93616e76cd/
 ├── 672b80351731823c/
@@ -33,6 +32,20 @@ repos
 _`git-mirrorer` uses 64-bit XXHash 3 to generate local repo names from the url, the above `2c7adc93616e76cd` and `672b80351731823c` are such examples. There will also be symlinks created under `repos/links` which is easier to lookup for humans._
 
 You can then clone/fetch from your local copies under `repos/`. You can also expose either `repos/` or `repos/links/` as the root of your git deamon and then clone/fetch from the local mirror across your lan/Internet.
+
+## Daemon
+By default, `git-mirrorer` will only run once before quiting. However, it also has a built-in daemon mode that will run forever until error encountered. You can config it like the following:
+```
+daemon: yes
+daemon_interval: 10
+repos:
+  ...... #(omitted)
+```
+#### `daemon`
+Controls whether `git-mirrorer` runs in **daemon mode** (if set to `yes`) or **oneshot mode** (default, if set to `no`).
+
+#### `daemon_interval`
+The interval (in second) `git-mirrorer` should sleep between each work cycle, default is 60 (i.e. 1 min).
 
 ## Wanted objects
 If you run `git-mirrorer` with only a simple repos list, you might read the following log:
@@ -355,6 +368,8 @@ On Arch the dependencies could be installed simply with the following command:
 ```
 sudo pacman -Syu xxhash libgit2 libyaml
 ```
+If you're building in the git tree `git` is also needed to generate the version info.
+
 When the dependencies are all installed, just run `make` in the folder you're reading this `README.md`, the result binary would be `git-mirrorer`. 
 
 ## License
