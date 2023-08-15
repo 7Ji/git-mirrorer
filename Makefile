@@ -77,6 +77,7 @@ prepare_deps:
 	./prepare_deps.sh
 
 ifdef BUILD_DEPS
+CFLAGS += -I${GIT2_DIR}/include -I${XXHASH_DIR} -I${YAML_DIR}
 ${BINARY}: ${BINARY}.c ${DEP_LNKS}
 else
 ${BINARY}: ${BINARY}.c
