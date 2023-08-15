@@ -47,6 +47,13 @@ Controls whether `git-mirrorer` runs in **daemon mode** (if set to `yes`) or **o
 #### `daemon_interval`
 The interval (in second) `git-mirrorer` should sleep between each work cycle, default is 60 (i.e. 1 min).
 
+#### Config watch
+Exclusive to daemon mode, if you define the config on command-line with `--config [file]` argument, `git-mirrorer` will watch on any update on the config file, and re-read the config at the end of each work cycle. 
+
+You don't need to worry about a bad config update breaking the program, as `git-mirrorer` will only switch to the new config if it is valid.
+
+Additionally, updating `daemon` to `no` while `git-mirrorer` is running in daemon mode will not make `git-mirrorer` switch to oneshot mode, and a restart is needed if you really want to do that.
+
 ## Wanted objects
 If you run `git-mirrorer` with only a simple repos list, you might read the following log:
 ```
