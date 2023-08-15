@@ -31,8 +31,10 @@ ${XXHASH_BLD}: | prepare_deps
 	make -C ${XXHASH_DIR} DISPATCH=1 ${XXHASH_LIB}
 ${XXHASH_SRC}: ${XXHASH_BLD} | mkdirs
 	install -m 755 $< $@
-${XXHASH_LNK}: ${XXHASH_SRC}
+${XXHASH_LNK}: ${XXHASH_SRC} | mkdirs
+	ln -s ${XXHASH_LIB} lib/libxxhash.so.0
 	ln -s ${XXHASH_LIB} $@
+	
 
 YAML_DIR = deps/yaml-0.2.5
 YAML_LIB = libyaml-0.so.2.0.9
@@ -45,7 +47,8 @@ ${YAML_BLD}: | prepare_deps
 	make -C ${YAML_DIR}
 ${YAML_SRC}: ${YAML_BLD} | mkdirs
 	install -m 755 $< $@
-${YAML_LNK}: ${YAML_SRC}
+${YAML_LNK}: ${YAML_SRC} | mkdirs
+	ln -s ${YAML_LIB} lib/libyaml-0.so.2
 	ln -s ${YAML_LIB} $@
 
 GIT2_DIR = deps/libgit2-1.7.1
@@ -66,6 +69,7 @@ ${GIT2_BLD}: | prepare_deps
 ${GIT2_SRC}: ${GIT2_BLD} | mkdirs
 	install -m 755  $< $@
 ${GIT2_LNK}: ${GIT2_SRC}
+	ln -s ${GIT2_LIB} lib/libgit2.so.1.7
 	ln -s ${GIT2_LIB} $@
 
 DEP_LNKS = ${XXHASH_LNK} ${YAML_LNK} ${GIT2_LNK}
