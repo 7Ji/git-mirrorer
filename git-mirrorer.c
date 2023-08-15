@@ -7247,10 +7247,24 @@ int work_oneshot(
 
 int work_daemon(
     struct config *const restrict config,
+    char const *const restrict config_path,
     struct work_directory *const restrict workdir_repos,
     struct work_directory *const restrict workdir_archives,
     struct work_directory *const restrict workdir_checkouts
 ) {
+    bool watch_config = false;
+    struct stat stat_buffer = {0};
+    struct timespec config_mtime = {0};
+    if (config_path && strcmp(config_path, "-")) {
+        if (stat(config_path, &stat_buffer)) {
+            pr_warn("Failed to stat config '%s' to get its mtime, won't "
+                "watch config\n", config_path);
+        } else {
+            config_mtime = stat_buffer.st_mtim;
+            pr_info("Started watching config '%s'\n", config_path);
+            watch_config = true;
+        }
+    }
     for (;;) {
         if (mirror_all_repos(
                 config, workdir_repos, config->clean_repos)) {
@@ -7365,6 +7379,46 @@ int work_daemon(
             workdir_checkouts->keeps_count = 1;
             memcpy(workdir_checkouts->keeps, "links", 6);
         }
+        if (watch_config) {
+            if (stat(config_path, &stat_buffer)) {
+                pr_warn("Failed to stat config '%s' to get its mtime, won't "
+                "update config\n", config_path);
+            } else if (
+                (stat_buffer.st_mode & S_IFMT) == S_IFREG &&
+                ((stat_buffer.st_mtim.tv_nsec != config_mtime.tv_nsec) ||
+                (stat_buffer.st_mtim.tv_sec != config_mtime.tv_sec))) {
+
+                config_mtime = stat_buffer.st_mtim;
+                pr_warn("Config '%s' updated, re-reading config\n", 
+                        config_path);
+                struct config config_new = CONFIG_INIT;
+                struct work_directory workdir_repos_new, workdir_archives_new, 
+                                        workdir_checkouts_new;
+                if (config_read(&config_new, config_path)) {
+                    pr_warn("Failed to read new config, "
+                            "keep using the old one\n");
+                    config_free(&config_new);
+                } else if (config_new.repos_count == 0) {
+                    pr_warn("New config has no repos defined, keep using the "
+                            "old one\n");
+                    config_free(&config_new);
+                } else if (work_directories_from_config(
+                    &workdir_repos_new, &workdir_archives_new, 
+                    &workdir_checkouts_new, &config_new
+                )) {
+                    pr_warn("Failed to open work directories for new config, "
+                            "keep using the old one\n");
+                    config_free(&config_new);
+                } else {
+                    work_directories_free(
+                    workdir_repos, workdir_archives, workdir_checkouts);
+                    config_free(config);
+                    *config = config_new;
+                    *workdir_repos = workdir_repos_new;
+                    pr_info("Starting using new config\n");
+                }
+            }
+        }
         sleep(config->daemon_interval);
     }
     return -1;
@@ -7429,7 +7483,7 @@ int main(int const argc, char *argv[]) {
     pr_info("Initializing libgit2\n");
     git_libgit2_init();
     if (config.daemon) {
-        if (work_daemon(&config, &workdir_repos, &workdir_archives,
+        if (work_daemon(&config, config_path, &workdir_repos, &workdir_archives,
         &workdir_checkouts)) {
             pr_error("Daemon work failed\n");
             r = -1;
