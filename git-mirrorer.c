@@ -4651,8 +4651,9 @@ int repo_parse_wanted_all_branches(
     if (r) {
         pr_error("Failed to create branch iterator for repo '%s', "
         "libgit return %d\n", repo->url, r);
+        return -1;
     }
-    git_reference *reference;
+    git_reference *reference = NULL;
     git_branch_t branch_t;
     pr_info(
         "Looping through all branches to create "
@@ -4663,30 +4664,43 @@ int repo_parse_wanted_all_branches(
         pr_info("Found branch '%s'\n", reference_name);
         if (branch_t != GIT_BRANCH_LOCAL) {
             pr_error("Found branch is not a local branch\n");
-            return -1;
+            r = -1;
+            goto free_reference;
         }
         if (strncmp(reference_name, "refs/", 5)) {
             pr_error("Reference does not start with 'refs/'\n");
-            return -1;
+            r = -1;
+            goto free_reference;
         }
         if (repo_add_wanted_reference(repo, reference_name,
             wanted_all_branches->archive, wanted_all_branches->checkout)) {
             pr_error("Failed to add branch reference '%s' as wannted to "
             "repo '%s'\n", reference_name, repo->url);
-            return -1;
+            r = -1;
+            goto free_reference;
         }
+        git_reference_free(reference);
     }
+    reference = NULL;
     switch (r) {
     case GIT_OK:
         pr_error("Got GIT_OK at the end, this shouldn't happen\n");
-        return -1;
+        r = -1;
+        goto free_iterator;
     case GIT_ITEROVER:
-        return 0;
+        break;
     default:
         pr_error(
             "Failed to iterate through all banches, libgit return %d\n", r);
-        return -1;
+        r = -1;
+        goto free_iterator;
     }
+    r = 0;
+free_reference:
+    if (reference) git_reference_free(reference);
+free_iterator:
+    git_branch_iterator_free(branch_iterator);
+    return r;
 }
 
 struct repo_parse_wanted_all_tags_foreach_payload {
