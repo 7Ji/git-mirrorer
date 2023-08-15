@@ -11,6 +11,8 @@ if [ -e ".git" ]; then
         COMMIT_DIRTY='-dirty'
     fi
     COMMIT_INFO="-${COMMIT_DATE}.${COMMIT_HASH}${COMMIT_DIRTY}"
+else
+    COMMIT_INFO="-unknown"
 fi
 
 echo "v${MAJOR}.${MINOR}.${FIX}${COMMIT_INFO}"
