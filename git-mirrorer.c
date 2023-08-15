@@ -5261,7 +5261,7 @@ int open_and_update_all_dynamic_repos_threaded_optional(
     }
     r = 0;
 wait_threads:
-    pr_info("Waiting for all update threads to end...\n");
+    if (r) pr_warn("Waiting for all update threads to end...\n");
     for (unsigned long i = 0;
         i < update_status.thread_handles_allocated; ++i) {
         struct update_thread_handle *handle = update_status.thread_handles + i;
@@ -6937,7 +6937,7 @@ int export_all_repos_multi_threaded_lookup(
     }
     r = 0;
 wait_threads:
-    pr_info("Waiting for all exporting preparation threads to end...\n");
+    if (r) pr_warn("Waiting for all exporting preparation threads to end...\n");
     for (unsigned short i = 0; i < config->export_threads; ++i) {
         struct prepare_thread_handle *handle = handles + i;
         if (handle->active) {
@@ -7073,7 +7073,7 @@ int export_all_repos_multi_threaded_work(
     }
     r = 0;
 wait_threads:
-    pr_info("Waiting for all exporting work threads to end...\n");
+    if (r) pr_warn("Waiting for all exporting work threads to end...\n");
     for (unsigned short i = 0; i < config->export_threads; ++i) {
         struct thread_handle *handle = handles + i;
         if (handle->active) {
