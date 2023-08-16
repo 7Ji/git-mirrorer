@@ -6820,7 +6820,7 @@ int export_all_repos_single_threaded(
     struct work_directory *const restrict workdir_archives,
     struct work_directory *const restrict workdir_checkouts
 ) {
-    pr_info("Exporting all repos (single-threaded)...\n");
+    pr_debug("Exporting all repos (single-threaded)...\n");
     int r = -1;
     unsigned long repo_free_count = config->repos_count;
     for (unsigned long i = 0; i < config->repos_count; ++i) {
@@ -6843,7 +6843,7 @@ int export_all_repos_single_threaded(
             }
         }
     }
-    pr_info("Exported all repos\n");
+    pr_debug("Exported all repos\n");
     r = 0;
 free_commits:
     for (unsigned long i = 0; i < repo_free_count; ++i) {
@@ -7130,7 +7130,7 @@ int export_all_repos_multi_threaded(
     struct work_directory *const restrict workdir_archives,
     struct work_directory *const restrict workdir_checkouts
 ) {
-    pr_info("Exporting all repos (%hu threads + 1 for symlinks)\n",
+    pr_debug("Exporting all repos (%hu threads + 1 for symlinks)\n",
         config->export_threads);
     struct guanrantee_all_repos_wanted_objects_symlinks_arg
         symlinks_thread_arg = {
@@ -7179,7 +7179,7 @@ wait_symlink_thread:
         pr_warn("Failed to export all repos, but commits already exported "
             "should not be affected\n");
     } else {
-        pr_info("Exported all repos\n");
+        pr_debug("Exported all repos\n");
     }
     return r;
 }
