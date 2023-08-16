@@ -7,6 +7,14 @@
                  # Note there's also an internal addend 3 to the total retry 
                  # count, so the max try count is [proxy_after] + 3
                  # default: 0
+# TIMEOUT CONFIG
+# Max time in second to wait when connecting to a git server, http(s) only
+# This might be extra helpful when used in combination with proxy_after, i.e.
+# your actual network is unstable when connecting to the git servers, but the 
+# proxy is not. 
+# Unsigned integer in millisecond (1000 for 1 second)
+# Default is 0, to use system default (usually 75 second)
+# connect_timeout: 10
 
 # UPSTREAM CONFIG !!NOT IMPLEMENTED YET!!
 # Defines an upstream git mirrorer instance's dir_repos, or any server that 

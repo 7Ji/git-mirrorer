@@ -406,6 +406,8 @@ struct config {
             archive_suffix[NAME_MAX + 1];
     char *archive_pipe_args[ARCHIVE_PIPE_ARGS_MAX_COUNT];
     unsigned int    daemon_interval;
+    int             timeout_connect; // Technically this should be unsigned,
+                                     // but libgit2 wants an int -v-
     unsigned short  len_archive_pipe_args_buffer,
                     proxy_after,
                     len_proxy_url,
@@ -479,6 +481,7 @@ enum yaml_config_parsing_status {
     YAML_CONFIG_PARSING_STATUS_DAEMON_INTERVAL,
     YAML_CONFIG_PARSING_STATUS_PROXY,
     YAML_CONFIG_PARSING_STATUS_PROXY_AFTER,
+    YAML_CONFIG_PARSING_STATUS_CONNECT_TIMEOUT,
     YAML_CONFIG_PARSING_STATUS_DIR_REPOS,
     YAML_CONFIG_PARSING_STATUS_DIR_ARCHIVES,
     YAML_CONFIG_PARSING_STATUS_DIR_CHECKOUTS,
@@ -522,6 +525,7 @@ char const *yaml_config_parsing_status_strings[] = {
     "daemon interval",
     "proxy",
     "proxy after",
+    "connect timeout",
     "dir repos",
     "dir archives",
     "dir checkouts",
@@ -2009,6 +2013,8 @@ int config_update_from_yaml_event(
             case 15:
                 if (!strcmp(key, "daemon_interval"))
                     *status = YAML_CONFIG_PARSING_STATUS_DAEMON_INTERVAL;
+                else if (!strcmp(key, "connect_timeout"))
+                    *status = YAML_CONFIG_PARSING_STATUS_CONNECT_TIMEOUT;
                 break;
             case 22:
                 if (!strcmp(key, "connections_per_server"))
@@ -2472,6 +2478,7 @@ int config_update_from_yaml_event(
         break;
     case YAML_CONFIG_PARSING_STATUS_DAEMON_INTERVAL:
     case YAML_CONFIG_PARSING_STATUS_PROXY_AFTER:
+    case YAML_CONFIG_PARSING_STATUS_CONNECT_TIMEOUT:
     case YAML_CONFIG_PARSING_STATUS_EXPORT_THREADS:
     case YAML_CONFIG_PARSING_STATUS_CONNECTIONS_PER_SERVER:
     case YAML_CONFIG_PARSING_STATUS_CLEAN_LINKS_PASS:
@@ -2485,6 +2492,9 @@ int config_update_from_yaml_event(
                 break;
             case YAML_CONFIG_PARSING_STATUS_PROXY_AFTER:
                 config->proxy_after = value;
+                break;
+            case YAML_CONFIG_PARSING_STATUS_CONNECT_TIMEOUT:
+                config->timeout_connect = value;
                 break;
             case YAML_CONFIG_PARSING_STATUS_EXPORT_THREADS:
                 config->export_threads = value;
@@ -2500,6 +2510,7 @@ int config_update_from_yaml_event(
             switch (*status) {
             case YAML_CONFIG_PARSING_STATUS_DAEMON_INTERVAL:
             case YAML_CONFIG_PARSING_STATUS_PROXY_AFTER:
+            case YAML_CONFIG_PARSING_STATUS_CONNECT_TIMEOUT:
             case YAML_CONFIG_PARSING_STATUS_EXPORT_THREADS:
             case YAML_CONFIG_PARSING_STATUS_CONNECTIONS_PER_SERVER:
                 *status = YAML_CONFIG_PARSING_STATUS_SECTION;
@@ -3833,10 +3844,12 @@ int repo_update(
         }
         r = git_remote_fetch(remote, NULL, &fetch_options_dup, NULL);
         if (r) {
+            git_error const *const error = git_error_last();
             pr_error(
-                "Failed to fetch from '%s', libgit return %d%s\n",
+                "Failed to fetch from '%s', libgit return %d%s, error: %d (%s)\n",
                 repo->url,
-                r, try < max_try ? ", will retry" : "");
+                r, try < max_try ? ", will retry" : "",
+                error->klass, error->message);
         } else {
             break;
         }
@@ -7416,6 +7429,12 @@ int work_daemon(
                             "keep using the old one\n");
                     config_free(&config_new);
                 } else {
+                    if (git_libgit2_opts(GIT_OPT_SET_SERVER_CONNECT_TIMEOUT, 
+                        config_new.timeout_connect)) {
+                        pr_warn("Failed to update connect timeout config, "
+                        "error: %d (%s)\n",
+                            git_error_last()->klass, git_error_last()->message);
+                    }
                     work_directories_free(
                     workdir_repos, workdir_archives, workdir_checkouts);
                     config_free(config);
@@ -7423,7 +7442,9 @@ int work_daemon(
                     *workdir_repos = workdir_repos_new;
                     *workdir_archives = workdir_archives_new;
                     *workdir_checkouts = workdir_checkouts_new;
+                    
                     pr_info("Starting using new config\n");
+
                 }
             }
         }
@@ -7490,6 +7511,12 @@ int main(int const argc, char *argv[]) {
     }
     pr_info("Initializing libgit2\n");
     git_libgit2_init();
+    if (config.timeout_connect && git_libgit2_opts(
+        GIT_OPT_SET_SERVER_CONNECT_TIMEOUT, config.timeout_connect)) {
+        pr_error("Failed to set timeout, %d (%s)\n", 
+            git_error_last()->klass, git_error_last()->message);
+        goto free_config;
+    }
     if (config.daemon) {
         if (work_daemon(&config, config_path, &workdir_repos, &workdir_archives,
         &workdir_checkouts)) {
