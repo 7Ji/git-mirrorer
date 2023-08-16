@@ -5347,7 +5347,7 @@ int mirror_all_repos(
             return -1;
         }
     }
-    pr_info("Finished mirroring all repos\n");
+    pr_debug("Finished mirroring all repos\n");
     return 0;
 }
 
