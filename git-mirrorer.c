@@ -6997,134 +6997,275 @@ wait_threads:
     }
     return r;
 }
+struct commit_with_repo {
+    struct parsed_commit *commit;
+    struct repo *repo;
+};
+
+static inline
+void commit_with_repo_list_swap_item(
+    struct commit_with_repo *const restrict commits_with_repos,
+    unsigned long const i,
+    unsigned long const j
+) {
+    struct commit_with_repo buffer = commits_with_repos[i];
+    commits_with_repos[i] = commits_with_repos[j];
+    commits_with_repos[j] = buffer;
+}
+
+static inline
+unsigned long commit_with_repo_list_partition(
+    struct commit_with_repo *const restrict commits_with_repos,
+    unsigned long const low,
+    unsigned long const high
+) {
+    git_oid const *const restrict pivot = 
+        &commits_with_repos[high].commit->id;
+    unsigned long i = low - 1;
+    for (unsigned long j = low; j < high; ++j) {
+        // pr_debug("Comparing %s @ %p vs %s @ %p \n", 
+        //     commits[j]->id_hex_string, commits[j], 
+        //     pivot->id_hex_string, pivot);
+        if (git_oid_cmp(&commits_with_repos[j].commit->id, pivot) < 0)
+            parsed_commit_list_swap_item(commits_with_repos, ++i, j);
+    }
+    parsed_commit_list_swap_item(commits_with_repos, ++i, high);
+    return i;
+}
+
+void commit_with_repo_list_quick_sort(
+    struct commit_with_repo *const restrict commits_with_repos,
+    unsigned long const low,
+    unsigned long const high
+) {
+    if (low < high) {
+        unsigned long const pivot = commit_with_repo_list_partition(
+                                commits_with_repos, low, high);
+         // if pivot is 0, that will make the new high (ulong) -1
+        if (pivot) 
+            parsed_commit_list_quick_sort(commits_with_repos, low, pivot - 1);
+        parsed_commit_list_quick_sort(commits_with_repos, pivot + 1, high);
+    }
+}
 
 int export_all_repos_multi_threaded_work(
     struct config const *const restrict config,
     struct work_directory *const restrict workdir_archives,
     struct work_directory *const restrict workdir_checkouts
 ) {
-    struct thread_handle {
-        pthread_t thread;
-        struct export_handle archive_handle;
-        struct export_handle checkout_handle;
-        struct export_commit_write_and_finish_arg arg;
-        bool active;
-    };
-    struct thread_handle *handles = calloc(
-        config->export_threads, sizeof *handles);
-    if (handles == NULL) {
-        pr_error_with_errno("Failed to allocate memory for handles");
+    // To avoid race condition, i.e., same commit referenced by multiple
+    // repos, which is usually caused by repos being clones/mirrors of each
+    // other, we need to go through the whole repos and commits list first,
+    // to create a sorted, non-duplicated list of all commits.
+    // As a result of such iterating and sorting, single-thread exporting
+    // could theoritically be better if there're too many commits
+    unsigned long commits_allocated = 0;
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        commits_allocated += config->repos[i].parsed_commits_count;
+    }
+    // No commits at all, this shouldn't happen, but silent return
+    if (commits_allocated == 0) return 0;
+    struct commit_with_repo {
+        struct parsed_commit *commit;
+        struct repo *repo;
+    } *commits_with_repos = 
+        malloc(sizeof *commits_with_repos * commits_allocated);
+    if (commits_with_repos == NULL) {
+        pr_error("Failed to allocate memory for all commits\n");
         return -1;
     }
-    int r = -1;
-    long thread_ret;
-    for (unsigned short i = 0; i < config->export_threads; ++i) {
-        struct export_commit_write_and_finish_arg *arg = &(handles + i)->arg;
-        arg->config = config;
-        arg->dirfd_archives = workdir_archives->dirfd;
-        arg->dirfd_checkouts = workdir_checkouts->dirfd;
-        arg->archive_handle = &handles[i].archive_handle;
-        arg->checkout_handle = &handles[i].checkout_handle;
-    }
+    unsigned long commit_id = 0;
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         struct repo const *const restrict repo = config->repos + i;
         for (unsigned long j = 0; j < repo->parsed_commits_count; ++j) {
-            struct parsed_commit const *const restrict parsed_commit =
-                                    repo->parsed_commits + j;
-            if (parsed_commit->archive || parsed_commit->checkout);
-            else continue;
-            struct export_handle archive_handle = {
-                .should_export = parsed_commit->archive};
-            struct export_handle checkout_handle = {
-                .should_export = parsed_commit->checkout};
-            if (export_commit_prepare(config, parsed_commit,
-                            &archive_handle, workdir_archives,
-                            &checkout_handle, workdir_checkouts)) {
-                pr_error("Failed to prepare to export commit '%s'\n",
-                            parsed_commit->id_hex_string);
-                goto wait_threads;
-            }
-            if (archive_handle.should_export || checkout_handle.should_export);
-            else continue;
-            bool thread_added = false;
-            for (;;) {
-                unsigned short threads_active_count = 0;
-                for (unsigned short k = 0; k < config->export_threads; ++k) {
-                    struct thread_handle *handle = handles + k;
-                    if (handle->active) {
-                        r = pthread_tryjoin_np(handle->thread, (
-                                                void **)&thread_ret);
-                        switch (r) {
-                        case 0:
-                            handle->active = false;
-                            if (thread_ret) {
-                                pr_error(
-                                    "Thread %ld for exporting commit %s return"
-                                    "with %ld", handle->thread,
-                                                parsed_commit->id_hex_string,
-                                                thread_ret);
-                                goto wait_threads;
-                            }
-                            break;
-                        case EBUSY:
-                            break;
-                        default:
-                            pr_error("Failed to nonblocking wait for thread %ld"
-                            " for exporting commit %s, pthread return %d\n",
-                            handle->thread, parsed_commit->id_hex_string, r);
-                            goto wait_threads;
-                        }
-                    }
-                    ++threads_active_count;
-                    if (!handle->active) {
-                        handle->archive_handle = archive_handle;
-                        handle->checkout_handle = checkout_handle;
-                        handle->arg.repo = repo;
-                        handle->arg.parsed_commit = parsed_commit;
-                        r = pthread_create(&handle->thread, NULL,
-                                export_commit_write_and_finish_thread,
-                                &handle->arg);
-                        if (r) {
-                            pr_error("Failed to create thread to export commit "
-                                    "%s, pthread return %d\n",
-                                    parsed_commit->id_hex_string, r);
-                            goto wait_threads;
-                        }
-                        handle->active = true;
-                        thread_added = true;
-                        break;
-                    }
-                }
-                if (thread_added) break;
-                usleep(100);
+            struct parsed_commit const *const restrict commit = 
+                repo->parsed_commits + j;
+            if (commit->archive || commit->checkout) {
+                struct commit_with_repo *commit_with_repo = 
+                    commits_with_repos + commit_id++;
+                commit_with_repo->commit = commit;
+                commit_with_repo->repo = repo;
             }
         }
     }
+    unsigned long commits_count = commit_id;
+    int r = -1;
+    // This shouldn't happen
+    if (commits_count > commits_allocated) {
+        pr_error("Commits count overflow, %lu > %lu\n", commits_count, 
+                                                    commits_allocated);
+        goto free_commits;
+    }
+    commit_with_repo_list_quick_sort(commits_with_repos, 0, commits_count - 1);
+    commit_id = 0;
+    git_oid *commit_id_last_unique = &commits_with_repos[0].commit->id;
+    for (unsigned long i = 1; i < commits_count; ++i) {
+        // struct parsed_commit 
+        r = git_oid_cmp(commit_id_last_unique, 
+                        &commits_with_repos[i].commit->id);
+        if (r > 0) {
+            pr_error("Descending commits in commits list which should be "
+                        "ascending\n");
+            r = -1;
+            goto free_commits;
+        } else if (r < 0) {
+            commit_id_last_unique = &commits_with_repos[commit_id++].commit->id;
+        } else { // Same, remove dup
+            struct parsed_commit *const restrict commit_unique = 
+                commits_with_repos[commit_id].commit;
+            struct parsed_commit *const restrict commit_duplicated = 
+                commits_with_repos[i].commit;
+            if (commit_duplicated->archive) commit_unique->archive = true;
+            // else if (commit_unique->archive) 
+            //     commit_duplicated->archive = true;
+            if (commit_duplicated->checkout) commit_unique->checkout = true;
+            // else if (commit_unique->checkout) 
+            //     commit_duplicated->checkout = true;
+        }
+    }
+    commits_count = commit_id + 1;
+    struct commit_with_repo *commits_with_repos_new = 
+        realloc(commits_with_repos, 
+                sizeof *commits_with_repos_new * commits_count);
+    if (commits_with_repos_new) {
+        commits_with_repos = commits_with_repos_new;
+    } else {
+        pr_warn("Failed to release memory occupied by duplicated commits\n");
+    }
+    commit_id = 0;
+    // unsigned long const commits_unique = commit_id + 1;
+    // pr_info("Exporting %lu commtis with");
+
     r = 0;
-wait_threads:
-    if (r) pr_warn("Waiting for all exporting work threads to end...\n");
-    for (unsigned short i = 0; i < config->export_threads; ++i) {
-        struct thread_handle *handle = handles + i;
-        if (handle->active) {
-            int r2 = pthread_join(handle->thread, (void **)&thread_ret);
-            if (r2) {
-                pr_error("Failed to join thread %ld for exporting commit %s , "
-                            "pthread return %d\n", handle->thread,
-                                handle->arg.parsed_commit->id_hex_string, r);
-                r = -1;
-            }
-            handle->active = false;
-            if (thread_ret) {
-                pr_error(
-                    "Thread %ld for exporting commit %s returned with %ld\n",
-                    handle->thread, handle->arg.parsed_commit->id_hex_string,
-                    thread_ret);
-                r = -1;
-            }
-        }
-    }
-    free(handles);
+free_commits:
+    free(commits_with_repos);
     return r;
+    
+//     struct thread_handle {
+//         pthread_t thread;
+//         struct export_handle archive_handle;
+//         struct export_handle checkout_handle;
+//         struct export_commit_write_and_finish_arg arg;
+//         bool active;
+//     };
+//     struct thread_handle *handles = calloc(
+//         config->export_threads, sizeof *handles);
+//     if (handles == NULL) {
+//         pr_error_with_errno("Failed to allocate memory for handles");
+//         return -1;
+//     }
+
+
+
+//     int r = -1;
+//     long thread_ret;
+//     for (unsigned short i = 0; i < config->export_threads; ++i) {
+//         struct export_commit_write_and_finish_arg *arg = &(handles + i)->arg;
+//         arg->config = config;
+//         arg->dirfd_archives = workdir_archives->dirfd;
+//         arg->dirfd_checkouts = workdir_checkouts->dirfd;
+//         arg->archive_handle = &handles[i].archive_handle;
+//         arg->checkout_handle = &handles[i].checkout_handle;
+//     }
+//     for (unsigned long i = 0; i < config->repos_count; ++i) {
+//         struct repo const *const restrict repo = config->repos + i;
+//         for (unsigned long j = 0; j < repo->parsed_commits_count; ++j) {
+//             struct parsed_commit const *const restrict parsed_commit =
+//                                     repo->parsed_commits + j;
+//             if (parsed_commit->archive || parsed_commit->checkout);
+//             else continue;
+//             struct export_handle archive_handle = {
+//                 .should_export = parsed_commit->archive};
+//             struct export_handle checkout_handle = {
+//                 .should_export = parsed_commit->checkout};
+//             if (export_commit_prepare(config, parsed_commit,
+//                             &archive_handle, workdir_archives,
+//                             &checkout_handle, workdir_checkouts)) {
+//                 pr_error("Failed to prepare to export commit '%s'\n",
+//                             parsed_commit->id_hex_string);
+//                 goto wait_threads;
+//             }
+//             if (archive_handle.should_export || checkout_handle.should_export);
+//             else continue;
+//             bool thread_added = false;
+//             for (;;) {
+//                 unsigned short threads_active_count = 0;
+//                 for (unsigned short k = 0; k < config->export_threads; ++k) {
+//                     struct thread_handle *handle = handles + k;
+//                     if (handle->active) {
+//                         r = pthread_tryjoin_np(handle->thread, (
+//                                                 void **)&thread_ret);
+//                         switch (r) {
+//                         case 0:
+//                             handle->active = false;
+//                             if (thread_ret) {
+//                                 pr_error(
+//                                     "Thread %ld for exporting commit %s return"
+//                                     "with %ld", handle->thread,
+//                                                 parsed_commit->id_hex_string,
+//                                                 thread_ret);
+//                                 goto wait_threads;
+//                             }
+//                             break;
+//                         case EBUSY:
+//                             break;
+//                         default:
+//                             pr_error("Failed to nonblocking wait for thread %ld"
+//                             " for exporting commit %s, pthread return %d\n",
+//                             handle->thread, parsed_commit->id_hex_string, r);
+//                             goto wait_threads;
+//                         }
+//                     }
+//                     ++threads_active_count;
+//                     if (!handle->active) {
+//                         handle->archive_handle = archive_handle;
+//                         handle->checkout_handle = checkout_handle;
+//                         handle->arg.repo = repo;
+//                         handle->arg.parsed_commit = parsed_commit;
+//                         r = pthread_create(&handle->thread, NULL,
+//                                 export_commit_write_and_finish_thread,
+//                                 &handle->arg);
+//                         if (r) {
+//                             pr_error("Failed to create thread to export commit "
+//                                     "%s, pthread return %d\n",
+//                                     parsed_commit->id_hex_string, r);
+//                             goto wait_threads;
+//                         }
+//                         handle->active = true;
+//                         thread_added = true;
+//                         break;
+//                     }
+//                 }
+//                 if (thread_added) break;
+//                 usleep(100);
+//             }
+//         }
+//     }
+//     r = 0;
+// wait_threads:
+//     if (r) pr_warn("Waiting for all exporting work threads to end...\n");
+//     for (unsigned short i = 0; i < config->export_threads; ++i) {
+//         struct thread_handle *handle = handles + i;
+//         if (handle->active) {
+//             int r2 = pthread_join(handle->thread, (void **)&thread_ret);
+//             if (r2) {
+//                 pr_error("Failed to join thread %ld for exporting commit %s , "
+//                             "pthread return %d\n", handle->thread,
+//                                 handle->arg.parsed_commit->id_hex_string, r);
+//                 r = -1;
+//             }
+//             handle->active = false;
+//             if (thread_ret) {
+//                 pr_error(
+//                     "Thread %ld for exporting commit %s returned with %ld\n",
+//                     handle->thread, handle->arg.parsed_commit->id_hex_string,
+//                     thread_ret);
+//                 r = -1;
+//             }
+//         }
+//     }
+//     free(handles);
+//     return r;
 }
 
 int export_all_repos_multi_threaded(
