@@ -5090,7 +5090,7 @@ int mirror_repo(
             updated = repo->updated;
         }
     }
-    pr_info("Finished mirroring repo '%s'\n", repo->url);
+    pr_info("Repo mirrored and robust: '%s'\n", repo->url);
     return 0;
 }
 
