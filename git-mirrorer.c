@@ -7148,6 +7148,12 @@ wait_symlink_thread:
                 symlinks_thread, thread_ret);
         r = -1;
     }
+    if (r) {
+        pr_warn("Failed to export all repos, but commits already exported "
+            "should not be affected");
+    } else {
+        pr_info("Exported all repos");
+    }
     return r;
 }
 
