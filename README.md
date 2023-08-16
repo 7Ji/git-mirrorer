@@ -48,7 +48,7 @@ Controls whether `git-mirrorer` runs in **daemon mode** (if set to `yes`) or **o
 The interval (in second) `git-mirrorer` should sleep between each work cycle, default is 60 (i.e. 1 min).
 
 #### Config watch
-Exclusive to daemon mode, if you define the config on command-line with `--config [file]` argument, `git-mirrorer` will watch on any update on the config file, and re-read the config at the end of each work cycle. 
+Exclusive to daemon mode, if you define the config on command-line with `--config [file]` argument, `git-mirrorer` will watch on any update on the config file, and re-read the config if needed at the end of each work cycle. 
 
 You don't need to worry about a bad config update breaking the program, as `git-mirrorer` will only switch to the new config if it is valid.
 
@@ -239,7 +239,7 @@ checkouts/
 
 Likewise, the folder `checkouts/26ff2147197352b571c394404de2be1a65d0cf9b` would also contain all of the content existing at `yuzu.git`'s that commit, **including submodules**. 
 
-In both cases the submodules are stored as if they're plain folders in the parent git tree, which is not supported by `git`'s own archiving functionality, or platforms like Github, Gitlab, etc. E.g.
+In both cases the submodules are stored as if they're plain folders in the parent git tree, e.g.
 ```
 > ls checkouts/26ff2147197352b571c394404de2be1a65d0cf9b/externals/cubeb/cmake/sanitizers-cmake/
 cmake/  CMakeLists.txt  LICENSE  README.md  tests/
