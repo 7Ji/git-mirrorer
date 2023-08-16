@@ -4685,29 +4685,31 @@ int repo_parse_wanted_all_branches(
     pr_info(
         "Looping through all branches to create "
         "individual wanted references\n");
+    pr_info("All branches:");
     while ((r = git_branch_next(
         &reference, &branch_t, branch_iterator)) == GIT_OK) {
         char const *const reference_name = git_reference_name(reference);
-        pr_info("Found branch '%s'\n", reference_name);
+        printf(" '%s'", reference_name);
         if (branch_t != GIT_BRANCH_LOCAL) {
-            pr_error("Found branch is not a local branch\n");
+            pr_error("\nFound branch is not a local branch\n");
             r = -1;
             goto free_reference;
         }
         if (strncmp(reference_name, "refs/", 5)) {
-            pr_error("Reference does not start with 'refs/'\n");
+            pr_error("\nReference does not start with 'refs/'\n");
             r = -1;
             goto free_reference;
         }
         if (repo_add_wanted_reference(repo, reference_name,
             wanted_all_branches->archive, wanted_all_branches->checkout)) {
-            pr_error("Failed to add branch reference '%s' as wannted to "
+            pr_error("\nFailed to add branch reference '%s' as wannted to "
             "repo '%s'\n", reference_name, repo->url);
             r = -1;
             goto free_reference;
         }
         git_reference_free(reference);
     }
+    printf("\n");
     reference = NULL;
     switch (r) {
     case GIT_OK:
