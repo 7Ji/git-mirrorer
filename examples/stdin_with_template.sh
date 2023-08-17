@@ -14,10 +14,6 @@ archive:
   suffix: .tar.zst
   pipe_through: zstd -22 --ultra
   github_like_prefix: yes
-cleanup:
-  repos: yes
-  archives: yes
-  checkouts: yes
 '
 
 if [[ $# -lt 4 ]]; then
