@@ -10,7 +10,7 @@ CFLAGS += -O3
 endif
 
 ifndef VERSION
-VERSION=$(shell ./version.sh)
+VERSION=$(shell ./scripts/version.sh)
 endif
 
 ifdef BUILD_DEPS
@@ -78,7 +78,7 @@ mkdirs:
 	mkdir -p lib
 
 prepare_deps: 
-	./prepare_deps.sh
+	./scripts/prepare_deps.sh
 
 ifdef BUILD_DEPS
 CFLAGS += -I${GIT2_DIR}/include -I${XXHASH_DIR} -I${YAML_DIR}/include
