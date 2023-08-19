@@ -17,6 +17,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
 #define _GNU_SOURCE
+
+/* C */
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -24,35 +26,26 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #include <errno.h>
 #include <assert.h>
 
+/* POSIX */
 #include <unistd.h>
 #include <pthread.h>
 #include <signal.h>
+#include <getopt.h>
+#include <dirent.h>
 
+/* LINUX */
 #include <fcntl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
-
 #include <linux/limits.h>
 
-#include <getopt.h>
-#include <dirent.h>
-
+/* EXTERNAL */
 #include <xxh3.h>
 #include <git2.h>
 #include <yaml.h>
 
-#define DIR_REPOS   "repos"
-#define DIR_ARCHIVES    "archives"
-#define DIR_CHECKOUTS   "checkouts"
-
-#define MIRROR_REMOTE "origin"
-#define MIRROR_FETCHSPEC "+refs/*:refs/*"
-#define MIRROR_CONFIG "remote."MIRROR_REMOTE".mirror"
-
-#define ALLOC_BASE 10
-#define ALLOC_MULTIPLY 2
-
+/* Print formatters */
 #define pr_error_file(file, format, arg...) \
     fprintf(file, "[ERROR] %s:%d: "format, __FUNCTION__, __LINE__, ##arg)
 
@@ -81,133 +74,11 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #ifdef DEBUGGING
 #define pr_debug(format, arg...) \
     printf("[DEBUG] %s:%d: "format, __FUNCTION__, __LINE__, ##arg)
-#else
+#else /* no-op debugging print */
 #define pr_debug(format, arg...)
 #endif
 
-#ifndef VERSION
-#define VERSION "unknown"
-#endif
-
-#define TAR_POSIX_HEADER_MTIME_LEN 12
-#define TAR_POSIX_HEADER_NAME_LEN 100
-
-#define TAR_POSIX_HEADER_DECLARE {/* byte offset */\
-    char name[100];               /*   0 */\
-    char mode[8];                 /* 100 octal mode string %07o */\
-    char uid[8];                  /* 108 octal uid string %07o */\
-    char gid[8];                  /* 116 octal gid string %07o */\
-    char size[12];                /* 124 octal size %011o */\
-    char mtime[12];               /* 136 octal mtime string %011o */\
-    char chksum[8];               /* 148 octal checksum string %06o + space */\
-    char typeflag;                /* 156 either TAR_{REG,LINK,DIR}TYPE */\
-    char linkname[100];           /* 157 symlink target */\
-    char magic[6];                /* 257 ustar\0 */\
-    char version[2];              /* 263 \0 0*/\
-    char uname[32];               /* 265 uname + padding \0 */\
-    char gname[32];               /* 297 gname + padding \0 */\
-    char devmajor[8];             /* 329 all 0 */\
-    char devminor[8];             /* 337 all 0 */\
-    char prefix[155];             /* 345 all 0 */\
-                                  /* 500 */\
-}
-
-struct tar_posix_header TAR_POSIX_HEADER_DECLARE;
-
-struct tar_posix_header_512_block {
-    union {
-        struct tar_posix_header header;
-        struct TAR_POSIX_HEADER_DECLARE;
-    };
-    unsigned char padding[12];
-};
-
-unsigned char const EMPTY_512_BLOCK[512] = {0};
-
-#define TAR_POSIX_MAGIC   "ustar"        /* ustar and a null */
-#define TAR_POSIX_VERSION "00"           /* 00 and no null */
-#define TAR_GNU_MAGIC     "ustar "
-#define TAR_GNU_VERSION   " "
-#define TAR_MAGIC TAR_GNU_MAGIC
-#define TAR_VERSION TAR_GNU_VERSION
-// Basically, posix is "ustar\000", gnu is "ustar  \0"
-
-/* Values used in typeflag field.  */
-#define TAR_REGTYPE  '0'            /* regular file */
-#define TAR_LNKTYPE  '1'            /* link */
-#define TAR_SYMTYPE  '2'
-#define TAR_DIRTYPE  '5'            /* directory */
-#define PAX_TAR_GLOBAL_HEADER_TYPE 'g'
-
-#define GNUTAR_LONGLINK 'K'
-#define GNUTAR_LONGNAME 'L'
-
-#define TAR_LONGLINK_TYPE GNUTAR_LONGLINK
-#define TAR_LONGNAME_TYPE GNUTAR_LONGNAME
-#define TAR_GLOBAL_HEADER_TYPE    PAX_TAR_GLOBAL_HEADER_TYPE
-
-#define GNUTAR_LONGLINK_NAME    "././@LongLink"
-
-#define PAXTAR_GLOBAL_HEADER_NAME "pax_global_header"
-
-#define TAR_MODE(X)     "0000" #X
-#define TAR_MODE_644    TAR_MODE(644)
-#define TAR_MODE_755    TAR_MODE(755)
-#define TAR_MODE_777    TAR_MODE(777)
-#define TAR_HEADER_7_BYTE_0 "0000000"
-#define TAR_UID_ROOT    TAR_HEADER_7_BYTE_0
-#define TAR_GID_ROOT    TAR_HEADER_7_BYTE_0
-#define TAR_HEADER_11_BYTE_0 "00000000000"
-#define TAR_SIZE_0      TAR_HEADER_11_BYTE_0
-#define TAR_MTIME_0     TAR_HEADER_11_BYTE_0
-#define TAR_CHECKSUM_BLANK  "      "
-#define TAR_DEVMAJOR    TAR_HEADER_7_BYTE_0
-#define TAR_DEVMINOR    TAR_HEADER_7_BYTE_0
-
-#define TAR_INIT(NAME, MODE, TYPEFLAG) {\
-    .name = NAME, \
-    .mode = TAR_MODE(MODE), \
-    .uid = TAR_UID_ROOT, \
-    .gid = TAR_GID_ROOT, \
-    .size = TAR_SIZE_0, \
-    .mtime = TAR_MTIME_0, \
-    .chksum = TAR_CHECKSUM_BLANK, \
-    .typeflag = TYPEFLAG, \
-    .linkname = "", \
-    .magic = TAR_MAGIC, \
-    .version =  TAR_VERSION, \
-    .uname = "root", \
-    .gname = "root", \
-    .devmajor = "", \
-    .devminor = "", \
-    .prefix = "" \
-}
-
-#define TAR_POSIX_INIT(MODE, TYPEFLAG) TAR_INIT("", MODE, TYPEFLAG)
-
-struct tar_posix_header const TAR_POSIX_HEADER_FILE_REG_INIT =
-    TAR_POSIX_INIT(644, TAR_REGTYPE);
-
-struct tar_posix_header const TAR_POSIX_HEADER_FILE_EXE_INIT =
-    TAR_POSIX_INIT(755, TAR_REGTYPE);
-
-struct tar_posix_header const TAR_POSIX_HEADER_SYMLINK_INIT =
-    TAR_POSIX_INIT(777, TAR_SYMTYPE);
-
-struct tar_posix_header const TAR_POSIX_HEADER_FOLDER_INIT =
-    TAR_POSIX_INIT(755, TAR_DIRTYPE);
-
-struct tar_posix_header const TAR_POSIX_HEADER_GNU_LONGLINK_INIT =
-    TAR_INIT(GNUTAR_LONGLINK_NAME, 644, TAR_LONGLINK_TYPE);
-
-struct tar_posix_header const TAR_POSIX_HEADER_GNU_LONGNAME_INIT =
-    TAR_INIT(GNUTAR_LONGLINK_NAME, 644, TAR_LONGNAME_TYPE);
-
-struct tar_posix_header const TAR_POSIX_HEADER_PAX_GLOBAL_HEADER_INIT =
-    TAR_INIT(PAXTAR_GLOBAL_HEADER_NAME, 666, TAR_GLOBAL_HEADER_TYPE);
-
-// struct tar_posix_header const TAR_POSIX_HEADER_LONGLINK
-
+/* Wanted objects */
 enum wanted_type {
     WANTED_TYPE_UNKNOWN,
     WANTED_TYPE_ALL_BRANCHES,
@@ -250,13 +121,25 @@ struct wanted_base const WANTED_ALL_BRANCHES_INIT = {
 struct wanted_base const WANTED_ALL_TAGS_INIT = {
     .type = WANTED_TYPE_ALL_TAGS };
 
+#define COMMIT_ID_DECLARE { \
+    git_oid oid; \
+    char hex_string[GIT_OID_MAX_HEXSIZE + 1]; \
+}
+
+struct commit_id COMMIT_ID_DECLARE;
+
+#define COMMIT_ID_UNION_DECLARE \
+    union { \
+        struct commit_id id; \
+        struct COMMIT_ID_DECLARE; \
+    }
+
 #define WANTED_COMMIT_DECLARE { \
     union { \
         struct wanted_base base; \
         struct WANTED_BASE_DECLARE; \
     }; \
-    git_oid id; \
-    char id_hex_string[GIT_OID_MAX_HEXSIZE + 1]; \
+    COMMIT_ID_UNION_DECLARE; \
     unsigned long parsed_commit_id; \
 }
 
@@ -444,6 +327,140 @@ struct config const CONFIG_INIT = {
     .clean_links_pass = 1,
     .daemon_interval = 60,
 };
+
+#define DIR_REPOS   "repos"
+#define DIR_ARCHIVES    "archives"
+#define DIR_CHECKOUTS   "checkouts"
+
+#define MIRROR_REMOTE "origin"
+#define MIRROR_FETCHSPEC "+refs/*:refs/*"
+#define MIRROR_CONFIG "remote."MIRROR_REMOTE".mirror"
+
+#define ALLOC_BASE 10
+#define ALLOC_MULTIPLY 2
+
+#ifndef VERSION
+#define VERSION "unknown"
+#endif
+
+#define TAR_POSIX_HEADER_MTIME_LEN 12
+#define TAR_POSIX_HEADER_NAME_LEN 100
+
+#define TAR_POSIX_HEADER_DECLARE {/* byte offset */\
+    char name[100];               /*   0 */\
+    char mode[8];                 /* 100 octal mode string %07o */\
+    char uid[8];                  /* 108 octal uid string %07o */\
+    char gid[8];                  /* 116 octal gid string %07o */\
+    char size[12];                /* 124 octal size %011o */\
+    char mtime[12];               /* 136 octal mtime string %011o */\
+    char chksum[8];               /* 148 octal checksum string %06o + space */\
+    char typeflag;                /* 156 either TAR_{REG,LINK,DIR}TYPE */\
+    char linkname[100];           /* 157 symlink target */\
+    char magic[6];                /* 257 ustar\0 */\
+    char version[2];              /* 263 \0 0*/\
+    char uname[32];               /* 265 uname + padding \0 */\
+    char gname[32];               /* 297 gname + padding \0 */\
+    char devmajor[8];             /* 329 all 0 */\
+    char devminor[8];             /* 337 all 0 */\
+    char prefix[155];             /* 345 all 0 */\
+                                  /* 500 */\
+}
+
+struct tar_posix_header TAR_POSIX_HEADER_DECLARE;
+
+struct tar_posix_header_512_block {
+    union {
+        struct tar_posix_header header;
+        struct TAR_POSIX_HEADER_DECLARE;
+    };
+    unsigned char padding[12];
+};
+
+unsigned char const EMPTY_512_BLOCK[512] = {0};
+
+#define TAR_POSIX_MAGIC   "ustar"        /* ustar and a null */
+#define TAR_POSIX_VERSION "00"           /* 00 and no null */
+#define TAR_GNU_MAGIC     "ustar "
+#define TAR_GNU_VERSION   " "
+#define TAR_MAGIC TAR_GNU_MAGIC
+#define TAR_VERSION TAR_GNU_VERSION
+// Basically, posix is "ustar\000", gnu is "ustar  \0"
+
+/* Values used in typeflag field.  */
+#define TAR_REGTYPE  '0'            /* regular file */
+#define TAR_LNKTYPE  '1'            /* link */
+#define TAR_SYMTYPE  '2'
+#define TAR_DIRTYPE  '5'            /* directory */
+#define PAX_TAR_GLOBAL_HEADER_TYPE 'g'
+
+#define GNUTAR_LONGLINK 'K'
+#define GNUTAR_LONGNAME 'L'
+
+#define TAR_LONGLINK_TYPE GNUTAR_LONGLINK
+#define TAR_LONGNAME_TYPE GNUTAR_LONGNAME
+#define TAR_GLOBAL_HEADER_TYPE    PAX_TAR_GLOBAL_HEADER_TYPE
+
+#define GNUTAR_LONGLINK_NAME    "././@LongLink"
+
+#define PAXTAR_GLOBAL_HEADER_NAME "pax_global_header"
+
+#define TAR_MODE(X)     "0000" #X
+#define TAR_MODE_644    TAR_MODE(644)
+#define TAR_MODE_755    TAR_MODE(755)
+#define TAR_MODE_777    TAR_MODE(777)
+#define TAR_HEADER_7_BYTE_0 "0000000"
+#define TAR_UID_ROOT    TAR_HEADER_7_BYTE_0
+#define TAR_GID_ROOT    TAR_HEADER_7_BYTE_0
+#define TAR_HEADER_11_BYTE_0 "00000000000"
+#define TAR_SIZE_0      TAR_HEADER_11_BYTE_0
+#define TAR_MTIME_0     TAR_HEADER_11_BYTE_0
+#define TAR_CHECKSUM_BLANK  "      "
+#define TAR_DEVMAJOR    TAR_HEADER_7_BYTE_0
+#define TAR_DEVMINOR    TAR_HEADER_7_BYTE_0
+
+#define TAR_INIT(NAME, MODE, TYPEFLAG) {\
+    .name = NAME, \
+    .mode = TAR_MODE(MODE), \
+    .uid = TAR_UID_ROOT, \
+    .gid = TAR_GID_ROOT, \
+    .size = TAR_SIZE_0, \
+    .mtime = TAR_MTIME_0, \
+    .chksum = TAR_CHECKSUM_BLANK, \
+    .typeflag = TYPEFLAG, \
+    .linkname = "", \
+    .magic = TAR_MAGIC, \
+    .version =  TAR_VERSION, \
+    .uname = "root", \
+    .gname = "root", \
+    .devmajor = "", \
+    .devminor = "", \
+    .prefix = "" \
+}
+
+#define TAR_POSIX_INIT(MODE, TYPEFLAG) TAR_INIT("", MODE, TYPEFLAG)
+
+struct tar_posix_header const TAR_POSIX_HEADER_FILE_REG_INIT =
+    TAR_POSIX_INIT(644, TAR_REGTYPE);
+
+struct tar_posix_header const TAR_POSIX_HEADER_FILE_EXE_INIT =
+    TAR_POSIX_INIT(755, TAR_REGTYPE);
+
+struct tar_posix_header const TAR_POSIX_HEADER_SYMLINK_INIT =
+    TAR_POSIX_INIT(777, TAR_SYMTYPE);
+
+struct tar_posix_header const TAR_POSIX_HEADER_FOLDER_INIT =
+    TAR_POSIX_INIT(755, TAR_DIRTYPE);
+
+struct tar_posix_header const TAR_POSIX_HEADER_GNU_LONGLINK_INIT =
+    TAR_INIT(GNUTAR_LONGLINK_NAME, 644, TAR_LONGLINK_TYPE);
+
+struct tar_posix_header const TAR_POSIX_HEADER_GNU_LONGNAME_INIT =
+    TAR_INIT(GNUTAR_LONGLINK_NAME, 644, TAR_LONGNAME_TYPE);
+
+struct tar_posix_header const TAR_POSIX_HEADER_PAX_GLOBAL_HEADER_INIT =
+    TAR_INIT(PAXTAR_GLOBAL_HEADER_NAME, 666, TAR_GLOBAL_HEADER_TYPE);
+
+// struct tar_posix_header const TAR_POSIX_HEADER_LONGLINK
 
 char const *yaml_event_type_strings[] = {
     "no",
@@ -1414,15 +1431,15 @@ int wanted_object_fill_type_from_string(
 int wanted_object_complete_commit(
     struct wanted_commit *wanted_object
 ) {
-    if (git_oid_fromstr(&wanted_object->id, wanted_object->name)) {
+    if (git_oid_fromstr(&wanted_object->oid, wanted_object->name)) {
         pr_error("Failed to resolve '%s' to a git object id\n",
             wanted_object->name);
         return -1;
     }
     if (git_oid_tostr(
-            wanted_object->id_hex_string,
-            sizeof wanted_object->id_hex_string,
-            &wanted_object->id
+            wanted_object->hex_string,
+            sizeof wanted_object->hex_string,
+            &wanted_object->oid
         )[0] == '\0') {
         pr_error("Failed to format git oid hex string\n");
         return -1;
@@ -1799,7 +1816,7 @@ int wanted_object_guarantee_symlinks(
     // The commit hash one
     char symlink_path[PATH_MAX] = "";
     char *symlink_path_current =
-        stpcpy(symlink_path, wanted_object->id_hex_string);
+        stpcpy(symlink_path, wanted_object->hex_string);
     // unsigned short len_symlink_path = HASH_STRING_LEN;
     char symlink_target[PATH_MAX] = "";
     char *symlink_target_current = symlink_target;
@@ -1807,7 +1824,7 @@ int wanted_object_guarantee_symlinks(
         symlink_target_current = stpcpy(symlink_target_current, "../");
     }
     symlink_target_current = stpcpy(symlink_target_current,
-                                    wanted_object->id_hex_string);
+                                    wanted_object->hex_string);
     if (checkout && guarantee_symlink_at(
         checkouts_repo_links_dirfd,
         symlink_path, HASH_STRING_LEN,
@@ -1844,7 +1861,7 @@ int wanted_object_guarantee_symlinks(
         }
         symlink_target_current = stpcpy(
             symlink_target_current,
-            wanted_object->id_hex_string);
+            wanted_object->hex_string);
         if (checkout && guarantee_symlink_at(
             checkouts_repo_links_dirfd,
             symlink_path, len_symlink_path,
@@ -2735,7 +2752,7 @@ void print_config_repo_wanted(
             if (wanted_object->commit_resolved) {
                 printf(
                     "|            commit: %s\n",
-                    wanted_object->commit.id_hex_string);
+                    wanted_object->commit.hex_string);
             }
             __attribute__((fallthrough));
         case WANTED_TYPE_COMMIT:
@@ -4378,12 +4395,12 @@ int repo_parse_wanted_commit(
     struct wanted_commit *const restrict wanted_commit
 ) {
     for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
-        if (!git_oid_cmp(&repo->parsed_commits[i].id, &wanted_commit->id)) {
+        if (!git_oid_cmp(&repo->parsed_commits[i].id, &wanted_commit->oid)) {
             wanted_commit->parsed_commit_id = i;
             goto sync_export_setting;
         }
     }
-    if (repo_add_parsed_commit(repo, &wanted_commit->id)) {
+    if (repo_add_parsed_commit(repo, &wanted_commit->oid)) {
         pr_error("Failed to add parsed commit\n");
         return -1;
     }
@@ -4433,11 +4450,11 @@ int repo_parse_wanted_reference_common(
     }
     git_commit *commit = (git_commit *)object;
     wanted_reference->commit_resolved = true;
-    wanted_reference->commit.id = *git_commit_id(commit);
+    wanted_reference->commit.oid = *git_commit_id(commit);
     if (git_oid_tostr(
-            wanted_reference->commit.id_hex_string,
-            sizeof wanted_reference->commit.id_hex_string,
-            &wanted_reference->commit.id
+            wanted_reference->commit.hex_string,
+            sizeof wanted_reference->commit.hex_string,
+            &wanted_reference->commit.oid
         )[0] == '\0') {
         pr_error("Failed to format git oid hex string\n");
         git_object_free(object);
@@ -4446,7 +4463,7 @@ int repo_parse_wanted_reference_common(
     git_object_free(object);
     pr_info("Reference resolved: '%s': '%s' => %s\n",
         repo->url, wanted_reference->name,
-        wanted_reference->commit.id_hex_string);
+        wanted_reference->commit.hex_string);
     return repo_parse_wanted_commit(repo,
                                 (struct wanted_commit *)wanted_reference);
 }
@@ -4998,7 +5015,7 @@ int mirror_repo(
                     (struct wanted_commit *)wanted_object)) {
                     pr_error(
                         "Failed to parse wanted commit %s for repo '%s'\n",
-                        wanted_object->id_hex_string, repo->url);
+                        wanted_object->hex_string, repo->url);
                     return -1;
                 }
                 break;
@@ -6777,7 +6794,7 @@ int export_wanted_object_with_symlinks_atomic_optional(
     case WANTED_TYPE_COMMIT: {
         if (wanted_object->parsed_commit_id == (unsigned long) -1) {
             pr_error("Commit %s is not parsed yet\n",
-                wanted_object->id_hex_string);
+                wanted_object->hex_string);
             return -1;
         }
         if (export_commit_single_threaded(config, repo,
@@ -6785,7 +6802,7 @@ int export_wanted_object_with_symlinks_atomic_optional(
             wanted_object->archive, workdir_archives,
             wanted_object->checkout, workdir_checkouts)) {
             pr_error("Failed to export commit %s of repo '%s'\n",
-                wanted_object->id_hex_string, repo->url);
+                wanted_object->hex_string, repo->url);
             return -1;
         }
         break;
@@ -7540,8 +7557,8 @@ int work_daemon(
                 case WANTED_TYPE_HEAD:
                     wanted_object->commit_resolved = false;
                     wanted_object->parsed_commit_id = (unsigned long) -1;
-                    wanted_object->id_hex_string[0] = '\0';
-                    memset(wanted_object->id.id, 0, sizeof wanted_object->id.id);
+                    wanted_object->hex_string[0] = '\0';
+                    memset(&wanted_object->oid, 0, sizeof wanted_object->oid);
                     __attribute__((fallthrough));
                 case WANTED_TYPE_ALL_BRANCHES:
                 case WANTED_TYPE_ALL_TAGS:
