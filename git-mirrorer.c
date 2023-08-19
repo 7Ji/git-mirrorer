@@ -284,7 +284,7 @@ struct repo_work {
 #define ARCHIVE_PIPE_ARGS_MAX_COUNT 64
 
 struct config {
-    DYNAMIC_ARRAY_DECLARE_SAME(repo);
+    DYNAMIC_ARRAY_DECLARE(struct repo_config, repo);
     DYNAMIC_ARRAY_DECLARE(struct wanted_base, empty_wanted_object);
     DYNAMIC_ARRAY_DECLARE(struct wanted_base, always_wanted_object);
     STRING_DECLARE(proxy_url, PATH_MAX);
@@ -1173,6 +1173,12 @@ int yamlconf_parse_archive_pipe_list(
     return 0;
 }
 
+#define YAMLCONF_PARSE_WANTED_LIST_ASSIGN(PREFIX) \
+    wanted_objects = &PREFIX##wanted_objects; \
+    count = &PREFIX##wanted_objects_count; \
+    alloc = &PREFIX##wanted_objects_allocated
+
+
 static inline
 int yamlconf_parse_wanted_list(
     struct config *const restrict config,
@@ -1182,37 +1188,33 @@ int yamlconf_parse_wanted_list(
     char const *const name = (char const *)event->data.scalar.value;
     unsigned short const len_name = event->data.scalar.length;
     int r = -1;
+    struct wanted_base **wanted_objects = NULL;
+    unsigned long *count = NULL, *alloc = NULL;
     switch (handle->wanted_type) {
     case YAMLCONF_WANTED_UNKNOWN:
         pr_error("Wanted type unknown\n");
         return -1;
     case YAMLCONF_WANTED_GLOBAL_EMPTY:
-        r =
-        config_add_empty_wanted_object_and_init_with_name_and_complete(
-            config, name, len_name);
+        YAMLCONF_PARSE_WANTED_LIST_ASSIGN(config->empty_);
         break;
     case YAMLCONF_WANTED_GLOBAL_ALWAYS:
-        r =
-        config_add_always_wanted_object_and_init_with_name_and_complete(
-            config, name, len_name);
+        YAMLCONF_PARSE_WANTED_LIST_ASSIGN(config->always_);
         break;
     case YAMLCONF_WANTED_REPO:
-        r = repo_add_wanted_object_and_init_with_name_and_complete(
-            get_last(config->repos), name, len_name);
+        YAMLCONF_PARSE_WANTED_LIST_ASSIGN((get_last(config->repos))->);
         break;
     }
+    if (dynamic_array_add(wanted_objects, sizeof **wanted_objects, 
+                        count, alloc)) {
+        pr_error("Failed to add wanted object to array");
+        return -1;
+    }
+    struct wanted_base *wanted_object_last = *wanted_objects + *count - 1;
     if (r) {
         pr_error("Failed to add wanted object\n");
         return -1;
     }
     return 0;
-}
-
-static inline
-int yamlconf_parse_wanted_list_end(
-
-) {
-
 }
 
 #define YAMLCONF_EVENT_TO_STATUS(EVENT_NAME, STATUS_NAME) \
@@ -2438,57 +2440,57 @@ int wanted_object_init_with_name_and_type_and_complete(
     return 0;
 }
 
-#define declare_func_add_wanted_object_and_init_with_name_no_complete(\
-    PARENT, CHILDPREFIX...) \
-int PARENT##_add_##CHILDPREFIX##wanted_object_and_init_with_name_no_complete( \
-    struct PARENT *const restrict PARENT, \
-    char const *const restrict name, \
-    unsigned short len_name \
-) { \
-    if (PARENT##_add_##CHILDPREFIX##wanted_object_no_init(PARENT)) { \
-        pr_error("Failed to add wanted object\n"); \
-        return -1; \
-    } \
-    wanted_object_init_with_name(\
-        get_last(PARENT->CHILDPREFIX##wanted_objects), \
-        name, len_name); \
-    return 0; \
-}
+// #define declare_func_add_wanted_object_and_init_with_name_no_complete(\
+//     PARENT, CHILDPREFIX...) \
+// int PARENT##_add_##CHILDPREFIX##wanted_object_and_init_with_name_no_complete( \
+//     struct PARENT *const restrict PARENT, \
+//     char const *const restrict name, \
+//     unsigned short len_name \
+// ) { \
+//     if (PARENT##_add_##CHILDPREFIX##wanted_object_no_init(PARENT)) { \
+//         pr_error("Failed to add wanted object\n"); \
+//         return -1; \
+//     } \
+//     wanted_object_init_with_name(\
+//         get_last(PARENT->CHILDPREFIX##wanted_objects), \
+//         name, len_name); \
+//     return 0; \
+// }
 
-#define declare_func_add_wanted_object_and_init_with_name_and_complete(\
-    PARENT, CHILDPREFIX...) \
-int PARENT##_add_##CHILDPREFIX##wanted_object_and_init_with_name_and_complete (\
-    struct PARENT *const restrict PARENT, \
-    char const *const restrict name, \
-    unsigned short len_name \
-) { \
-    enum wanted_type wanted_type = wanted_type_guess_from_name(name, len_name);\
-    if (wanted_type == WANTED_TYPE_UNKNOWN) { \
-        pr_error("Failed to guess object type of '%s'\n", name); \
-        return -1; \
-    } \
-    if (PARENT##_add_##CHILDPREFIX##wanted_object_no_init(PARENT)) { \
-        pr_error("Failed to add wanted object\n"); \
-        return -1; \
-    } \
-    if (wanted_object_init_with_name_and_type_and_complete( \
-        get_last(PARENT->CHILDPREFIX##wanted_objects), \
-        name, len_name, wanted_type)) { \
-        pr_error("Failed to init object with name and complete\n"); \
-        return -1; \
-    } \
-    return 0; \
-}
+// #define declare_func_add_wanted_object_and_init_with_name_and_complete(\
+//     PARENT, CHILDPREFIX...) \
+// int PARENT##_add_##CHILDPREFIX##wanted_object_and_init_with_name_and_complete (\
+//     struct PARENT *const restrict PARENT, \
+//     char const *const restrict name, \
+//     unsigned short len_name \
+// ) { \
+//     enum wanted_type wanted_type = wanted_type_guess_from_name(name, len_name);\
+//     if (wanted_type == WANTED_TYPE_UNKNOWN) { \
+//         pr_error("Failed to guess object type of '%s'\n", name); \
+//         return -1; \
+//     } \
+//     if (PARENT##_add_##CHILDPREFIX##wanted_object_no_init(PARENT)) { \
+//         pr_error("Failed to add wanted object\n"); \
+//         return -1; \
+//     } \
+//     if (wanted_object_init_with_name_and_type_and_complete( \
+//         get_last(PARENT->CHILDPREFIX##wanted_objects), \
+//         name, len_name, wanted_type)) { \
+//         pr_error("Failed to init object with name and complete\n"); \
+//         return -1; \
+//     } \
+//     return 0; \
+// }
 
-#define declare_funcs_add_wanted_object_and_init(PARENT, CHILDPREFIX...) \
-    declare_func_add_wanted_object_and_init_with_name_no_complete( \
-        PARENT, CHILDPREFIX) \
-    declare_func_add_wanted_object_and_init_with_name_and_complete( \
-        PARENT, CHILDPREFIX)
+// #define declare_funcs_add_wanted_object_and_init(PARENT, CHILDPREFIX...) \
+//     declare_func_add_wanted_object_and_init_with_name_no_complete( \
+//         PARENT, CHILDPREFIX) \
+//     declare_func_add_wanted_object_and_init_with_name_and_complete( \
+//         PARENT, CHILDPREFIX)
 
-declare_funcs_add_wanted_object_and_init(repo)
-declare_funcs_add_wanted_object_and_init(config, empty_)
-declare_funcs_add_wanted_object_and_init(config, always_)
+// declare_funcs_add_wanted_object_and_init(repo)
+// declare_funcs_add_wanted_object_and_init(config, empty_)
+// declare_funcs_add_wanted_object_and_init(config, always_)
 
 int opendir_create_if_non_exist_at(
     int const dir_fd,
