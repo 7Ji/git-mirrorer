@@ -38,6 +38,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/user.h>
 #include <linux/limits.h>
 
 /* EXTERNAL */
@@ -46,39 +47,105 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #include <yaml.h>
 
 /* Print formatters */
-#define pr_error_file(file, format, arg...) \
-    fprintf(file, "[ERROR] %s:%d: "format, __FUNCTION__, __LINE__, ##arg)
-
-#define pr_error(format, arg...) \
-    printf("[ERROR] %s:%d: "format, __FUNCTION__, __LINE__, ##arg)
-
-#define pr_error_with_errno_file(file, format, arg...) \
-    pr_error_file(file, format", errno: %d, error: %s\n", \
-        ##arg, errno, strerror(errno))
-
-#define pr_error_with_errno(format, arg...) \
-    pr_error(format", errno: %d, error: %s\n", ##arg, errno, strerror(errno))
-
-#define pr_warn_file(file, format, arg...) \
-    fprintf(file, "[WARN] "format, ##arg)
-
-#define pr_warn(format, arg...) \
-    printf("[WARN] "format, ##arg)
-
-#define pr_info_file(file, format, arg...) \
-    fprintf(file, "[INFO] "format, ##arg)
-
-#define pr_info(format, arg...) \
-    printf("[INFO] "format, ##arg)
+#define pr_with_prefix_and_source(prefix, format, arg...) \
+    printf("["prefix"] %s:%d: "format, __FUNCTION__, __LINE__, ##arg)
+#define pr_with_prefix(prefix, format, arg...) \
+    printf("["prefix"] "format, ##arg)
 
 #ifdef DEBUGGING
 #define pr_debug(format, arg...) \
-    printf("[DEBUG] %s:%d: "format, __FUNCTION__, __LINE__, ##arg)
+    pr_with_prefix_and_source("DEBUG", format, ##arg)
 #else /* no-op debugging print */
 #define pr_debug(format, arg...)
 #endif
+#define pr_info(format, arg...) pr_with_prefix("INFO", format, ##arg)
+#define pr_warn(format, arg...) pr_with_prefix("WARN", format, ##arg)
+#define pr_error(format, arg...)  \
+    pr_with_prefix_and_source("ERROR", format, ##arg)
+#define pr_error_with_errno(format, arg...) \
+    pr_error(format", errno: %d, error: %s\n", ##arg, errno, strerror(errno))
+
+
+#define fpr_with_prefix_and_source(file, prefix, format, arg...) \
+    fprintf(file, "["prefix"] %s:%d: "format, __FUNCTION__, __LINE__, ##arg)
+#define fpr_with_prefix(file, prefix, format, arg...) \
+    fprintf(file, "["prefix"] "format, ##arg)
+
+#define fpr_info(file, format, arg...) \
+    fpr_with_prefix("INFO", format, ##arg)
+#define fpr_warn(file, format, arg...) \
+    fpr_with_prefix("WARN", format, ##arg)
+#define fpr_error(file, format, arg...) \
+    fpr_with_prefix_and_source(file, "ERROR", format, ##arg)
+#define fpr_error_with_errno(file, format, arg...) \
+    fpr_error(file, format", errno: %d, error: %s\n", \
+        ##arg, errno, strerror(errno))
+
+/* String */
+
+#define STRING_DECLARE(NAME, LENGTH) \
+    char NAME[LENGTH]; \
+    unsigned short len_##NAME
+
+/* Dynamic array */
+#define DYNAMIC_ARRAY_DECLARE_RAW(POINTER, NAME) \
+    POINTER; \
+    unsigned long NAME##s_count, \
+                  NAME##s_allocated; \
+
+#define DYNAMIC_ARRAY_DECLARE(TYPE, NAME) \
+    DYNAMIC_ARRAY_DECLARE_RAW(TYPE *NAME##s, NAME)
+
+#define DYNAMIC_ARRAY_DECLARE_SAME(NAME) \
+    DYNAMIC_ARRAY_DECLARE(struct NAME, NAME)
+
+#define ALLOC_BASE          10
+#define ALLOC_MULTIPLIER    2
+
+#define get_last(x) x + x##_count - 1
+
+/* Commit */
+
+#define COMMIT_ID_DECLARE { \
+    git_oid oid; \
+    char hex_string[GIT_OID_MAX_HEXSIZE + 1]; \
+}
+
+struct commit_id COMMIT_ID_DECLARE;
+
+#define COMMIT_ID_UNION_DECLARE \
+    union { \
+        struct commit_id id; \
+        struct COMMIT_ID_DECLARE; \
+    }
+
+struct submodule {
+    COMMIT_ID_UNION_DECLARE;
+    STRING_DECLARE(path, PATH_MAX);
+    STRING_DECLARE(url, PATH_MAX);
+    XXH64_hash_t url_hash;
+    unsigned long   target_repo_id,
+                    target_commit_id;
+};
+
+struct submodule const SUBMODULE_INIT = {
+    .target_repo_id = (unsigned long) -1,
+    .target_commit_id = (unsigned long) -1};
+
+struct commit {
+    COMMIT_ID_UNION_DECLARE;
+    git_commit *git_commit;
+    DYNAMIC_ARRAY_DECLARE_SAME(submodule);
+    bool    submodules_parsed,
+            archive,
+            checkout;
+};
+
+struct commit const COMMIT_INIT = {0};
+
 
 /* Wanted objects */
+
 enum wanted_type {
     WANTED_TYPE_UNKNOWN,
     WANTED_TYPE_ALL_BRANCHES,
@@ -105,8 +172,7 @@ char const *wanted_type_strings[] = {
 
 #define WANTED_BASE_DECLARE {\
     enum wanted_type type;\
-    char name[NAME_MAX + 1];\
-    unsigned short len_name;\
+    STRING_DECLARE(name, NAME_MAX + 1); \
     bool archive;\
     bool checkout;\
 }
@@ -120,19 +186,6 @@ struct wanted_base const WANTED_ALL_BRANCHES_INIT = {
 
 struct wanted_base const WANTED_ALL_TAGS_INIT = {
     .type = WANTED_TYPE_ALL_TAGS };
-
-#define COMMIT_ID_DECLARE { \
-    git_oid oid; \
-    char hex_string[GIT_OID_MAX_HEXSIZE + 1]; \
-}
-
-struct commit_id COMMIT_ID_DECLARE;
-
-#define COMMIT_ID_UNION_DECLARE \
-    union { \
-        struct commit_id id; \
-        struct COMMIT_ID_DECLARE; \
-    }
 
 #define WANTED_COMMIT_DECLARE { \
     union { \
@@ -187,40 +240,7 @@ struct wanted_reference const WANTED_HEAD_INIT = {
     .parsed_commit_id = (unsigned long) -1};
 
 
-struct parsed_commit_submodule {
-    git_oid id;
-    char    id_hex_string[GIT_OID_MAX_HEXSIZE + 1],
-            path[PATH_MAX],
-            url[PATH_MAX];
-    unsigned short  len_path,
-                    len_url;
-    XXH64_hash_t url_hash;
-    unsigned long   target_repo_id,
-                    target_commit_id;
-};
-
-struct parsed_commit_submodule const PARSED_COMMIT_SUBMODULE_INIT = {
-    .target_repo_id = (unsigned long) -1,
-    .target_commit_id = (unsigned long) -1};
-
-struct parsed_commit {
-    git_oid id;
-    char id_hex_string[GIT_OID_MAX_HEXSIZE + 1];
-    git_commit *commit;
-    struct parsed_commit_submodule *submodules;
-    unsigned long   submodules_count,
-                    submodules_allocated;
-    bool    submodules_parsed,
-            archive,
-            checkout;
-};
-
-struct parsed_commit const PARSED_COMMIT_INIT = {0};
-
-enum repo_added_from {
-    REPO_ADDED_FROM_CONFIG,
-    REPO_ADDED_FROM_SUBMODULE,
-};
+/* Hash */
 
 #define hash_type   XXH64_hash_t
 #define hash_calculate(data, size)  XXH3_64bits(data, size)
@@ -228,75 +248,58 @@ enum repo_added_from {
 #define HASH_FORMAT "%016lx"
 #define HASH_STRING_LEN  16
 
-struct repo {
-    char    url[PATH_MAX],
-            url_no_scheme_sanitized[PATH_MAX],
-            dir_path[PATH_MAX],
-            short_name[NAME_MAX + 1],
-            hash_name[HASH_STRING_LEN + 1];
-    unsigned short  len_url,
-                    len_url_no_scheme_sanitized,
-                    url_no_scheme_sanitized_parts,
-                    len_dir_path,
-                    len_short_name;
-    hash_type   url_hash,
-                url_no_scheme_sanitized_hash,
-                server_hash;
-    git_repository *repository;
-    struct wanted_object *wanted_objects;
-    struct parsed_commit *parsed_commits;
-    unsigned long   wanted_objects_count,
-                    wanted_objects_allocated,
-                    wanted_objects_count_original,
-                    parsed_commits_count,
-                    parsed_commits_allocated;
-    enum repo_added_from added_from;
-    bool wanted_dynamic;
-    bool updated;
+
+/* Repo */
+
+#define REPO_COMMON_DECLARE { \
+    STRING_DECLARE(url, PATH_MAX); \
+    STRING_DECLARE(path, PATH_MAX); \
+    STRING_DECLARE(name, NAME_MAX + 1); \
+    hash_type   hash_url, \
+                hash_path, \
+                hash_server; \
+}
+
+struct repo_common REPO_COMMON_DECLARE;
+
+struct repo_config {
+    union {
+        struct repo_common common;
+        struct REPO_COMMON_DECLARE;
+    };
+    DYNAMIC_ARRAY_DECLARE(struct wanted_base, wanted_object);
 };
 
-static const struct repo REPO_INIT = {0};
-
-struct work_directory {
-    char const *path;
-    int dirfd;
-    int links_dirfd;
-    char (*keeps)[NAME_MAX + 1];
-    unsigned long   keeps_count,
-                    keeps_allocated;
+struct repo_work {
+    struct repo_common *common; // points to the one in config, or allocated
+    DYNAMIC_ARRAY_DECLARE_SAME(wanted_object);
+    DYNAMIC_ARRAY_DECLARE_SAME(commit);
+    git_repository *git_repository;
+    bool from_config, wanted_dynamic, updated;
 };
+
+
+/* Config */
 
 #define ARCHIVE_PIPE_ARGS_MAX_COUNT 64
 
 struct config {
-    struct repo *repos;
-    struct wanted_object    *empty_wanted_objects,
-                            *always_wanted_objects;
-    unsigned long   repos_count,
-                    repos_allocated,
-                    empty_wanted_objects_count,
-                    empty_wanted_objects_allocated,
-                    always_wanted_objects_count,
-                    always_wanted_objects_allocated,
-                    repos_count_original;
-    git_fetch_options fetch_options;
-    char    proxy_url[PATH_MAX],
-            dir_repos[PATH_MAX],
-            dir_archives[PATH_MAX],
-            dir_checkouts[PATH_MAX],
-             // I don't think some one will write arg that's actually ARG_MAX
-            archive_pipe_args_buffer[PATH_MAX],
-            archive_suffix[NAME_MAX + 1];
+    DYNAMIC_ARRAY_DECLARE_SAME(repo);
+    DYNAMIC_ARRAY_DECLARE(struct wanted_base, empty_wanted_object);
+    DYNAMIC_ARRAY_DECLARE(struct wanted_base, always_wanted_object);
+    STRING_DECLARE(proxy_url, PATH_MAX);
+    STRING_DECLARE(dir_repos, PATH_MAX);
+    STRING_DECLARE(dir_archives, PATH_MAX);
+    STRING_DECLARE(dir_checkouts, PATH_MAX);
+    STRING_DECLARE(archive_suffix, NAME_MAX + 1);
+    // I don't think some one will write arg that's actually ARG_MAX
+    char archive_pipe_args_buffer[PATH_MAX];
     char *archive_pipe_args[ARCHIVE_PIPE_ARGS_MAX_COUNT];
     unsigned int    daemon_interval;
     int             timeout_connect; // Technically this should be unsigned,
                                      // but libgit2 wants an int -v-
     unsigned short  len_archive_pipe_args_buffer,
                     proxy_after,
-                    len_proxy_url,
-                    len_dir_repos,
-                    len_dir_archives,
-                    len_dir_checkouts,
                     archive_pipe_args_count,
                     len_archive_suffix,
                     connections_per_server,
@@ -309,74 +312,76 @@ struct config {
             daemon;
 };
 
+#define DIR_REPOS_DEFAULT   "repos"
+#define DIR_ARCHIVES_DEFAULT    "archives"
+#define DIR_CHECKOUTS_DEFAULT   "checkouts"
+#define ARCHIVE_SUFFIX_DEFAULT  ".tar"
+#define CONNECTIONS_PER_SERVER_DEFAULT 10
+#define EXPORT_THREADS_DEFAULT  10
+#define CLEAN_LINKS_PASS_DEFAULT    1
+#define DAEMON_INTERVAL_DEFAULT 60
+
+#define STRING_ASSIGN(KEY, VALUE) \
+    .KEY = VALUE, \
+    .len_##KEY = sizeof VALUE - 1
+
 struct config const CONFIG_INIT = {
-    .fetch_options = {
-        .version = GIT_FETCH_OPTIONS_VERSION,
-        .callbacks = {
-            .version = GIT_REMOTE_CALLBACKS_VERSION,
-        },
-        .update_fetchhead = 0,
-        .proxy_opts = GIT_PROXY_OPTIONS_INIT,
-        .download_tags = GIT_REMOTE_DOWNLOAD_TAGS_AUTO,
-        .prune = GIT_FETCH_PRUNE,
-    },
-    .archive_suffix = ".tar",
-    .len_archive_suffix = 4,
-    .connections_per_server = 10,
-    .export_threads = 10,
-    .clean_links_pass = 1,
-    .daemon_interval = 60,
+    STRING_ASSIGN(dir_repos, DIR_REPOS_DEFAULT),
+    STRING_ASSIGN(dir_archives, DIR_ARCHIVES_DEFAULT),
+    STRING_ASSIGN(dir_checkouts, DIR_CHECKOUTS_DEFAULT),
+    STRING_ASSIGN(archive_suffix, ARCHIVE_SUFFIX_DEFAULT),
+    .connections_per_server = CONNECTIONS_PER_SERVER_DEFAULT,
+    .export_threads = EXPORT_THREADS_DEFAULT,
+    .clean_links_pass = CLEAN_LINKS_PASS_DEFAULT,
+    .daemon_interval = DAEMON_INTERVAL_DEFAULT,
 };
 
-#define DIR_REPOS   "repos"
-#define DIR_ARCHIVES    "archives"
-#define DIR_CHECKOUTS   "checkouts"
 
-#define MIRROR_REMOTE "origin"
-#define MIRROR_FETCHSPEC "+refs/*:refs/*"
-#define MIRROR_CONFIG "remote."MIRROR_REMOTE".mirror"
+/* Work */
 
-#define ALLOC_BASE 10
-#define ALLOC_MULTIPLY 2
-
-#ifndef VERSION
-#define VERSION "unknown"
-#endif
-
-#define TAR_POSIX_HEADER_MTIME_LEN 12
-#define TAR_POSIX_HEADER_NAME_LEN 100
-
-#define TAR_POSIX_HEADER_DECLARE {/* byte offset */\
-    char name[100];               /*   0 */\
-    char mode[8];                 /* 100 octal mode string %07o */\
-    char uid[8];                  /* 108 octal uid string %07o */\
-    char gid[8];                  /* 116 octal gid string %07o */\
-    char size[12];                /* 124 octal size %011o */\
-    char mtime[12];               /* 136 octal mtime string %011o */\
-    char chksum[8];               /* 148 octal checksum string %06o + space */\
-    char typeflag;                /* 156 either TAR_{REG,LINK,DIR}TYPE */\
-    char linkname[100];           /* 157 symlink target */\
-    char magic[6];                /* 257 ustar\0 */\
-    char version[2];              /* 263 \0 0*/\
-    char uname[32];               /* 265 uname + padding \0 */\
-    char gname[32];               /* 297 gname + padding \0 */\
-    char devmajor[8];             /* 329 all 0 */\
-    char devminor[8];             /* 337 all 0 */\
-    char prefix[155];             /* 345 all 0 */\
-                                  /* 500 */\
-}
-
-struct tar_posix_header TAR_POSIX_HEADER_DECLARE;
-
-struct tar_posix_header_512_block {
-    union {
-        struct tar_posix_header header;
-        struct TAR_POSIX_HEADER_DECLARE;
-    };
-    unsigned char padding[12];
+struct work_directory {
+    char const *path;
+    int dirfd;
+    int links_dirfd;
+    DYNAMIC_ARRAY_DECLARE_RAW(char (*keeps)[NAME_MAX + 1], keep);
 };
 
-unsigned char const EMPTY_512_BLOCK[512] = {0};
+struct work_directory const WORK_DIRECTORY_INIT = {
+    .dirfd = -1, .links_dirfd = -1};
+
+struct work_handle {
+    struct config const *config;
+    char const *config_path;
+    DYNAMIC_ARRAY_DECLARE(struct repo_work, repo);
+    struct work_directory workdir_repos,
+                          workdir_archives,
+                          workdir_checkouts;
+};
+
+/* TAR */
+
+#define TAR_HEADER_MTIME_LEN 12
+
+struct tar_header {/* byte offset */\
+    char name[100];     /*   0 */\
+    char mode[8];       /* 100 octal mode string %07o */\
+    char uid[8];        /* 108 octal uid string %07o */\
+    char gid[8];        /* 116 octal gid string %07o */\
+    char size[12];      /* 124 octal size %011o */\
+    char mtime[12];     /* 136 octal mtime string %011o */\
+    char chksum[8];     /* 148 octal checksum string %06o + space */\
+    char typeflag;      /* 156 either TAR_{REG,LINK,DIR}TYPE */\
+    char linkname[100]; /* 157 symlink target */\
+    char magic[6];      /* 257 ustar\0 */\
+    char version[2];    /* 263 \0 0*/\
+    char uname[32];     /* 265 uname + padding \0 */\
+    char gname[32];     /* 297 gname + padding \0 */\
+    char devmajor[8];   /* 329 all 0 */\
+    char devminor[8];   /* 337 all 0 */\
+    char prefix[155];   /* 345 all 0 */\
+                        /* 500 */\
+};
+
 
 #define TAR_POSIX_MAGIC   "ustar"        /* ustar and a null */
 #define TAR_POSIX_VERSION "00"           /* 00 and no null */
@@ -439,28 +444,32 @@ unsigned char const EMPTY_512_BLOCK[512] = {0};
 
 #define TAR_POSIX_INIT(MODE, TYPEFLAG) TAR_INIT("", MODE, TYPEFLAG)
 
-struct tar_posix_header const TAR_POSIX_HEADER_FILE_REG_INIT =
+struct tar_header const TAR_HEADER_FILE_REG_INIT =
     TAR_POSIX_INIT(644, TAR_REGTYPE);
 
-struct tar_posix_header const TAR_POSIX_HEADER_FILE_EXE_INIT =
+struct tar_header const TAR_HEADER_FILE_EXE_INIT =
     TAR_POSIX_INIT(755, TAR_REGTYPE);
 
-struct tar_posix_header const TAR_POSIX_HEADER_SYMLINK_INIT =
+struct tar_header const TAR_HEADER_SYMLINK_INIT =
     TAR_POSIX_INIT(777, TAR_SYMTYPE);
 
-struct tar_posix_header const TAR_POSIX_HEADER_FOLDER_INIT =
+struct tar_header const TAR_HEADER_FOLDER_INIT =
     TAR_POSIX_INIT(755, TAR_DIRTYPE);
 
-struct tar_posix_header const TAR_POSIX_HEADER_GNU_LONGLINK_INIT =
+struct tar_header const TAR_HEADER_GNU_LONGLINK_INIT =
     TAR_INIT(GNUTAR_LONGLINK_NAME, 644, TAR_LONGLINK_TYPE);
 
-struct tar_posix_header const TAR_POSIX_HEADER_GNU_LONGNAME_INIT =
+struct tar_header const TAR_HEADER_GNU_LONGNAME_INIT =
     TAR_INIT(GNUTAR_LONGLINK_NAME, 644, TAR_LONGNAME_TYPE);
 
-struct tar_posix_header const TAR_POSIX_HEADER_PAX_GLOBAL_HEADER_INIT =
+struct tar_header const TAR_HEADER_PAX_GLOBAL_HEADER_INIT =
     TAR_INIT(PAXTAR_GLOBAL_HEADER_NAME, 666, TAR_GLOBAL_HEADER_TYPE);
 
-// struct tar_posix_header const TAR_POSIX_HEADER_LONGLINK
+/* To help padding */
+unsigned char const EMPTY_512_BLOCK[512] = {0};
+
+
+/* YAML */
 
 char const *yaml_event_type_strings[] = {
     "no",
@@ -476,65 +485,65 @@ char const *yaml_event_type_strings[] = {
     "mapping end",
 };
 
-enum yaml_config_wanted_type {
-    YAML_CONFIG_WANTED_UNKNOWN,
-    YAML_CONFIG_WANTED_GLOBAL_EMPTY,
-    YAML_CONFIG_WANTED_GLOBAL_ALWAYS,
-    YAML_CONFIG_WANTED_REPO,
+enum yaml_wanted_type {
+    YAML_WANTED_UNKNOWN,
+    YAML_WANTED_GLOBAL_EMPTY,
+    YAML_WANTED_GLOBAL_ALWAYS,
+    YAML_WANTED_REPO,
 };
 
-char const *yaml_config_wanted_type_strings[] = {
+char const *yaml_wanted_type_strings[] = {
     "unknown",
     "global, when repo empty",
     "global, always to repo",
     "repo",
 };
 
-enum yaml_config_parsing_status {
-    YAML_CONFIG_PARSING_STATUS_NONE,
-    YAML_CONFIG_PARSING_STATUS_STREAM,
-    YAML_CONFIG_PARSING_STATUS_DOCUMENT,
-    YAML_CONFIG_PARSING_STATUS_SECTION,
-    YAML_CONFIG_PARSING_STATUS_DAEMON,
-    YAML_CONFIG_PARSING_STATUS_DAEMON_INTERVAL,
-    YAML_CONFIG_PARSING_STATUS_PROXY,
-    YAML_CONFIG_PARSING_STATUS_PROXY_AFTER,
-    YAML_CONFIG_PARSING_STATUS_CONNECT_TIMEOUT,
-    YAML_CONFIG_PARSING_STATUS_DIR_REPOS,
-    YAML_CONFIG_PARSING_STATUS_DIR_ARCHIVES,
-    YAML_CONFIG_PARSING_STATUS_DIR_CHECKOUTS,
-    YAML_CONFIG_PARSING_STATUS_ARCHIVE,
-    YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION,
-    YAML_CONFIG_PARSING_STATUS_ARCHIVE_GHPREFIX,
-    YAML_CONFIG_PARSING_STATUS_ARCHIVE_SUFFIX,
-    YAML_CONFIG_PARSING_STATUS_ARCHIVE_PIPE,
-    YAML_CONFIG_PARSING_STATUS_ARCHIVE_PIPE_LIST,
-    YAML_CONFIG_PARSING_STATUS_CLEAN,
-    YAML_CONFIG_PARSING_STATUS_CLEAN_SECTION,
-    YAML_CONFIG_PARSING_STATUS_CLEAN_REPOS,
-    YAML_CONFIG_PARSING_STATUS_CLEAN_ARCHIVES,
-    YAML_CONFIG_PARSING_STATUS_CLEAN_CHECKOUTS,
-    YAML_CONFIG_PARSING_STATUS_CLEAN_LINKS_PASS,
-    YAML_CONFIG_PARSING_STATUS_EXPORT_THREADS,
-    YAML_CONFIG_PARSING_STATUS_CONNECTIONS_PER_SERVER,
-    YAML_CONFIG_PARSING_STATUS_WANTED,
-    YAML_CONFIG_PARSING_STATUS_WANTED_SECTION,
-    YAML_CONFIG_PARSING_STATUS_WANTED_SECTION_START,
-    YAML_CONFIG_PARSING_STATUS_WANTED_LIST,
-    YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT,
-    YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_START,
-    YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_SECTION,
-    YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_TYPE,
-    YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_ARCHIVE,
-    YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_CHECKOUT,
-    YAML_CONFIG_PARSING_STATUS_REPOS,
-    YAML_CONFIG_PARSING_STATUS_REPOS_LIST,
-    YAML_CONFIG_PARSING_STATUS_REPO_URL,
-    YAML_CONFIG_PARSING_STATUS_REPO_AFTER_URL,
-    YAML_CONFIG_PARSING_STATUS_REPO_SECTION,
+enum yaml_parsing_statuss {
+    YAML_PARSING_STATUS_NONE,
+    YAML_PARSING_STATUS_STREAM,
+    YAML_PARSING_STATUS_DOCUMENT,
+    YAML_PARSING_STATUS_SECTION,
+    YAML_PARSING_STATUS_DAEMON,
+    YAML_PARSING_STATUS_DAEMON_INTERVAL,
+    YAML_PARSING_STATUS_PROXY,
+    YAML_PARSING_STATUS_PROXY_AFTER,
+    YAML_PARSING_STATUS_CONNECT_TIMEOUT,
+    YAML_PARSING_STATUS_DIR_REPOS,
+    YAML_PARSING_STATUS_DIR_ARCHIVES,
+    YAML_PARSING_STATUS_DIR_CHECKOUTS,
+    YAML_PARSING_STATUS_ARCHIVE,
+    YAML_PARSING_STATUS_ARCHIVE_SECTION,
+    YAML_PARSING_STATUS_ARCHIVE_GHPREFIX,
+    YAML_PARSING_STATUS_ARCHIVE_SUFFIX,
+    YAML_PARSING_STATUS_ARCHIVE_PIPE,
+    YAML_PARSING_STATUS_ARCHIVE_PIPE_LIST,
+    YAML_PARSING_STATUS_CLEAN,
+    YAML_PARSING_STATUS_CLEAN_SECTION,
+    YAML_PARSING_STATUS_CLEAN_REPOS,
+    YAML_PARSING_STATUS_CLEAN_ARCHIVES,
+    YAML_PARSING_STATUS_CLEAN_CHECKOUTS,
+    YAML_PARSING_STATUS_CLEAN_LINKS_PASS,
+    YAML_PARSING_STATUS_EXPORT_THREADS,
+    YAML_PARSING_STATUS_CONNECTIONS_PER_SERVER,
+    YAML_PARSING_STATUS_WANTED,
+    YAML_PARSING_STATUS_WANTED_SECTION,
+    YAML_PARSING_STATUS_WANTED_SECTION_START,
+    YAML_PARSING_STATUS_WANTED_LIST,
+    YAML_PARSING_STATUS_WANTED_OBJECT,
+    YAML_PARSING_STATUS_WANTED_OBJECT_START,
+    YAML_PARSING_STATUS_WANTED_OBJECT_SECTION,
+    YAML_PARSING_STATUS_WANTED_OBJECT_TYPE,
+    YAML_PARSING_STATUS_WANTED_OBJECT_ARCHIVE,
+    YAML_PARSING_STATUS_WANTED_OBJECT_CHECKOUT,
+    YAML_PARSING_STATUS_REPOS,
+    YAML_PARSING_STATUS_REPOS_LIST,
+    YAML_PARSING_STATUS_REPO_URL,
+    YAML_PARSING_STATUS_REPO_AFTER_URL,
+    YAML_PARSING_STATUS_REPO_SECTION,
 };
 
-char const *yaml_config_parsing_status_strings[] = {
+char const *yaml_parsing_status_strings[] = {
     "none",
     "stream",
     "document",
@@ -578,209 +587,143 @@ char const *yaml_config_parsing_status_strings[] = {
     "repo section",
 };
 
-struct export_commit_treewalk_payload {
-    struct config const *const restrict config;
-    struct repo const *const restrict repo;
-    struct parsed_commit const *const restrict parsed_commit;
-    char *const restrict submodule_path;
-    unsigned short const len_submodule_path;
-    bool const archive;
-    char const *const restrict mtime;
-    int const fd_archive;
-    char const *const restrict archive_prefix;
-    bool const checkout;
-    int dirfd_checkout;
-    // hash_type ;
-    // char const *const restrict dir_checkout;
-};
+/* Functions */
 
-int export_commit_treewalk_callback(
-	char const *const restrict root,
-    git_tree_entry const *const restrict entry,
-    void *payload
-);
+// #define declare_func_add_object_and_realloc_if_necessary_no_init_typed( \
+//         PARENT, CHILD, CHILDNEW) \
+// int PARENT##_add_##CHILD##_no_init( \
+//     struct PARENT *const restrict PARENT \
+// ) { \
+//     if (PARENT->CHILD##s == NULL) { \
+//         if ((PARENT->CHILD##s = malloc( \
+//             sizeof *PARENT->CHILD##s * ALLOC_BASE)) == NULL) { \
+//             pr_error("Failed to allocate memory\n"); \
+//             return -1; \
+//         } \
+//         PARENT->CHILD##s_allocated = ALLOC_BASE; \
+//     } \
+//     if (++PARENT->CHILD##s_count > PARENT->CHILD##s_allocated) { \
+//         while (PARENT->CHILD##s_count > ( \
+//             PARENT->CHILD##s_allocated *= 2)) { \
+//             if (PARENT->CHILD##s_allocated == ULONG_MAX) { \
+//                 pr_error( \
+//                     "Impossible to allocate more, how is this possible?\n"); \
+//                 return -1; \
+//             } else if (PARENT->CHILD##s_allocated >= \
+//                     ULONG_MAX / ALLOC_MULTIPLY) { \
+//                 PARENT->CHILD##s_allocated = ULONG_MAX; \
+//             } else { \
+//                 PARENT->CHILD##s_allocated *= ALLOC_MULTIPLY; \
+//             } \
+//         } \
+//         CHILDNEW = realloc( \
+//             PARENT->CHILD##s, \
+//             sizeof *CHILD##s_new * PARENT->CHILD##s_allocated \
+//         ); \
+//         if (CHILD##s_new == NULL) { \
+//             pr_error("Failed to allocate memory\n"); \
+//             return -1; \
+//         } \
+//         PARENT->CHILD##s = CHILD##s_new; \
+//     } \
+//     return 0; \
+// }
 
-int repo_ensure_parsed_commit(
-    struct config *const restrict config,
-    unsigned long const repo_id,
-    unsigned long const commit_id
-);
+// #define declare_func_add_object_and_realloc_if_necessary_no_init( \
+//         PARENT, STRUCT_CHILD, CHILD) \
+//         declare_func_add_object_and_realloc_if_necessary_no_init_typed( \
+//         PARENT, CHILD, struct STRUCT_CHILD *CHILD##s_new)
 
-int repo_ensure_first_parsed_commits(
-    struct config *const restrict config,
-    unsigned long const repo_id,
-    unsigned long const stop_before_commit_id
-);
+// declare_func_add_object_and_realloc_if_necessary_no_init(
+//     commit, commit_submodule, submodule)
 
-struct update_server_repo_activity {
-    hash_type server_hash;
-    unsigned short repos_updating_count;
-};
+// declare_func_add_object_and_realloc_if_necessary_no_init(
+//     repo, wanted_object, wanted_object)
 
-struct repo_update_thread_arg {
-    struct repo *restrict repo;
-    git_fetch_options fetch_options;
-    unsigned short proxy_after;
-};
+// declare_func_add_object_and_realloc_if_necessary_no_init(
+//     repo, parsed_commit, parsed_commit)
 
-struct update_thread_handle {
-    pthread_t thread;
-    unsigned long server_id;
-    struct repo_update_thread_arg arg;
-    bool active;
-    unsigned long checked;
-};
+// declare_func_add_object_and_realloc_if_necessary_no_init(
+//     config, repo, repo)
 
-struct update_status {
-    struct update_server_repo_activity *servers;
-    struct update_thread_handle *thread_handles;
-    unsigned long *repo_ids;
-    unsigned long servers_count,
-                  servers_allocated,
-                  repo_ids_count,
-                  repo_ids_allocated,
-                  thread_handles_allocated,
-                  threads_active_count;
-    bool changed;
-};
+// declare_func_add_object_and_realloc_if_necessary_no_init(
+//     config, wanted_object, empty_wanted_object)
 
-#define get_last(x) x + x##_count - 1
+// declare_func_add_object_and_realloc_if_necessary_no_init(
+//     config, wanted_object, always_wanted_object)
 
-#define declare_func_add_object_and_realloc_if_necessary_no_init_typed( \
-        PARENT, CHILD, CHILDNEW) \
-int PARENT##_add_##CHILD##_no_init( \
-    struct PARENT *const restrict PARENT \
-) { \
-    if (PARENT->CHILD##s == NULL) { \
-        if ((PARENT->CHILD##s = malloc( \
-            sizeof *PARENT->CHILD##s * ALLOC_BASE)) == NULL) { \
-            pr_error("Failed to allocate memory\n"); \
-            return -1; \
-        } \
-        PARENT->CHILD##s_allocated = ALLOC_BASE; \
-    } \
-    if (++PARENT->CHILD##s_count > PARENT->CHILD##s_allocated) { \
-        while (PARENT->CHILD##s_count > ( \
-            PARENT->CHILD##s_allocated *= 2)) { \
-            if (PARENT->CHILD##s_allocated == ULONG_MAX) { \
-                pr_error( \
-                    "Impossible to allocate more, how is this possible?\n"); \
-                return -1; \
-            } else if (PARENT->CHILD##s_allocated >= \
-                    ULONG_MAX / ALLOC_MULTIPLY) { \
-                PARENT->CHILD##s_allocated = ULONG_MAX; \
-            } else { \
-                PARENT->CHILD##s_allocated *= ALLOC_MULTIPLY; \
-            } \
-        } \
-        CHILDNEW = realloc( \
-            PARENT->CHILD##s, \
-            sizeof *CHILD##s_new * PARENT->CHILD##s_allocated \
-        ); \
-        if (CHILD##s_new == NULL) { \
-            pr_error("Failed to allocate memory\n"); \
-            return -1; \
-        } \
-        PARENT->CHILD##s = CHILD##s_new; \
-    } \
-    return 0; \
-}
+// declare_func_add_object_and_realloc_if_necessary_no_init_typed(
+//     work_directory, keep, char (*keeps_new)[NAME_MAX + 1])
 
-#define declare_func_add_object_and_realloc_if_necessary_no_init( \
-        PARENT, STRUCT_CHILD, CHILD) \
-        declare_func_add_object_and_realloc_if_necessary_no_init_typed( \
-        PARENT, CHILD, struct STRUCT_CHILD *CHILD##s_new)
+// declare_func_add_object_and_realloc_if_necessary_no_init(
+//     update_status, update_server_repo_activity, server)
 
-declare_func_add_object_and_realloc_if_necessary_no_init(
-    parsed_commit, parsed_commit_submodule, submodule)
+// declare_func_add_object_and_realloc_if_necessary_no_init_typed(
+//     update_status, repo_id, unsigned long *repo_ids_new)
 
-declare_func_add_object_and_realloc_if_necessary_no_init(
-    repo, wanted_object, wanted_object)
+// int sideband_progress(char const *string, int len, void *payload) {
+// 	// (void)payload; /* unused */
+//     pr_info("Repo '%s': Remote: %.*s",
+//         ((struct repo const*)payload)->url, len, string);
+// 	return 0;
+// }
 
-declare_func_add_object_and_realloc_if_necessary_no_init(
-    repo, parsed_commit, parsed_commit)
+// #define declare_func_size_to_human_readable_type(TYPE, SUFFIX) \
+// static inline \
+// TYPE size_to_human_readable_##SUFFIX(TYPE size, char *const suffix) { \
+//     char const suffixes[] = "BKMGTPEZY"; \
+//     unsigned short suffix_id = 0; \
+//     while (size >= 1024) { \
+//         ++suffix_id; \
+//         size /= 1024; \
+//     } \
+//     *suffix = suffixes[suffix_id]; \
+//     return size; \
+// }
 
-declare_func_add_object_and_realloc_if_necessary_no_init(
-    config, repo, repo)
-
-declare_func_add_object_and_realloc_if_necessary_no_init(
-    config, wanted_object, empty_wanted_object)
-
-declare_func_add_object_and_realloc_if_necessary_no_init(
-    config, wanted_object, always_wanted_object)
-
-declare_func_add_object_and_realloc_if_necessary_no_init_typed(
-    work_directory, keep, char (*keeps_new)[NAME_MAX + 1])
-
-declare_func_add_object_and_realloc_if_necessary_no_init(
-    update_status, update_server_repo_activity, server)
-
-declare_func_add_object_and_realloc_if_necessary_no_init_typed(
-    update_status, repo_id, unsigned long *repo_ids_new)
-
-int sideband_progress(char const *string, int len, void *payload) {
-	// (void)payload; /* unused */
-    pr_info("Repo '%s': Remote: %.*s",
-        ((struct repo const*)payload)->url, len, string);
-	return 0;
-}
-
-#define declare_func_size_to_human_readable_type(TYPE, SUFFIX) \
-static inline \
-TYPE size_to_human_readable_##SUFFIX(TYPE size, char *const suffix) { \
-    char const suffixes[] = "BKMGTPEZY"; \
-    unsigned short suffix_id = 0; \
-    while (size >= 1024) { \
-        ++suffix_id; \
-        size /= 1024; \
-    } \
-    *suffix = suffixes[suffix_id]; \
-    return size; \
-}
-
-declare_func_size_to_human_readable_type(size_t, size_t)
-declare_func_size_to_human_readable_type(unsigned int, uint)
+// declare_func_size_to_human_readable_type(size_t, size_t)
+// declare_func_size_to_human_readable_type(unsigned int, uint)
 
 
-static inline void print_progress(
-    git_indexer_progress const *const restrict stats,
-    struct repo const *const restrict repo
-) {
-	if (stats->total_objects &&
-		stats->received_objects == stats->total_objects) {
-		pr_info("Repo '%s': Resolving deltas %u%% (%u/%u)\r",
-                repo->url,
-                stats->total_deltas > 0 ?
-                    100 * stats->indexed_deltas / stats->total_deltas :
-                    0,
-                stats->indexed_deltas,
-                stats->total_deltas);
-	} else {
-        char suffix;
-        unsigned int size_human_readable = size_to_human_readable_uint(
-            stats->received_bytes, &suffix);
-		pr_info(
-            "Repo '%s': Receiving objects %u%% (%u%c, %u); "
-            "Indexing objects %u%% (%u); "
-            "Total objects %u.\r",
-            repo->url,
-            stats->total_objects > 0 ?
-                100 * stats->received_objects / stats->total_objects :
-                0,
-            size_human_readable, suffix,
-            stats->received_objects,
-            stats->total_objects > 0 ?
-                100 * stats->indexed_objects/ stats->total_objects :
-                0,
-            stats->indexed_objects,
-            stats->total_objects);
-	}
-}
+// static inline void print_progress(
+//     git_indexer_progress const *const restrict stats,
+//     struct repo const *const restrict repo
+// ) {
+// 	if (stats->total_objects &&
+// 		stats->received_objects == stats->total_objects) {
+// 		pr_info("Repo '%s': Resolving deltas %u%% (%u/%u)\r",
+//                 repo->url,
+//                 stats->total_deltas > 0 ?
+//                     100 * stats->indexed_deltas / stats->total_deltas :
+//                     0,
+//                 stats->indexed_deltas,
+//                 stats->total_deltas);
+// 	} else {
+//         char suffix;
+//         unsigned int size_human_readable = size_to_human_readable_uint(
+//             stats->received_bytes, &suffix);
+// 		pr_info(
+//             "Repo '%s': Receiving objects %u%% (%u%c, %u); "
+//             "Indexing objects %u%% (%u); "
+//             "Total objects %u.\r",
+//             repo->url,
+//             stats->total_objects > 0 ?
+//                 100 * stats->received_objects / stats->total_objects :
+//                 0,
+//             size_human_readable, suffix,
+//             stats->received_objects,
+//             stats->total_objects > 0 ?
+//                 100 * stats->indexed_objects/ stats->total_objects :
+//                 0,
+//             stats->indexed_objects,
+//             stats->total_objects);
+// 	}
+// }
 
-int fetch_progress(git_indexer_progress const *stats, void *payload) {
-	print_progress(stats, (struct repo const *)payload);
-	return 0;
-}
+// int fetch_progress(git_indexer_progress const *stats, void *payload) {
+// 	print_progress(stats, (struct repo const *)payload);
+// 	return 0;
+// }
 
 // Dumb help message
 static inline void help() {
@@ -796,10 +739,163 @@ static inline void help() {
 
 static inline void version() {
     fputs(
-        "git-mirrorer version "VERSION" by Guoxin \"7Ji\" Pu, "
+        "git-mirrorer version "
+#ifdef VERSION
+        VERSION
+#else
+        "UNKNOWN"
+#endif
+        " by Guoxin \"7Ji\" Pu, "
         "licensed under GNU Affero General Public License v3 or later\n",
         stderr);
 }
+
+int dynamic_array_add(
+    void **array, 
+    size_t size, 
+    unsigned long *count, 
+    unsigned long *alloc
+) {
+    if (array && count && alloc);
+    else {
+        pr_error("Caller passed NULL pointer to us\n");
+        return -1;
+    }
+    if (!*array) {
+        if (!(*array = malloc(size * (*alloc = ALLOC_BASE)))) {
+            pr_error_with_errno("Failed to allocate memory to init array");
+            return -1;
+        }
+    }
+    if (++*count > *alloc) {
+        while (*count > *alloc) {
+            if (*alloc == ULONG_MAX) {
+                pr_error("Impossible to allocate more memory, allocate count"
+                    "at max possible value\n");
+                return -1;
+            } else if (*alloc >= ULONG_MAX / ALLOC_MULTIPLIER) {
+                *alloc = ULONG_MAX;
+            } else {
+                *alloc *= ALLOC_MULTIPLIER;
+            }
+        }
+        void *array_new = realloc(*array, size * *alloc);
+        if (!array_new) {
+            pr_error_with_errno("Failed to re-allocate memory for array");
+            return -1;
+        }
+        *array = array_new;
+    }
+    return 0;
+}
+
+#define BUFFER_READ_CHUNK PAGE_SIZE * 64
+
+ssize_t buffer_read_from_fd(unsigned char **buffer, int fd) {
+    if (!buffer || fd < 0) {
+        pr_error("Internal: invalid arguments\n");
+        return -1;
+    }
+    size_t size_alloc = BUFFER_READ_CHUNK;
+    if (!(*buffer = malloc(size_alloc))) {
+        pr_error("Failed to allocate memory\n");
+        return -1;
+    }
+    ssize_t size_total = 0, size_current = 0;
+    for(;;) {
+        if (size_alloc - size_total < BUFFER_READ_CHUNK) {
+            while (size_alloc - size_total < BUFFER_READ_CHUNK) {
+                if (size_alloc == SIZE_MAX) { // This shouldn't be possible
+                    pr_error(
+                        "Couldn't allocate more memory, "
+                        "allocated size already at size max\n");
+                    goto on_error;
+                } else if (size_alloc >= SIZE_MAX / 2) {
+                    size_alloc = SIZE_MAX;
+                } else {
+                    size_alloc *= 2;
+                }
+            }
+            unsigned char *buffer_new = realloc(*buffer, size_alloc);
+            if (buffer_new == NULL) {
+                pr_error("Failed to allocate more memory\n");
+                size_total = -1;
+                goto on_error;
+            }
+            *buffer = buffer_new;
+        }
+        size_current = read(fd, *buffer + size_total, BUFFER_READ_CHUNK);
+        if (size_current == 0) {
+            break;
+        }
+        if (size_current < 0) {
+            if (errno == EAGAIN ||
+#if (EAGAIN != EWOULDBLOCK)
+                errno == EWOULDBLOCK ||
+#endif
+                errno == EINTR) {
+            } else {
+                pr_error_with_errno("Failed to read");
+                size_total = -1;
+                goto on_error;
+            }
+        }
+        size_total += size_current;
+    }
+    if (size_total < size_alloc) {
+
+    }
+on_error:
+    if (*buffer) free(*buffer);
+    return -1;
+}
+
+int config_read(
+    struct config *const restrict config,
+    char const *const restrict config_path
+) {
+    FILE *file_config = stdin;
+    int config_fd = STDIN_FILENO;
+    if (config_path && strcmp(config_path, "-")) {
+        pr_info("Using '%s' as config file\n", config_path);
+        if ((config_fd = open(config_path, O_RDONLY)) < 0) {
+            pr_error_with_errno("Failed to open config file '%s'", config_path);
+            return -1;
+        }
+    } else {
+        pr_info("Reading config from stdin\n");
+        if (isatty(STDIN_FILENO)) {
+            pr_warn(
+                "Standard input (stdin) is connected to a terminal, "
+                "but you've configured to read config from stdin, "
+                "this might not be what you want and may lead to "
+                "your terminal being jammed\n");
+        }
+    }
+    unsigned char *config_buffer = NULL;
+    ssize_t config_size = buffer_read_from_fd(&config_buffer, config_fd);
+    int r = -1;
+    if (config_size < 0) {
+        pr_error("Failed to read config into buffer\n");
+        goto close_config_fd;
+    }
+    if (config_from_yaml(config, config_buffer, config_size)) {
+        pr_error("Failed to read config from YAML\n");
+        goto free_config_buffer;
+    }
+    if (config_finish(config)) {
+        pr_error("Failed to finish config\n");
+        goto free_config_buffer;
+    }
+    r = 0;
+free_config_buffer:
+    if (config_buffer) free(config_buffer);
+close_config_fd:
+    if (config_fd != STDIN_FILENO) close (config_fd);
+    return r;
+}
+
+
 
 int mkdir_allow_existing(
     char *const restrict path
@@ -1125,7 +1221,7 @@ unsigned short get_unsigned_short_decimal_width(unsigned short number) {
 }
 
 static inline unsigned int
-    tar_header_checksum(struct tar_posix_header *header) {
+    tar_header_checksum(struct tar_header *header) {
     unsigned int checksum = 0;
     for (unsigned i = 0; i < sizeof *header; ++i) {
         switch (i) {
@@ -1140,7 +1236,7 @@ static inline unsigned int
     return checksum;
 }
 
-int tar_header_checksum_self(struct tar_posix_header *header) {
+int tar_header_checksum_self(struct tar_header *header) {
     if (snprintf(header->chksum, sizeof header->chksum - 1, "%06o",
         tar_header_checksum(header)) < 0) {
         pr_error_with_errno("Failed to format header checksum");
@@ -1153,62 +1249,7 @@ int tar_header_checksum_self(struct tar_posix_header *header) {
 // Read from fd until EOF,
 // return the size being read, or -1 if failed,
 // the pointer should be free'd by caller
-ssize_t buffer_read_from_fd(unsigned char **buffer, int fd) {
-    if (buffer == NULL || fd < 0) {
-        pr_error("Internal: invalid arguments\n");
-        return -1;
-    }
-    if ((*buffer = malloc(0x10000)) == NULL) {
-        pr_error("Failed to allocate memory\n");
-        return -1;
-    }
-    size_t size_alloc = 0x10000;
-    ssize_t size_total = 0, size_current = 0;
-    for(;;) {
-        if (size_alloc - size_total < 0x10000) {
-            while (size_alloc - size_total < 0x10000) {
-                if (size_alloc == SIZE_MAX) { // This shouldn't be possible
-                    pr_error(
-                        "Couldn't allocate more memory, "
-                        "allocated size already at size max\n");
-                    size_total = -1;
-                    goto free_buffer;
-                } else if (size_alloc >= SIZE_MAX / 2) {
-                    size_alloc = SIZE_MAX;
-                } else {
-                    size_alloc *= 2;
-                }
-            }
-            unsigned char *buffer_new = realloc(*buffer, size_alloc);
-            if (buffer_new == NULL) {
-                pr_error("Failed to allocate more memory\n");
-                size_total = -1;
-                goto free_buffer;
-            }
-            *buffer = buffer_new;
-        }
-        size_current = read(fd, *buffer + size_total, 0x10000);
-        if (size_current == 0) {
-            break;
-        }
-        if (size_current < 0) {
-            if (errno == EAGAIN ||
-#if (EAGAIN != EWOULDBLOCK)
-                errno == EWOULDBLOCK ||
-#endif
-                errno == EINTR) {
-            } else {
-                pr_error_with_errno("Failed to read");
-                size_total = -1;
-                goto free_buffer;
-            }
-        }
-        size_total += size_current;
-    }
-free_buffer:
-    if (*buffer == NULL) free(*buffer);
-    return size_total;
-}
+
 
 void config_clean_archive_pipe(struct config *const restrict config) {
     config->archive_pipe_args_count = 0;
@@ -1931,18 +1972,18 @@ struct wanted_object *config_get_last_wanted_object_of_last_repo(
 
 struct wanted_object *config_get_last_wanted_object_of_type(
     struct config *const restrict config,
-    enum yaml_config_wanted_type type
+    enum yaml_wanted_type type
 ) {
     switch (type) {
-    case YAML_CONFIG_WANTED_UNKNOWN:
+    case YAML_WANTED_UNKNOWN:
         pr_error("Wanted type unknown\n");
         return NULL;
-    case YAML_CONFIG_WANTED_GLOBAL_EMPTY:
+    case YAML_WANTED_GLOBAL_EMPTY:
         return get_last(config->empty_wanted_objects);
-    case YAML_CONFIG_WANTED_GLOBAL_ALWAYS:
+    case YAML_WANTED_GLOBAL_ALWAYS:
         return get_last(config->always_wanted_objects);
         break;
-    case YAML_CONFIG_WANTED_REPO:
+    case YAML_WANTED_REPO:
         return config_get_last_wanted_object_of_last_repo(config);
     }
     return NULL;
@@ -1951,128 +1992,128 @@ struct wanted_object *config_get_last_wanted_object_of_type(
 int config_update_from_yaml_event(
     struct config *const restrict config,
     yaml_event_t const *const restrict event,
-    enum yaml_config_parsing_status *const restrict status,
-    enum yaml_config_wanted_type *const restrict wanted_type
+    enum yaml_parsing_status *const restrict status,
+    enum yaml_wanted_type *const restrict wanted_type
 ) {
     switch (*status) {
-    case YAML_CONFIG_PARSING_STATUS_NONE:
+    case YAML_PARSING_STATUS_NONE:
         switch (event->type) {
         case YAML_STREAM_START_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_STREAM;
+            *status = YAML_PARSING_STATUS_STREAM;
             break;
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_STREAM:
+    case YAML_PARSING_STATUS_STREAM:
         switch (event->type) {
         case YAML_DOCUMENT_START_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_DOCUMENT;
+            *status = YAML_PARSING_STATUS_DOCUMENT;
             break;
         case YAML_STREAM_END_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_NONE;
+            *status = YAML_PARSING_STATUS_NONE;
             break;
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_DOCUMENT:
+    case YAML_PARSING_STATUS_DOCUMENT:
         switch (event->type) {
         case YAML_MAPPING_START_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            *status = YAML_PARSING_STATUS_SECTION;
             break;
         case YAML_DOCUMENT_END_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_STREAM;
+            *status = YAML_PARSING_STATUS_STREAM;
             break;
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_SECTION:
+    case YAML_PARSING_STATUS_SECTION:
         switch (event->type) {
         case YAML_SCALAR_EVENT: {
             char const *const key = (char const *)event->data.scalar.value;
             switch (event->data.scalar.length) {
             case 5:
                 if (!strcmp(key, "proxy"))
-                    *status = YAML_CONFIG_PARSING_STATUS_PROXY;
+                    *status = YAML_PARSING_STATUS_PROXY;
                 else if (!strcmp(key, "repos"))
-                    *status = YAML_CONFIG_PARSING_STATUS_REPOS;
+                    *status = YAML_PARSING_STATUS_REPOS;
                 break;
             case 6:
                 if (!strcmp(key, "wanted"))
-                    *status = YAML_CONFIG_PARSING_STATUS_WANTED;
+                    *status = YAML_PARSING_STATUS_WANTED;
                 else if (!strcmp(key, "daemon"))
-                    *status = YAML_CONFIG_PARSING_STATUS_DAEMON;
+                    *status = YAML_PARSING_STATUS_DAEMON;
                 break;
             case 7:
                 if (!strcmp(key, "archive"))
-                    *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE;
+                    *status = YAML_PARSING_STATUS_ARCHIVE;
                 else if (!strcmp(key, "cleanup"))
-                    *status = YAML_CONFIG_PARSING_STATUS_CLEAN;
+                    *status = YAML_PARSING_STATUS_CLEAN;
                 break;
             case 9:
                 if (!strcmp(key, "dir_repos"))
-                    *status = YAML_CONFIG_PARSING_STATUS_DIR_REPOS;
+                    *status = YAML_PARSING_STATUS_DIR_REPOS;
                 break;
             case 11:
                 if (!strcmp(key, "proxy_after"))
-                    *status = YAML_CONFIG_PARSING_STATUS_PROXY_AFTER;
+                    *status = YAML_PARSING_STATUS_PROXY_AFTER;
                 break;
             case 12:
                 if (!strcmp(key, "dir_archives"))
-                    *status = YAML_CONFIG_PARSING_STATUS_DIR_ARCHIVES;
+                    *status = YAML_PARSING_STATUS_DIR_ARCHIVES;
                 break;
             case 13:
                 if (!strcmp(key, "dir_checkouts"))
-                    *status = YAML_CONFIG_PARSING_STATUS_DIR_CHECKOUTS;
+                    *status = YAML_PARSING_STATUS_DIR_CHECKOUTS;
                 break;
             case 14:
                 if (!strcmp(key, "export_threads"))
-                    *status = YAML_CONFIG_PARSING_STATUS_EXPORT_THREADS;
+                    *status = YAML_PARSING_STATUS_EXPORT_THREADS;
                 break;
             case 15:
                 if (!strcmp(key, "daemon_interval"))
-                    *status = YAML_CONFIG_PARSING_STATUS_DAEMON_INTERVAL;
+                    *status = YAML_PARSING_STATUS_DAEMON_INTERVAL;
                 else if (!strcmp(key, "connect_timeout"))
-                    *status = YAML_CONFIG_PARSING_STATUS_CONNECT_TIMEOUT;
+                    *status = YAML_PARSING_STATUS_CONNECT_TIMEOUT;
                 break;
             case 22:
                 if (!strcmp(key, "connections_per_server"))
-                    *status = YAML_CONFIG_PARSING_STATUS_CONNECTIONS_PER_SERVER;
+                    *status = YAML_PARSING_STATUS_CONNECTIONS_PER_SERVER;
                 break;
             }
-            if (*status == YAML_CONFIG_PARSING_STATUS_SECTION) {
+            if (*status == YAML_PARSING_STATUS_SECTION) {
                 pr_error("Unrecognized config key '%s'\n", key);
                 return -1;
             }
             break;
         }
         case YAML_MAPPING_END_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_DOCUMENT;
+            *status = YAML_PARSING_STATUS_DOCUMENT;
             break;
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_PROXY:
-    case YAML_CONFIG_PARSING_STATUS_DIR_REPOS:
-    case YAML_CONFIG_PARSING_STATUS_DIR_ARCHIVES:
-    case YAML_CONFIG_PARSING_STATUS_DIR_CHECKOUTS:
+    case YAML_PARSING_STATUS_PROXY:
+    case YAML_PARSING_STATUS_DIR_REPOS:
+    case YAML_PARSING_STATUS_DIR_ARCHIVES:
+    case YAML_PARSING_STATUS_DIR_CHECKOUTS:
         switch (event->type) {
         case YAML_SCALAR_EVENT: {
             char *value = NULL;
             unsigned short *len = NULL;
             switch (*status) {
-            case YAML_CONFIG_PARSING_STATUS_PROXY:
+            case YAML_PARSING_STATUS_PROXY:
                 value = config->proxy_url;
                 len = &config->len_proxy_url;
                 break;
-            case YAML_CONFIG_PARSING_STATUS_DIR_REPOS:
+            case YAML_PARSING_STATUS_DIR_REPOS:
                 value = config->dir_repos;
                 len = &config->len_dir_repos;
                 break;
-            case YAML_CONFIG_PARSING_STATUS_DIR_ARCHIVES:
+            case YAML_PARSING_STATUS_DIR_ARCHIVES:
                 value = config->dir_archives;
                 len = &config->len_dir_archives;
                 break;
-            case YAML_CONFIG_PARSING_STATUS_DIR_CHECKOUTS:
+            case YAML_PARSING_STATUS_DIR_CHECKOUTS:
                 value = config->dir_checkouts;
                 len = &config->len_dir_checkouts;
                 break;
@@ -2087,51 +2128,51 @@ int config_update_from_yaml_event(
             memcpy(value, event->data.scalar.value, event->data.scalar.length);
             value[event->data.scalar.length] = '\0';
             *len = event->data.scalar.length;
-            *status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            *status = YAML_PARSING_STATUS_SECTION;
             break;
         }
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_ARCHIVE:
+    case YAML_PARSING_STATUS_ARCHIVE:
         switch (event->type) {
         case YAML_MAPPING_START_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION;
+            *status = YAML_PARSING_STATUS_ARCHIVE_SECTION;
             break;
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION:
+    case YAML_PARSING_STATUS_ARCHIVE_SECTION:
         switch (event->type) {
         case YAML_SCALAR_EVENT: {
             char const *const key = (char const *)event->data.scalar.value;
             switch (event->data.scalar.length) {
             case 6:
                 if (!strcmp(key, "suffix"))
-                    *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_SUFFIX;
+                    *status = YAML_PARSING_STATUS_ARCHIVE_SUFFIX;
                 break;
             case 12:
                 if (!strcmp(key, "pipe_through"))
-                    *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_PIPE;
+                    *status = YAML_PARSING_STATUS_ARCHIVE_PIPE;
                 break;
             case 18:
                 if (!strcmp(key, "github_like_prefix"))
-                    *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_GHPREFIX;
+                    *status = YAML_PARSING_STATUS_ARCHIVE_GHPREFIX;
                 break;
             }
-            if (*status == YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION) {
+            if (*status == YAML_PARSING_STATUS_ARCHIVE_SECTION) {
                 pr_error("Unrecognized key '%s'\n", key);
                 return -1;
             }
             break;
         }
         case YAML_MAPPING_END_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            *status = YAML_PARSING_STATUS_SECTION;
             break;
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_ARCHIVE_SUFFIX:
+    case YAML_PARSING_STATUS_ARCHIVE_SUFFIX:
         switch (event->type) {
         case YAML_SCALAR_EVENT: {
             char const *const value = (char const *)event->data.scalar.value;
@@ -2143,13 +2184,13 @@ int config_update_from_yaml_event(
                 event->data.scalar.length);
             config->len_archive_suffix = event->data.scalar.length;
             config->archive_suffix[config->len_archive_suffix] = '\0';
-            *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION;
+            *status = YAML_PARSING_STATUS_ARCHIVE_SECTION;
             break;
         }
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_ARCHIVE_PIPE:
+    case YAML_PARSING_STATUS_ARCHIVE_PIPE:
         switch (event->type) {
         case YAML_SCALAR_EVENT:
             config_clean_archive_pipe(config);
@@ -2202,16 +2243,16 @@ int config_update_from_yaml_event(
                 }
             }
             config->archive_pipe_args[config->archive_pipe_args_count] = NULL;
-            *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION;
+            *status = YAML_PARSING_STATUS_ARCHIVE_SECTION;
             break;
         case YAML_SEQUENCE_START_EVENT:
             config_clean_archive_pipe(config);
-            *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_PIPE_LIST;
+            *status = YAML_PARSING_STATUS_ARCHIVE_PIPE_LIST;
             break;
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_ARCHIVE_PIPE_LIST:
+    case YAML_PARSING_STATUS_ARCHIVE_PIPE_LIST:
         switch (event->type) {
         case YAML_SCALAR_EVENT: {
             // 1 null between old and new, 1 null at the end
@@ -2237,119 +2278,119 @@ int config_update_from_yaml_event(
             break;
         }
         case YAML_SEQUENCE_END_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION;
+            *status = YAML_PARSING_STATUS_ARCHIVE_SECTION;
             break;
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_CLEAN:
+    case YAML_PARSING_STATUS_CLEAN:
         switch (event->type) {
         case YAML_MAPPING_START_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_CLEAN_SECTION;
+            *status = YAML_PARSING_STATUS_CLEAN_SECTION;
             break;
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_CLEAN_SECTION:
+    case YAML_PARSING_STATUS_CLEAN_SECTION:
         switch (event->type) {
         case YAML_SCALAR_EVENT: {
             char const *const key = (char const *)event->data.scalar.value;
             switch (event->data.scalar.length) {
             case 5:
                 if (!strcmp(key, "repos"))
-                    *status = YAML_CONFIG_PARSING_STATUS_CLEAN_REPOS;
+                    *status = YAML_PARSING_STATUS_CLEAN_REPOS;
                 break;
             case 8:
                 if (!strcmp(key, "archives"))
-                    *status = YAML_CONFIG_PARSING_STATUS_CLEAN_ARCHIVES;
+                    *status = YAML_PARSING_STATUS_CLEAN_ARCHIVES;
                 break;
             case 9:
                 if (!strcmp(key, "checkouts"))
-                    *status = YAML_CONFIG_PARSING_STATUS_CLEAN_CHECKOUTS;
+                    *status = YAML_PARSING_STATUS_CLEAN_CHECKOUTS;
                 break;
             case 10:
                 if (!strcmp(key, "links_pass"))
-                    *status = YAML_CONFIG_PARSING_STATUS_CLEAN_LINKS_PASS;
+                    *status = YAML_PARSING_STATUS_CLEAN_LINKS_PASS;
                 break;
             }
-            if (*status == YAML_CONFIG_PARSING_STATUS_CLEAN_SECTION) {
+            if (*status == YAML_PARSING_STATUS_CLEAN_SECTION) {
                 pr_error("Unrecognized config key '%s'\n", key);
                 return -1;
             }
             break;
         }
         case YAML_MAPPING_END_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            *status = YAML_PARSING_STATUS_SECTION;
             break;
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_WANTED:
+    case YAML_PARSING_STATUS_WANTED:
         switch (event->type) {
         case YAML_MAPPING_START_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_WANTED_SECTION;
+            *status = YAML_PARSING_STATUS_WANTED_SECTION;
             break;
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_WANTED_SECTION:
+    case YAML_PARSING_STATUS_WANTED_SECTION:
         switch (event->type) {
         case YAML_SCALAR_EVENT: {
             char const *const key = (char const *)event->data.scalar.value;
             switch (event->data.scalar.length) {
             case 5:
                 if (!strcmp(key, "empty")) {
-                    *status = YAML_CONFIG_PARSING_STATUS_WANTED_SECTION_START;
-                    *wanted_type = YAML_CONFIG_WANTED_GLOBAL_EMPTY;
+                    *status = YAML_PARSING_STATUS_WANTED_SECTION_START;
+                    *wanted_type = YAML_WANTED_GLOBAL_EMPTY;
                 }
                 break;
             case 6:
                 if (!strcmp(key, "always")) {
-                    *status = YAML_CONFIG_PARSING_STATUS_WANTED_SECTION_START;
-                    *wanted_type = YAML_CONFIG_WANTED_GLOBAL_ALWAYS;
+                    *status = YAML_PARSING_STATUS_WANTED_SECTION_START;
+                    *wanted_type = YAML_WANTED_GLOBAL_ALWAYS;
                 }
                 break;
             }
-            if (*status == YAML_CONFIG_PARSING_STATUS_WANTED_SECTION) {
+            if (*status == YAML_PARSING_STATUS_WANTED_SECTION) {
                 pr_error("Unrecognized config key '%s'\n", key);
                 return -1;
             }
             break;
         }
         case YAML_MAPPING_END_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            *status = YAML_PARSING_STATUS_SECTION;
             break;
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_WANTED_SECTION_START:
+    case YAML_PARSING_STATUS_WANTED_SECTION_START:
         switch (event->type) {
         case YAML_SEQUENCE_START_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_WANTED_LIST;
+            *status = YAML_PARSING_STATUS_WANTED_LIST;
             break;
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_WANTED_LIST:
+    case YAML_PARSING_STATUS_WANTED_LIST:
         switch (event->type) {
         case YAML_SCALAR_EVENT: { // Simple wanted object with only name
             char const *const name = (char const *)event->data.scalar.value;
             unsigned short const len_name = event->data.scalar.length;
             int r = -1;
             switch (*wanted_type) {
-            case YAML_CONFIG_WANTED_UNKNOWN:
+            case YAML_WANTED_UNKNOWN:
                 goto wanted_type_unknown;
-            case YAML_CONFIG_WANTED_GLOBAL_EMPTY:
+            case YAML_WANTED_GLOBAL_EMPTY:
                 r =
                 config_add_empty_wanted_object_and_init_with_name_and_complete(
                     config, name, len_name);
                 break;
-            case YAML_CONFIG_WANTED_GLOBAL_ALWAYS:
+            case YAML_WANTED_GLOBAL_ALWAYS:
                 r =
                 config_add_always_wanted_object_and_init_with_name_and_complete(
                     config, name, len_name);
                 break;
-            case YAML_CONFIG_WANTED_REPO:
+            case YAML_WANTED_REPO:
                 r = repo_add_wanted_object_and_init_with_name_and_complete(
                     get_last(config->repos), name, len_name);
                 break;
@@ -2361,46 +2402,46 @@ int config_update_from_yaml_event(
             break;
         }
         case YAML_MAPPING_START_EVENT: // Complex wanted object
-            *status = YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT;
+            *status = YAML_PARSING_STATUS_WANTED_OBJECT;
             break;
         case YAML_SEQUENCE_END_EVENT:
             switch (*wanted_type) {
-            case YAML_CONFIG_WANTED_UNKNOWN:
+            case YAML_WANTED_UNKNOWN:
                 goto wanted_type_unknown;
-            case YAML_CONFIG_WANTED_GLOBAL_EMPTY:
-            case YAML_CONFIG_WANTED_GLOBAL_ALWAYS:
-                *status = YAML_CONFIG_PARSING_STATUS_WANTED_SECTION;
-                *wanted_type = YAML_CONFIG_WANTED_UNKNOWN;
+            case YAML_WANTED_GLOBAL_EMPTY:
+            case YAML_WANTED_GLOBAL_ALWAYS:
+                *status = YAML_PARSING_STATUS_WANTED_SECTION;
+                *wanted_type = YAML_WANTED_UNKNOWN;
                 break;
-            case YAML_CONFIG_WANTED_REPO:
-                *status = YAML_CONFIG_PARSING_STATUS_REPO_SECTION;
-                *wanted_type = YAML_CONFIG_WANTED_UNKNOWN;
+            case YAML_WANTED_REPO:
+                *status = YAML_PARSING_STATUS_REPO_SECTION;
+                *wanted_type = YAML_WANTED_UNKNOWN;
                 break;
             }
             break;
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT:
+    case YAML_PARSING_STATUS_WANTED_OBJECT:
         switch (event->type) {
         case YAML_SCALAR_EVENT: { // Simple wanted object with only name
             char const *const name = (char const *)event->data.scalar.value;
             unsigned short const len_name = event->data.scalar.length;
             int r = -1;
             switch (*wanted_type) {
-            case YAML_CONFIG_WANTED_UNKNOWN:
+            case YAML_WANTED_UNKNOWN:
                 goto wanted_type_unknown;
-            case YAML_CONFIG_WANTED_GLOBAL_EMPTY:
+            case YAML_WANTED_GLOBAL_EMPTY:
                 r =
                 config_add_empty_wanted_object_and_init_with_name_no_complete(
                     config, name, len_name);
                 break;
-            case YAML_CONFIG_WANTED_GLOBAL_ALWAYS:
+            case YAML_WANTED_GLOBAL_ALWAYS:
                 r =
                 config_add_always_wanted_object_and_init_with_name_no_complete(
                     config, name, len_name);
                 break;
-            case YAML_CONFIG_WANTED_REPO:
+            case YAML_WANTED_REPO:
                 r = repo_add_wanted_object_and_init_with_name_no_complete(
                     get_last(config->repos), name, len_name);
                 break;
@@ -2409,7 +2450,7 @@ int config_update_from_yaml_event(
                 pr_error("Failed to add wanted object\n");
                 return -1;
             }
-            *status = YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_START;
+            *status = YAML_PARSING_STATUS_WANTED_OBJECT_START;
             break;
         }
         case YAML_MAPPING_END_EVENT: {
@@ -2423,55 +2464,55 @@ int config_update_from_yaml_event(
                 pr_error("Failed to finish wanted object\n");
                 return -1;
             }
-            *status = YAML_CONFIG_PARSING_STATUS_WANTED_LIST;
+            *status = YAML_PARSING_STATUS_WANTED_LIST;
             break;
         }
         default:
             goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_START:
+    case YAML_PARSING_STATUS_WANTED_OBJECT_START:
         switch (event->type) {
         case YAML_MAPPING_START_EVENT:
             *status =
-                YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_SECTION;
+                YAML_PARSING_STATUS_WANTED_OBJECT_SECTION;
             break;
         default:
             goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_SECTION:
+    case YAML_PARSING_STATUS_WANTED_OBJECT_SECTION:
         switch (event->type) {
         case YAML_SCALAR_EVENT:{
             char const *const key = (char const *)event->data.scalar.value;
             switch (event->data.scalar.length) {
             case 4:
                 if (!strncmp(key, "type", 4))
-                    *status = YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_TYPE;
+                    *status = YAML_PARSING_STATUS_WANTED_OBJECT_TYPE;
                 break;
             case 7:
                 if (!strncmp(key, "archive", 7))
-                    *status = YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_ARCHIVE;
+                    *status = YAML_PARSING_STATUS_WANTED_OBJECT_ARCHIVE;
                 break;
             case 8:
                 if (!strncmp(key, "checkout", 8))
-                    *status = YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_CHECKOUT;
+                    *status = YAML_PARSING_STATUS_WANTED_OBJECT_CHECKOUT;
                 break;
             }
             if (*status ==
-                YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_SECTION) {
+                YAML_PARSING_STATUS_WANTED_OBJECT_SECTION) {
                 pr_error("Unrecognized config key '%s'\n", key);
                 return -1;
             }
             break;
         }
         case YAML_MAPPING_END_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT;
+            *status = YAML_PARSING_STATUS_WANTED_OBJECT;
             break;
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_TYPE:
+    case YAML_PARSING_STATUS_WANTED_OBJECT_TYPE:
         switch (event->type) {
         case YAML_SCALAR_EVENT: {
             struct wanted_object *restrict wanted_object =
@@ -2488,53 +2529,53 @@ int config_update_from_yaml_event(
                     "Invalid object type '%s'\n", type_string);
                 return -1;
             }
-            *status = YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_SECTION;
+            *status = YAML_PARSING_STATUS_WANTED_OBJECT_SECTION;
             break;
         }
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_DAEMON_INTERVAL:
-    case YAML_CONFIG_PARSING_STATUS_PROXY_AFTER:
-    case YAML_CONFIG_PARSING_STATUS_CONNECT_TIMEOUT:
-    case YAML_CONFIG_PARSING_STATUS_EXPORT_THREADS:
-    case YAML_CONFIG_PARSING_STATUS_CONNECTIONS_PER_SERVER:
-    case YAML_CONFIG_PARSING_STATUS_CLEAN_LINKS_PASS:
+    case YAML_PARSING_STATUS_DAEMON_INTERVAL:
+    case YAML_PARSING_STATUS_PROXY_AFTER:
+    case YAML_PARSING_STATUS_CONNECT_TIMEOUT:
+    case YAML_PARSING_STATUS_EXPORT_THREADS:
+    case YAML_PARSING_STATUS_CONNECTIONS_PER_SERVER:
+    case YAML_PARSING_STATUS_CLEAN_LINKS_PASS:
         switch (event->type) {
         case YAML_SCALAR_EVENT: {
             unsigned long value = strtoul(
                 (char const *)event->data.scalar.value, NULL, 10);
             switch (*status) {
-            case YAML_CONFIG_PARSING_STATUS_DAEMON_INTERVAL:
+            case YAML_PARSING_STATUS_DAEMON_INTERVAL:
                 config->daemon_interval = value;
                 break;
-            case YAML_CONFIG_PARSING_STATUS_PROXY_AFTER:
+            case YAML_PARSING_STATUS_PROXY_AFTER:
                 config->proxy_after = value;
                 break;
-            case YAML_CONFIG_PARSING_STATUS_CONNECT_TIMEOUT:
+            case YAML_PARSING_STATUS_CONNECT_TIMEOUT:
                 config->timeout_connect = value;
                 break;
-            case YAML_CONFIG_PARSING_STATUS_EXPORT_THREADS:
+            case YAML_PARSING_STATUS_EXPORT_THREADS:
                 config->export_threads = value;
                 break;
-            case YAML_CONFIG_PARSING_STATUS_CONNECTIONS_PER_SERVER:
+            case YAML_PARSING_STATUS_CONNECTIONS_PER_SERVER:
                 config->connections_per_server = value;
                 break;
-            case YAML_CONFIG_PARSING_STATUS_CLEAN_LINKS_PASS:
+            case YAML_PARSING_STATUS_CLEAN_LINKS_PASS:
                 config->clean_links_pass = value;
                 break;
             default: goto impossible_status;
             }
             switch (*status) {
-            case YAML_CONFIG_PARSING_STATUS_DAEMON_INTERVAL:
-            case YAML_CONFIG_PARSING_STATUS_PROXY_AFTER:
-            case YAML_CONFIG_PARSING_STATUS_CONNECT_TIMEOUT:
-            case YAML_CONFIG_PARSING_STATUS_EXPORT_THREADS:
-            case YAML_CONFIG_PARSING_STATUS_CONNECTIONS_PER_SERVER:
-                *status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            case YAML_PARSING_STATUS_DAEMON_INTERVAL:
+            case YAML_PARSING_STATUS_PROXY_AFTER:
+            case YAML_PARSING_STATUS_CONNECT_TIMEOUT:
+            case YAML_PARSING_STATUS_EXPORT_THREADS:
+            case YAML_PARSING_STATUS_CONNECTIONS_PER_SERVER:
+                *status = YAML_PARSING_STATUS_SECTION;
                 break;
-            case YAML_CONFIG_PARSING_STATUS_CLEAN_LINKS_PASS:
-                *status = YAML_CONFIG_PARSING_STATUS_CLEAN_SECTION;
+            case YAML_PARSING_STATUS_CLEAN_LINKS_PASS:
+                *status = YAML_PARSING_STATUS_CLEAN_SECTION;
                 break;
             default: goto impossible_status;
             }
@@ -2543,16 +2584,16 @@ int config_update_from_yaml_event(
         default: goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_REPOS:
+    case YAML_PARSING_STATUS_REPOS:
         switch (event->type) {
         case YAML_SEQUENCE_START_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_REPOS_LIST;
+            *status = YAML_PARSING_STATUS_REPOS_LIST;
             break;
         default:
             goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_REPOS_LIST:
+    case YAML_PARSING_STATUS_REPOS_LIST:
         switch (event->type) {
         case YAML_SCALAR_EVENT: // url-only repo
             if (config_add_repo_and_init_with_url(
@@ -2567,16 +2608,16 @@ int config_update_from_yaml_event(
             }
             break;
         case YAML_SEQUENCE_END_EVENT: // all end
-            *status = YAML_CONFIG_PARSING_STATUS_SECTION;
+            *status = YAML_PARSING_STATUS_SECTION;
             break;
         case YAML_MAPPING_START_EVENT: // advanced repo config
-            *status = YAML_CONFIG_PARSING_STATUS_REPO_URL;
+            *status = YAML_PARSING_STATUS_REPO_URL;
             break;
         default:
             goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_REPO_URL:
+    case YAML_PARSING_STATUS_REPO_URL:
         // only accept repo url as mapping name
         switch (event->type) {
         case YAML_SCALAR_EVENT:
@@ -2590,57 +2631,57 @@ int config_update_from_yaml_event(
                     (char const *) event->data.scalar.value);
                 return -1;
             }
-            *status = YAML_CONFIG_PARSING_STATUS_REPO_AFTER_URL;
+            *status = YAML_PARSING_STATUS_REPO_AFTER_URL;
             break;
         case YAML_MAPPING_END_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_REPOS_LIST;
+            *status = YAML_PARSING_STATUS_REPOS_LIST;
             break;
         default:
             goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_REPO_AFTER_URL:
+    case YAML_PARSING_STATUS_REPO_AFTER_URL:
         switch (event->type) {
         case YAML_MAPPING_START_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_REPO_SECTION;
+            *status = YAML_PARSING_STATUS_REPO_SECTION;
             break;
         default:
             goto unexpected_event_type;
         }
         break;
-    case YAML_CONFIG_PARSING_STATUS_REPO_SECTION:
+    case YAML_PARSING_STATUS_REPO_SECTION:
         switch(event->type) {
         case YAML_SCALAR_EVENT: {
             char const *const key = (char const *)event->data.scalar.value;
             switch (event->data.scalar.length) {
             case 6:
                 if (!strncmp(key, "wanted", 6)) {
-                    *status = YAML_CONFIG_PARSING_STATUS_WANTED_SECTION_START;
-                    *wanted_type = YAML_CONFIG_WANTED_REPO;
+                    *status = YAML_PARSING_STATUS_WANTED_SECTION_START;
+                    *wanted_type = YAML_WANTED_REPO;
                 }
                 break;
             }
-            if (*status == YAML_CONFIG_PARSING_STATUS_REPO_SECTION) {
+            if (*status == YAML_PARSING_STATUS_REPO_SECTION) {
                 pr_error("Unrecognized config key '%s'\n", key);
                 return -1;
             }
             break;
         }
         case YAML_MAPPING_END_EVENT:
-            *status = YAML_CONFIG_PARSING_STATUS_REPO_URL;
+            *status = YAML_PARSING_STATUS_REPO_URL;
             break;
         default:
             goto unexpected_event_type;
         }
         break;
     // Boolean common
-    case YAML_CONFIG_PARSING_STATUS_DAEMON:
-    case YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_ARCHIVE:
-    case YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_CHECKOUT:
-    case YAML_CONFIG_PARSING_STATUS_CLEAN_REPOS:
-    case YAML_CONFIG_PARSING_STATUS_CLEAN_ARCHIVES:
-    case YAML_CONFIG_PARSING_STATUS_CLEAN_CHECKOUTS:
-    case YAML_CONFIG_PARSING_STATUS_ARCHIVE_GHPREFIX:
+    case YAML_PARSING_STATUS_DAEMON:
+    case YAML_PARSING_STATUS_WANTED_OBJECT_ARCHIVE:
+    case YAML_PARSING_STATUS_WANTED_OBJECT_CHECKOUT:
+    case YAML_PARSING_STATUS_CLEAN_REPOS:
+    case YAML_PARSING_STATUS_CLEAN_ARCHIVES:
+    case YAML_PARSING_STATUS_CLEAN_CHECKOUTS:
+    case YAML_PARSING_STATUS_ARCHIVE_GHPREFIX:
         switch (event->type) {
         case YAML_SCALAR_EVENT: {
             int bool_value = bool_from_string(
@@ -2651,57 +2692,57 @@ int config_update_from_yaml_event(
                 return -1;
             }
             switch (*status) {
-            case YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_ARCHIVE:
-            case YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_CHECKOUT: {
+            case YAML_PARSING_STATUS_WANTED_OBJECT_ARCHIVE:
+            case YAML_PARSING_STATUS_WANTED_OBJECT_CHECKOUT: {
                 struct wanted_object *restrict wanted_object =
                     config_get_last_wanted_object_of_type(config, *wanted_type);
                 if (wanted_object == NULL) goto wanted_type_unknown;
                 switch (*status) {
-                case YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_ARCHIVE:
+                case YAML_PARSING_STATUS_WANTED_OBJECT_ARCHIVE:
                     wanted_object->archive = bool_value;
                     break;
-                case YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_CHECKOUT:
+                case YAML_PARSING_STATUS_WANTED_OBJECT_CHECKOUT:
                     wanted_object->checkout = bool_value;
                     break;
                 default: goto impossible_status;
                 }
                 break;
             }
-            case YAML_CONFIG_PARSING_STATUS_DAEMON:
+            case YAML_PARSING_STATUS_DAEMON:
                 config->daemon = bool_value;
                 break;
-            case YAML_CONFIG_PARSING_STATUS_CLEAN_REPOS:
+            case YAML_PARSING_STATUS_CLEAN_REPOS:
                 config->clean_repos = bool_value;
                 break;
-            case YAML_CONFIG_PARSING_STATUS_CLEAN_ARCHIVES:
+            case YAML_PARSING_STATUS_CLEAN_ARCHIVES:
                 config->clean_archives = bool_value;
                 break;
-            case YAML_CONFIG_PARSING_STATUS_CLEAN_CHECKOUTS:
+            case YAML_PARSING_STATUS_CLEAN_CHECKOUTS:
                 config->clean_checkouts = bool_value;
                 break;
-            case YAML_CONFIG_PARSING_STATUS_ARCHIVE_GHPREFIX:
+            case YAML_PARSING_STATUS_ARCHIVE_GHPREFIX:
                 config->archive_gh_prefix = bool_value;
                 break;
             default: goto impossible_status;
             }
             switch (*status) {
-            case YAML_CONFIG_PARSING_STATUS_DAEMON:
+            case YAML_PARSING_STATUS_DAEMON:
                 *status = 
-                    YAML_CONFIG_PARSING_STATUS_SECTION;
+                    YAML_PARSING_STATUS_SECTION;
                 break;
-            case YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_ARCHIVE:
-            case YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_CHECKOUT:
+            case YAML_PARSING_STATUS_WANTED_OBJECT_ARCHIVE:
+            case YAML_PARSING_STATUS_WANTED_OBJECT_CHECKOUT:
                 *status =
-                    YAML_CONFIG_PARSING_STATUS_WANTED_OBJECT_SECTION;
+                    YAML_PARSING_STATUS_WANTED_OBJECT_SECTION;
                 break;
-            case YAML_CONFIG_PARSING_STATUS_CLEAN_REPOS:
-            case YAML_CONFIG_PARSING_STATUS_CLEAN_ARCHIVES:
-            case YAML_CONFIG_PARSING_STATUS_CLEAN_CHECKOUTS:
+            case YAML_PARSING_STATUS_CLEAN_REPOS:
+            case YAML_PARSING_STATUS_CLEAN_ARCHIVES:
+            case YAML_PARSING_STATUS_CLEAN_CHECKOUTS:
                 *status =
-                    YAML_CONFIG_PARSING_STATUS_CLEAN_SECTION;
+                    YAML_PARSING_STATUS_CLEAN_SECTION;
                 break;
-            case YAML_CONFIG_PARSING_STATUS_ARCHIVE_GHPREFIX:
-                *status = YAML_CONFIG_PARSING_STATUS_ARCHIVE_SECTION;
+            case YAML_PARSING_STATUS_ARCHIVE_GHPREFIX:
+                *status = YAML_PARSING_STATUS_ARCHIVE_SECTION;
                 break;
             default: goto impossible_status;
             }
@@ -2718,13 +2759,13 @@ wanted_type_unknown:
     return -1;
 impossible_status:
     pr_error("Impossible status %d (%s)\n", *status,
-        yaml_config_parsing_status_strings[*status]);
+        yaml_parsing_status_strings[*status]);
     return -1;
 unexpected_event_type:
     pr_error(
         "Unexpected YAML event type %d (%s) for current status %d (%s)\n",
         event->type, yaml_event_type_strings[event->type],
-        *status, yaml_config_parsing_status_strings[*status]);
+        *status, yaml_parsing_status_strings[*status]);
     return -1;
 }
 
@@ -2836,10 +2877,10 @@ int config_from_yaml(
     yaml_event_t event;
     yaml_event_type_t event_type;
 
-    enum yaml_config_parsing_status status =
-        YAML_CONFIG_PARSING_STATUS_NONE;
-    enum yaml_config_wanted_type wanted_type =
-        YAML_CONFIG_WANTED_UNKNOWN;
+    enum yaml_parsing_statuss status =
+        YAML_PARSING_STATUS_NONE;
+    enum yaml_wanted_type wanted_type =
+        YAML_WANTED_UNKNOWN;
     yaml_parser_initialize(&parser);
     yaml_parser_set_input_string(&parser, yaml_buffer, yaml_size);
 
@@ -2863,8 +2904,8 @@ int config_from_yaml(
         yaml_event_delete(&event);
     } while (event_type != YAML_STREAM_END_EVENT);
 
-    if (status != YAML_CONFIG_PARSING_STATUS_NONE ||
-        wanted_type != YAML_CONFIG_WANTED_UNKNOWN) {
+    if (status != YAML_PARSING_STATUS_NONE ||
+        wanted_type != YAML_WANTED_UNKNOWN) {
         pr_error("Config parsing unclean\n");
         goto error;
     }
@@ -3190,50 +3231,6 @@ int config_finish(
     print_config(config);
 #endif
     return 0;
-}
-
-int config_read(
-    struct config *const restrict config,
-    char const *const restrict config_path
-) {
-    int config_fd = STDIN_FILENO;
-    if (config_path && strcmp(config_path, "-")) {
-        pr_info("Using '%s' as config file\n", config_path);
-        if ((config_fd = open(config_path, O_RDONLY)) < 0) {
-            pr_error_with_errno("Failed to open config file '%s'", config_path);
-            return -1;
-        }
-    } else {
-        pr_info("Reading config from stdin\n");
-        if (isatty(STDIN_FILENO)) {
-            pr_warn(
-                "Standard input (stdin) is connected to a terminal, "
-                "but you've configured to read config from stdin, "
-                "this might not be what you want and may lead to "
-                "your terminal being jammed\n");
-        }
-    }
-    unsigned char *config_buffer = NULL;
-    ssize_t config_size = buffer_read_from_fd(&config_buffer, config_fd);
-    int r = -1;
-    if (config_size < 0) {
-        pr_error("Failed to read config into buffer\n");
-        goto close_config_fd;
-    }
-    if (config_from_yaml(config, config_buffer, config_size)) {
-        pr_error("Failed to read config from YAML\n");
-        goto free_config_buffer;
-    }
-    if (config_finish(config)) {
-        pr_error("Failed to finish config\n");
-        goto free_config_buffer;
-    }
-    r = 0;
-free_config_buffer:
-    if (config_buffer) free(config_buffer);
-close_config_fd:
-    if (config_fd != STDIN_FILENO) close (config_fd);
-    return r;
 }
 
 int work_directory_add_keep(
@@ -5442,8 +5439,8 @@ int tar_add_global_header(
     void const *const restrict content,
     unsigned short const len_content
 ) {
-    struct tar_posix_header global_header =
-        TAR_POSIX_HEADER_PAX_GLOBAL_HEADER_INIT;
+    struct tar_header global_header =
+        TAR_HEADER_PAX_GLOBAL_HEADER_INIT;
     if (snprintf(global_header.size, sizeof global_header.size,
                     "%011o", len_content) < 0) {
         pr_error("Failed to format global header size\n");
@@ -5471,9 +5468,9 @@ int tar_append_longlink_optional(
     char const *const restrict link,
     unsigned short const len_link
 ) {
-    struct tar_posix_header longlink_header;
+    struct tar_header longlink_header;
     if (len_link < sizeof longlink_header.linkname) return 0;
-    longlink_header = TAR_POSIX_HEADER_GNU_LONGLINK_INIT;
+    longlink_header = TAR_HEADER_GNU_LONGLINK_INIT;
     if (snprintf(longlink_header.size, sizeof longlink_header.size,
                     "%011o", len_link + 1) < 0) {
         pr_error("Failed to format long link size\n");
@@ -5500,9 +5497,9 @@ int tar_append_longname_optional(
     char const *const restrict name,
     unsigned short const len_name
 ) {
-    struct tar_posix_header longname_header;
+    struct tar_header longname_header;
     if (len_name < sizeof longname_header.name) return 0;
-    longname_header = TAR_POSIX_HEADER_GNU_LONGNAME_INIT;
+    longname_header = TAR_HEADER_GNU_LONGNAME_INIT;
     if (snprintf(longname_header.size, sizeof longname_header.size,
                     "%011o", len_name + 1) < 0) {
         pr_error("Failed to format long name size\n");
@@ -5540,8 +5537,8 @@ int tar_append_symlink(
         pr_error("Failed to create longname\n");
         return -1;
     }
-    struct tar_posix_header symlink_header =
-        TAR_POSIX_HEADER_SYMLINK_INIT;
+    struct tar_header symlink_header =
+        TAR_HEADER_SYMLINK_INIT;
     memcpy(symlink_header.mtime, mtime, sizeof symlink_header.mtime);
     memcpy(symlink_header.name, name,
         len_name > sizeof symlink_header.name ?
@@ -5574,17 +5571,17 @@ int tar_append_regular_file(
         pr_error("Failed to create longname\n");
         return -1;
     }
-    struct tar_posix_header regular_file_header;
+    struct tar_header regular_file_header;
     switch (mode) {
     case 0644:
-        regular_file_header = TAR_POSIX_HEADER_FILE_REG_INIT;
+        regular_file_header = TAR_HEADER_FILE_REG_INIT;
         break;
     case 0755:
-        regular_file_header = TAR_POSIX_HEADER_FILE_EXE_INIT;
+        regular_file_header = TAR_HEADER_FILE_EXE_INIT;
         break;
     default:
         pr_warn("%03o mode is not expected, but we accept it for now\n", mode);
-        regular_file_header = TAR_POSIX_HEADER_FILE_REG_INIT;
+        regular_file_header = TAR_HEADER_FILE_REG_INIT;
         if (snprintf(regular_file_header.mode, sizeof regular_file_header.mode,
             "%07o", mode) < 0) {
             pr_error("Failed to format mode string\n");
@@ -5627,7 +5624,7 @@ int tar_append_folder(
         pr_error("Failed to create longname\n");
         return -1;
     }
-    struct tar_posix_header folder_header = TAR_POSIX_HEADER_FOLDER_INIT;
+    struct tar_header folder_header = TAR_HEADER_FOLDER_INIT;
     memcpy(folder_header.mtime, mtime, sizeof folder_header.mtime);
     memcpy(folder_header.name, name,
         len_name > sizeof folder_header.name ?
@@ -6015,9 +6012,9 @@ int export_commit_tree_entry_commit(
         pr_error("Failed to get tree pointed by commit\n");
         goto free_commit;
     }
-    char mtime_r[TAR_POSIX_HEADER_MTIME_LEN] = "";
+    char mtime_r[TAR_HEADER_MTIME_LEN] = "";
     if (snprintf(
-        mtime_r, TAR_POSIX_HEADER_MTIME_LEN, "%011lo", git_commit_time(commit)
+        mtime_r, TAR_HEADER_MTIME_LEN, "%011lo", git_commit_time(commit)
     ) < 0) {
         pr_error("Failed to format mtime\n");
         goto free_commit;
@@ -6497,9 +6494,9 @@ int export_commit_write(
         }
         pr_debug("Will add github-like prefix '%s' to tar\n", archive_prefix);
     }
-    char mtime[TAR_POSIX_HEADER_MTIME_LEN] = "";
+    char mtime[TAR_HEADER_MTIME_LEN] = "";
     if (snprintf(
-        mtime, TAR_POSIX_HEADER_MTIME_LEN, "%011lo", git_commit_time(commit)
+        mtime, TAR_HEADER_MTIME_LEN, "%011lo", git_commit_time(commit)
     ) < 0) {
         pr_error("Failed to format mtime\n");
         git_commit_free(commit);
