@@ -7304,12 +7304,16 @@ int export_all_repos_multi_threaded(
         pr_info("No commits to export\n");
         r = 0;
         goto free_commits;
-    }
-    if (export_all_unique_commits_multi_threaded(
-        commits, commits_count, config,
-        workdir_archives, workdir_checkouts)) {
-        pr_error("Failed to export repos (multi-threaded)\n");
-        goto free_commits;
+    } else {
+        r = export_all_unique_commits_multi_threaded(
+            commits, commits_count, config,
+            workdir_archives, workdir_checkouts);
+        free(commits);
+        commits = NULL;
+        if (r) {
+            pr_error("Failed to export repos (multi-threaded)\n");
+            goto free_commits;
+        }
     }
     r = 0;
 free_commits:
