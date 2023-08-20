@@ -266,11 +266,13 @@ struct wanted_reference const WANTED_HEAD_INIT = {
 
 #define REPO_COMMON_DECLARE { \
     STRING_DECLARE(url); \
-    STRING_DECLARE(path); \
-    STRING_DECLARE(name); \
+    STRING_DECLARE(long_name); \
+    STRING_DECLARE(short_name); \
     hash_type   hash_url, \
-                hash_path, \
+                hash_long_name, \
+                hash_short_name, \
                 hash_server; \
+    unsigned short depth_long_name; \
 }
 
 struct repo_common REPO_COMMON_DECLARE;
@@ -327,7 +329,7 @@ struct config {
             daemon;
 };
 
-#define config_get_string(config, name) \
+#define config_get_string(name) \
     config->string_buffer.buffer + name##_offset
 
 #define DIR_REPOS_DEFAULT   "repos"
@@ -850,6 +852,9 @@ int dynamic_array_add(
     return 0;
 }
 
+#define dynamic_array_add_to(name) \
+    dynamic_array_add(&name, sizeof *name, &name##_count, &name##_allocated)
+
 #define BUFFER_READ_CHUNK PAGE_SIZE * 64
 
 /* Return -1 for error */
@@ -1243,11 +1248,7 @@ int yamlconf_parse_archive_pipe_list(
         pr_error("Failed to add string\n");
         return -1;
     }
-    if (dynamic_array_add(
-            &config->archive_pipe_args, 
-            sizeof *config->archive_pipe_args, 
-            &config->archive_pipe_args_count, 
-            &config->archive_pipe_args_allocated)) {
+    if (dynamic_array_add_to(config->archive_pipe_args)) {
         pr_error("Failed to add pipe arg to arrary\n");
         return -1;
     }
@@ -1441,7 +1442,7 @@ int yamlconf_parse_wanted_object_end(
     }
     if (!wanted_object->type) {
         if (!(wanted_object->type = wanted_type_guess_from_name(
-            config_get_string(config, wanted_object->name), 
+            config_get_string(wanted_object->name), 
             wanted_object->len_name))) {
             pr_error("Failed to guess type\n");
             return -1;
@@ -1559,11 +1560,179 @@ impossible_status:
 }
 
 static inline
+int repo_common_init_from_url(
+    struct repo_common *const restrict repo,
+    struct string_buffer *const restrict sbuffer,
+    char const *const restrict url,
+    unsigned short len_url
+) {
+    // Drop trailing slashes
+    while (len_url && url[len_url - 1] == '/') {
+        --len_url;
+    }
+#ifndef TREAT_DOTGIT_AS_DIFFERENT_REPO
+    // Drop trailing .git
+    if (len_url >= 4 && !strncmp(url + len_url - 4, ".git", 4)) {
+        len_url -= 4;
+    }
+#endif
+    if (!len_url) {
+        pr_error("URL is empty\n");
+        return -1;
+    }
+    repo->url_offset = sbuffer->used;
+    if (string_buffer_add(sbuffer, url, repo->len_url = len_url)) {
+        pr_error("Failed to add URL to string buffer\n");
+        return -1;
+    }
+    repo->hash_url = hash_calculate(url, len_url);
+    // This is the allocated one, without trailing / and .git
+    char const *url_simple = sbuffer->buffer + repo->url_offset;
+    for (char const *c = url; *c; ++c) {
+        if (*c == ':' && *(c + 1) == '/' && *(c + 2) == '/') {
+            if (*(c + 3) == '\0') {
+                pr_error("Illegal URL '%s': ending with scheme\n",
+                    url);
+                return -1;
+            }
+            url_simple = c + 3;
+            break;
+        }
+    }
+    // Drop leading slashes
+    while (*url_simple == '/') ++url_simple;
+    // The above logic should change url_simple to like the following:
+    // https://github.com/xxx -> github.com/xxx
+    // file:///what/ever -> what/ever
+
+    // Long name always ends with .git 
+        // (mainly used for local path)
+    // Short name always ends without .git 
+        // (mainly used for gh-like archive prefix)
+    char long_name[256];
+    long_name[0] = '\0';
+    repo->len_long_name = 0;
+    repo->depth_long_name = 1; // depth always starts from 1
+    repo->hash_server = 0;
+    char *short_name = url_simple;
+    for (char const *c = url_simple; *c; ++c) {
+        if (*c == '/') {
+            if (repo->depth_long_name == 1) {
+                // Only record hash, won't access string later
+                repo->hash_server = hash_calculate(url_simple,
+                                                   repo->len_long_name);
+            }
+            // Skip all continous leading /
+            for (; *(c + 1) =='/'; ++c);
+            // When the above loop ends, we're at the last /
+            // of potentially a list of /
+            // In case url is like a/b/c/, ending with /,
+            // we don't want to copy the ending /
+            if (*(c + 1) == '\0') break;
+            ++repo->depth_long_name;
+            short_name = c + 1;
+        }
+        long_name[repo->len_long_name++] = *c;
+    }
+    if (!repo->len_long_name) {
+        pr_error("Long name for url '%s' is empty\n", 
+                    sbuffer->buffer + repo->url_offset);
+        return -1;
+    }
+#ifndef TREAT_DOTGIT_AS_DIFFERENT_REPO
+    memcpy(long_name + repo->len_long_name, ".git", 4);
+    repo->len_long_name += 4;
+#endif
+    repo->long_name_offset = sbuffer->used;
+    if (string_buffer_add(sbuffer, long_name, repo->len_long_name)) {
+        long_name[repo->len_long_name] = '\0';
+        pr_error("Failed to add long name '%s' to string buffer\n",
+                    long_name);
+        return -1;
+    }
+    repo->hash_long_name = hash_calculate(long_name, repo->len_long_name);
+    
+    repo->len_short_name = 0;
+    for (char const *c = short_name; !repo->len_short_name; ++c) {
+        switch (*c) {
+        case '.':
+            if (strcmp(c + 1, "git")) break;
+            __attribute__((fallthrough));
+        case '\0':
+            repo->len_short_name = c - short_name;
+            break;
+        }
+    }
+    if (!repo->len_short_name) {
+        pr_error("Short name for repo '%s' is empty\n", 
+                    sbuffer->buffer + repo->url_offset);
+        return -1;
+    }
+    repo->short_name_offset = sbuffer->used;
+    if (string_buffer_add(sbuffer, short_name, repo->len_short_name)) {
+        pr_error("Failed to add short name '%s' to string buffer\n",
+                short_name);
+        return -1;
+    }
+    repo->hash_short_name = hash_calculate(short_name, repo->len_short_name);
+    return 0;
+
+}
+
+static inline
+int repo_config_init_from_url(
+    struct repo_config *const restrict repo,
+    struct config *const restrict config,
+    char const *const restrict url,
+    unsigned short len_url
+) {
+    repo->wanted_objects = NULL;
+    repo->wanted_objects_allocated = 0;
+    repo->wanted_objects_count = 0;
+    return repo_common_init_from_url(
+        &repo->common, &config->string_buffer, url, len_url);
+}
+
+static inline
 int yamlconf_parse_repos_list_add(
     struct config *const restrict config,
     yaml_event_t const *const restrict event
 ) {
-    
+    char const *const restrict url = (char const *)event->data.scalar.value;
+    unsigned short const len_url = event->data.scalar.length;
+    struct repo_config repo;
+    if (repo_config_init_from_url(
+            &repo, &config->string_buffer, url, len_url)) {
+        pr_error("Failed to init repo\n");
+        return -1;
+    }
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        struct repo_config const *const restrict repo_cmp = 
+            config->repos + i;
+        if (repo_cmp->hash_url == repo.hash_url) {
+            pr_error("Repo '%s' already defined\n", 
+                config_get_string(repo.url));
+            return -1;
+        }
+        if (repo_cmp->hash_long_name == repo.hash_long_name) {
+            pr_warn("Repo '%s' has the same long name '%s' as repo '%s'\n",
+                config_get_string(repo.url),
+                config_get_string(repo.long_name),
+                config_get_string(repo_cmp->url));
+        }
+        if (repo_cmp->hash_long_name == repo.hash_long_name) {
+            pr_warn("Repo '%s' has the same short name '%s' as repo '%s'\n",
+                config_get_string(repo.url),
+                config_get_string(repo.short_name),
+                config_get_string(repo_cmp->url));
+        }
+    }
+    if (dynamic_array_add_to(config->repos)) {
+        pr_error("Failed to add repo\n");
+        return -1;
+    }
+    *(get_last(config->repos)) = repo;
+    return 0;
 }
 
 
@@ -2357,126 +2526,18 @@ int tar_header_checksum_self(struct tar_header *header) {
 
 
 // May re-allocate config->repos
-int config_add_repo_and_init_with_url(
-    struct config *const restrict config,
-    char const *const restrict url,
-    unsigned short const len_url,
-    enum repo_added_from added_from
-) {
-    if (config == NULL || url == NULL || len_url == 0) {
-        pr_error("Internal: invalid argument\n");
-        return -1;
-    }
-    char url_no_scheme_sanitized[PATH_MAX];
-    unsigned short  len_url_no_scheme_sanitized = 0,
-                    url_no_scheme_sanitized_parts = 1;
-    char const *url_no_scheme = url;
-    hash_type server_hash = 0;
-    for (char const *c = url; *c != '\0'; ++c) {
-        if (*c == ':' && *(c + 1) == '/' && *(c + 2) == '/') {
-            if (*(c + 3) == '\0') {
-                pr_error("Illegal URL '%s': ending with scheme\n",
-                    url);
-                return -1;
-            }
-            url_no_scheme = c + 3;
-            break;
-        }
-    }
-    char const *short_name = url_no_scheme;
-    for (char const *c = url_no_scheme; *c; ++c) {
-        if (*c == '/') {
-            if (url_no_scheme_sanitized_parts == 1) {
-                server_hash = hash_calculate(url_no_scheme,
-                                len_url_no_scheme_sanitized);
-            }
-            // Skip all continous leading /
-            for (; *(c + 1) =='/'; ++c);
-            // When the above loop ends, we're at the last /
-            // of potentially a list of /
-            // In case url is like a/b/c/, ending with /,
-            // we don't want to copy the ending /
-            if (*(c + 1) == '\0') break;
-            ++url_no_scheme_sanitized_parts;
-            short_name = c + 1;
-        }
-        url_no_scheme_sanitized[len_url_no_scheme_sanitized++] = *c;
-    }
-    if (len_url_no_scheme_sanitized == 0) {
-        pr_error("Sanitized url for url '%s' is empty\n", url);
-        return -1;
-    }
-    url_no_scheme_sanitized[len_url_no_scheme_sanitized] = '\0';
-    unsigned short len_short_name = 0;
-    for (char const *c = short_name; !len_short_name; ++c) {
-        switch (*c) {
-        case '.':
-            if (strcmp(c + 1, "git")) break;
-            __attribute__((fallthrough));
-        case '\0':
-            len_short_name = c - short_name;
-            break;
-        }
-    }
-    if (len_short_name == 0) {
-        pr_error("Short name length is 0\n");
-        return -1;
-    }
-    if (len_short_name > NAME_MAX) {
-        pr_error("Short name '%s' too long\n", short_name);
-        return -1;
-    }
-    hash_type url_hash = hash_calculate(url, len_url);
-    hash_type url_no_scheme_sanitized_hash = hash_calculate(
-        url_no_scheme_sanitized, len_url_no_scheme_sanitized);
-    for (unsigned long i = 0; i < config->repos_count; ++i) {
-        struct repo const *const restrict repo_cmp = config->repos + i;
-        if (repo_cmp->url_hash == url_hash) {
-            pr_error(
-                "Repo '%s' was already defined, duplication not allowed\n",
-                 url);
-            return -1;
-        }
-        if (repo_cmp->url_no_scheme_sanitized_hash ==
-                url_no_scheme_sanitized_hash) {
-            pr_warn("Repo '%s' and '%s' share the same no scheme sanitized "
-            "url '%s', this is not recommended and you should check upstream "
-            "if they are acutally the same repo\n",
-                url, repo_cmp->url, url_no_scheme_sanitized);
-        }
-    }
-    if (config_add_repo_no_init(config)) {
-        pr_error("Failed to add repo");
-        return -1;
-    }
-    struct repo *const restrict repo = get_last(config->repos);
-    *repo = REPO_INIT;
-    memcpy(repo->url, url, len_url + 1);
-    repo->len_url = len_url;
-    repo->url_hash = url_hash;
-    memcpy(repo->url_no_scheme_sanitized, url_no_scheme_sanitized,
-        len_url_no_scheme_sanitized + 1);
-    repo->len_url_no_scheme_sanitized = len_url_no_scheme_sanitized;
-    repo->url_no_scheme_sanitized_hash = url_no_scheme_sanitized_hash;
-    repo->url_no_scheme_sanitized_parts = url_no_scheme_sanitized_parts;
-    repo->server_hash = server_hash;
-    memcpy(repo->short_name, short_name, len_short_name);
-    repo->short_name[len_short_name] = '\0';
-    repo->added_from = added_from;
-    if (snprintf(repo->hash_name, sizeof repo->hash_name, HASH_FORMAT,
-        repo->url_hash) < 0) {
-        pr_error_with_errno("Failed to format hash name of repo '%s'\n",
-                            repo->url);
-        return -1;
-    }
-    pr_debug("Added repo '%s', "HASH_NAME" %s, "
-            "no scheme sanitized url '%s', short name '%s'\n",
-            repo->url,
-            repo->hash_name,
-            repo->url_no_scheme_sanitized,
-            repo->short_name);
-    return 0;
-}
+// int config_add_repo_and_init_with_url(
+//     struct config *const restrict config,
+//     char const *const restrict url,
+//     unsigned short const len_url,
+//     enum repo_added_from added_from
+// ) {
+//     if (config == NULL || url == NULL || len_url == 0) {
+//         pr_error("Internal: invalid argument\n");
+//         return -1;
+//     }
+    
+// }
 
 
 // int wanted_object_guess_type_self_optional(
