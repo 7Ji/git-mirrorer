@@ -83,8 +83,23 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 /* String */
 
-#define STRING_DECLARE(NAME, LENGTH) \
-    char NAME[LENGTH]; \
+/* 
+ Packed data structure so we don't need to have A LOT of
+ different pointers for all of the strings we need that 
+ each need to be free'd seperately
+
+ The other struct that allocates string inside this buffer
+ shouldn't need to have a sentry value to mark invalid
+ offset, as a length of 0 is enough even if the offset
+ is at its init value 0
+*/
+struct string_buffer {
+    char *buffer;
+    unsigned int used, size;
+};
+
+#define STRING_DECLARE(NAME) \
+    unsigned int NAME##_offset; \
     unsigned short len_##NAME
 
 /* Dynamic array */
@@ -121,8 +136,8 @@ struct commit_id COMMIT_ID_DECLARE;
 
 struct submodule {
     COMMIT_ID_UNION_DECLARE;
-    STRING_DECLARE(path, PATH_MAX);
-    STRING_DECLARE(url, PATH_MAX);
+    STRING_DECLARE(path);
+    STRING_DECLARE(url);
     XXH64_hash_t url_hash;
     unsigned long   target_repo_id,
                     target_commit_id;
@@ -172,7 +187,7 @@ char const *wanted_type_strings[] = {
 
 #define WANTED_BASE_DECLARE {\
     enum wanted_type type;\
-    STRING_DECLARE(name, NAME_MAX + 1); \
+    STRING_DECLARE(name); \
     bool archive;\
     bool checkout;\
 }
@@ -235,8 +250,6 @@ struct wanted_reference const WANTED_TAG_INIT = {
 
 struct wanted_reference const WANTED_HEAD_INIT = {
     .type = WANTED_TYPE_HEAD,
-    .name = "HEAD",
-    .len_name = 4,
     .parsed_commit_id = (unsigned long) -1};
 
 
@@ -252,9 +265,9 @@ struct wanted_reference const WANTED_HEAD_INIT = {
 /* Repo */
 
 #define REPO_COMMON_DECLARE { \
-    STRING_DECLARE(url, PATH_MAX); \
-    STRING_DECLARE(path, PATH_MAX); \
-    STRING_DECLARE(name, NAME_MAX + 1); \
+    STRING_DECLARE(url); \
+    STRING_DECLARE(path); \
+    STRING_DECLARE(name); \
     hash_type   hash_url, \
                 hash_path, \
                 hash_server; \
@@ -281,26 +294,28 @@ struct repo_work {
 
 /* Config */
 
+struct archive_pipe_arg {
+    unsigned int offset;
+    unsigned short len;
+};
+
 #define ARCHIVE_PIPE_ARGS_MAX_COUNT 64
 
 struct config {
+    struct string_buffer string_buffer;
     DYNAMIC_ARRAY_DECLARE(struct repo_config, repo);
     DYNAMIC_ARRAY_DECLARE(struct wanted_base, empty_wanted_object);
     DYNAMIC_ARRAY_DECLARE(struct wanted_base, always_wanted_object);
-    STRING_DECLARE(proxy_url, PATH_MAX);
-    STRING_DECLARE(dir_repos, PATH_MAX);
-    STRING_DECLARE(dir_archives, PATH_MAX);
-    STRING_DECLARE(dir_checkouts, PATH_MAX);
-    STRING_DECLARE(archive_suffix, NAME_MAX + 1);
-    // I don't think some one will write arg that's actually ARG_MAX
-    char archive_pipe_args_buffer[PATH_MAX];
-    char *archive_pipe_args[ARCHIVE_PIPE_ARGS_MAX_COUNT];
+    DYNAMIC_ARRAY_DECLARE_SAME(archive_pipe_arg);
+    STRING_DECLARE(proxy_url);
+    STRING_DECLARE(dir_repos);
+    STRING_DECLARE(dir_archives);
+    STRING_DECLARE(dir_checkouts);
+    STRING_DECLARE(archive_suffix);
     unsigned int    daemon_interval;
     int             timeout_connect; // Technically this should be unsigned,
                                      // but libgit2 wants an int -v-
-    unsigned short  len_archive_pipe_args_buffer,
-                    proxy_after,
-                    archive_pipe_args_count,
+    unsigned short  proxy_after,
                     len_archive_suffix,
                     connections_per_server,
                     export_threads,
@@ -326,10 +341,6 @@ struct config {
     .len_##KEY = sizeof VALUE - 1
 
 struct config const CONFIG_INIT = {
-    STRING_ASSIGN(dir_repos, DIR_REPOS_DEFAULT),
-    STRING_ASSIGN(dir_archives, DIR_ARCHIVES_DEFAULT),
-    STRING_ASSIGN(dir_checkouts, DIR_CHECKOUTS_DEFAULT),
-    STRING_ASSIGN(archive_suffix, ARCHIVE_SUFFIX_DEFAULT),
     .connections_per_server = CONNECTIONS_PER_SERVER_DEFAULT,
     .export_threads = EXPORT_THREADS_DEFAULT,
     .clean_links_pass = CLEAN_LINKS_PASS_DEFAULT,
@@ -470,6 +481,10 @@ unsigned char const EMPTY_512_BLOCK[512] = {0};
 
 
 /* YAML Config */
+
+#define yamlconf_add_string(config, event) \
+    string_buffer_add(&config->string_buffer, \
+            (char const *)event->data.scalar.value, event->data.scalar.length)
 
 char const *yamlconf_event_type_strings[] = {
     "no",
@@ -755,6 +770,44 @@ static inline void version() {
         stderr);
 }
 
+int string_buffer_add(
+    struct string_buffer *const restrict sbuffer,
+    char const *const restrict string,
+    unsigned short const len
+) {
+    unsigned int used_new;
+    char *buffer_new;
+    if (!sbuffer->buffer) {
+        if (!(sbuffer->buffer = malloc(sbuffer->size = PAGE_SIZE))) {
+            pr_error_with_errno(
+                "Failed to allocate memory for string buffer");
+            return -1;
+        }
+    }
+    if ((used_new = sbuffer->used + len + 1) > sbuffer->size) {
+        while (used_new > sbuffer->size) {
+            if (sbuffer->size == UINT_MAX) {
+                pr_error("Impossible to allocate more memory, "
+                    "wanted size at UINT_MAX\n");
+                return -1;
+            } else if (sbuffer->size >= UINT_MAX / ALLOC_MULTIPLIER) {
+                sbuffer->size = UINT_MAX;
+            } else {
+                sbuffer->size *= ALLOC_MULTIPLIER;
+            }
+        }
+        if (!(buffer_new = realloc(sbuffer->buffer, sbuffer->size))) {
+            pr_error_with_errno("Failed to allocate more memory");
+            return -1;
+        }
+        sbuffer->buffer = buffer_new;
+    }
+    memcpy(sbuffer->buffer + sbuffer->used, string, len);
+    *(sbuffer->buffer + sbuffer->used + len) = '\0';
+    sbuffer->used = used_new;
+    return 0;
+}
+
 int dynamic_array_add(
     void const **const restrict array, 
     size_t const size, // Size of an array member 
@@ -928,9 +981,8 @@ int yamlconf_parse_section(
 }
 
 #define YAMLCONF_PARSE_STRING_ASSIGN(NAME) \
-    value = config->NAME; \
-    len = &config->len_##NAME; \
-    maxlen = sizeof config->NAME
+    offset = &config->NAME##_offset; \
+    len = &config->len_##NAME
 
 static inline
 int yamlconf_parse_string(
@@ -938,9 +990,8 @@ int yamlconf_parse_string(
     yaml_event_t const *const restrict event,
     struct yamlconf_parsing_handle *const restrict handle
 ) {
-    char *value = NULL;
+    unsigned int *offset = NULL;
     unsigned short *len = NULL;
-    unsigned short maxlen = 0;
     switch (handle->status) {
     case YAMLCONF_PARSING_STATUS_PROXY:
         YAMLCONF_PARSE_STRING_ASSIGN(proxy_url);
@@ -961,19 +1012,18 @@ int yamlconf_parse_string(
         pr_error("Internal: impossible value\n");
         return -1;
     }
-    if (value == NULL || len == NULL) {
+    if (offset && len);
+    else {
         pr_error("Internal: impossible value\n");
         return -1;
     }
-    if (event->data.scalar.length >= maxlen) {
-        pr_error("Value '%s' too long, length %hu >= max %hu\n", 
-            (char const *)event->data.scalar.value,
-            event->data.scalar.length,
-            maxlen);
+    *offset = config->string_buffer.used;
+    if (yamlconf_add_string(config, event)) {
+        pr_error("Failed to add '%s' to string buffer\n", 
+            event->data.scalar.value);
+        *offset = 0;
         return -1;
     }
-    memcpy(value, event->data.scalar.value, event->data.scalar.length);
-    value[event->data.scalar.length] = '\0';
     *len = event->data.scalar.length;
     switch (handle->status) {
     case YAMLCONF_PARSING_STATUS_PROXY:
@@ -1078,69 +1128,111 @@ int yamlconf_parse_wanted_section(
 }
 
 static inline
-void config_clean_archive_pipe(struct config *const restrict config) {
-    config->archive_pipe_args_count = 0;
-    config->len_archive_pipe_args_buffer = 0;
-    config->archive_pipe_args[0] = NULL;
-    config->archive_pipe_args_buffer[0] = '\0';
-}
-
-static inline
 int yamlconf_parse_archive_pipe(
     struct config *const restrict config,
     yaml_event_t const *const restrict event,
     struct yamlconf_parsing_handle *const restrict handle
 ) {
-    config_clean_archive_pipe(config);
+    config->archive_pipe_args_count = 0;
     if (event->data.scalar.length == 0) {
         return 0;
     }
-    if (event->data.scalar.length >=
-        sizeof config->archive_pipe_args_buffer) {
-        pr_error("Pipe argument and command too long\n");
+    unsigned int args_buffer_offset = config->string_buffer.used;
+    if (yamlconf_add_string(config, event)) {
+        pr_error("Failed to add archive pipe args to string buffer\n");
         return -1;
     }
-    memcpy(config->archive_pipe_args_buffer, event->data.scalar.value,
-        event->data.scalar.length + 1);
-    config->len_archive_pipe_args_buffer = event->data.scalar.length;
-    config->archive_pipe_args[config->archive_pipe_args_count++] =
-        config->archive_pipe_args_buffer;
+    char *args_buffer = config->string_buffer.buffer + args_buffer_offset;
+    // Go first run to remove all whitespaces and count args
+    bool arg_parsing = false;
     for (unsigned short i = 0; i < event->data.scalar.length; ++i) {
-        switch (config->archive_pipe_args_buffer[i]) {
-        case '\t':
-        case '\n':
-        case '\v':
-        case '\f':
-        case '\r':
-        case ' ':
-            config->archive_pipe_args_buffer[i] = '\0';
-            __attribute__((fallthrough));
-        case '\0':
-            if (event->data.scalar.length - i < 2) break;
-            switch (config->archive_pipe_args_buffer[i + 1]) {
+        if (arg_parsing) {
+            switch (args_buffer[i]) {
             case '\t':
             case '\n':
             case '\v':
             case '\f':
             case '\r':
             case ' ':
+                args_buffer[i] = '\0';
+                __attribute__((fallthrough));
             case '\0':
+                arg_parsing = false;
                 break;
-            default:
-                config->archive_pipe_args[
-                    config->archive_pipe_args_count++] =
-                        config->archive_pipe_args_buffer + i + 1;
-                if (config->archive_pipe_args_count >=
-                    ARCHIVE_PIPE_ARGS_MAX_COUNT) {
-                    pr_error("Failed to parse pipe args\n");
-                    config_clean_archive_pipe(config);
+            }
+        } else {
+            switch (args_buffer[i]) {
+                case '\t':
+                case '\n':
+                case '\v':
+                case '\f':
+                case '\r':
+                case ' ':
+                case '\0':
+                    break;
+                default:
+                    arg_parsing = true;
+                    ++config->archive_pipe_args_count;
+            }
+
+        }
+    }
+    if (!config->archive_pipe_args_count) {
+        // only whitespace, empty arg
+        return 0;
+    }
+    bool need_alloc;
+    if (config->archive_pipe_args) {
+        if (config->archive_pipe_args_count > 
+                config->archive_pipe_args_allocated) {
+            free(config->archive_pipe_args);
+            need_alloc = true;
+        } else {
+            need_alloc = false;
+        }
+    } else {
+        need_alloc = true;
+    }
+    if (need_alloc) {
+        if (!(config->archive_pipe_args = malloc(
+                sizeof *config->archive_pipe_args *
+                    config->archive_pipe_args_count))) {
+            pr_error_with_errno(
+                "Failed to allocate memory for archive pipe args");
+            config->archive_pipe_args_allocated = 0;
+            return -1;
+        }
+        config->archive_pipe_args_allocated = config->archive_pipe_args_count;
+    }
+    unsigned int id = 0;
+    arg_parsing = false;
+    for (unsigned short i = 0; i < event->data.scalar.length; ++i) {
+        if (arg_parsing) {
+            if (!args_buffer[i]) {
+                arg_parsing = false;
+                config->archive_pipe_args[id].len = 
+                    i - config->archive_pipe_args[id].offset;
+                if (++id > config->archive_pipe_args_count) {
+                    pr_error("Too many args\n");
                     return -1;
                 }
             }
-            break;
+        } else {
+            if (args_buffer[i]) {
+                arg_parsing = true;
+                config->archive_pipe_args[id].offset = i;
+            }
         }
     }
-    config->archive_pipe_args[config->archive_pipe_args_count] = NULL;
+    if (id == config->archive_pipe_args_count);
+    else if (id == config->archive_pipe_args_count - 1) {
+        // Last one not ended yet
+        config->archive_pipe_args[id].len = event->data.scalar.length - 
+            config->archive_pipe_args[id].offset;
+    } else {
+        pr_error("Impossible value\n");
+        return -1;
+    }
     handle->status = YAMLCONF_PARSING_STATUS_ARCHIVE_SECTION;
     return 0;
 }
@@ -1150,26 +1242,23 @@ int yamlconf_parse_archive_pipe_list(
     struct config *const restrict config,
     yaml_event_t const *const restrict event
 ) {
-    // 1 null between old and new, 1 null at the end
-    if (config->len_archive_pipe_args_buffer +
-        event->data.scalar.length + 2 >=
-        sizeof config->archive_pipe_args_buffer) {
-        pr_error("Arguments too long\n");
+    struct archive_pipe_arg arg = {
+        .offset = config->string_buffer.used,
+        .len = event->data.scalar.length
+    };
+    if (yamlconf_add_string(config, event)) {
+        pr_error("Failed to add string\n");
         return -1;
     }
-    char *new_buffer = config->archive_pipe_args_buffer +
-            config->len_archive_pipe_args_buffer + 1;
-    memcpy(new_buffer, event->data.scalar.value,
-                        event->data.scalar.length + 1);
-    config->archive_pipe_args[config->archive_pipe_args_count++] =
-        new_buffer;
-    config->len_archive_pipe_args_buffer +=
-        event->data.scalar.length + 1;
-    if (config->archive_pipe_args_count >=
-        ARCHIVE_PIPE_ARGS_MAX_COUNT) {
-        pr_error("Too many arguments\n");
+    if (dynamic_array_add(
+            &config->archive_pipe_args, 
+            sizeof *config->archive_pipe_args, 
+            &config->archive_pipe_args_count, 
+            &config->archive_pipe_args_allocated)) {
+        pr_error("Failed to add pipe arg to arrary\n");
         return -1;
     }
+    *(get_last(config->archive_pipe_args)) = arg;
     return 0;
 }
 
@@ -1286,7 +1375,7 @@ int config_update_from_yaml_event(
         case YAML_SCALAR_EVENT:
             return yamlconf_parse_archive_pipe(config, event, handle);
         case YAML_SEQUENCE_START_EVENT:
-            config_clean_archive_pipe(config);
+            config->archive_pipe_args_count = 0;
             handle->status = YAMLCONF_PARSING_STATUS_ARCHIVE_PIPE_LIST;
             break;
         default: goto unexpected_event_type;
