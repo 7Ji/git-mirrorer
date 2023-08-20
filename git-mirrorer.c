@@ -268,11 +268,13 @@ struct wanted_reference const WANTED_HEAD_INIT = {
     STRING_DECLARE(url); \
     STRING_DECLARE(long_name); \
     STRING_DECLARE(short_name); \
+    STRING_DECLARE(path); \
     hash_type   hash_url, \
                 hash_long_name, \
                 hash_short_name, \
                 hash_server; \
     unsigned short depth_long_name; \
+    char hash_url_string[HASH_STRING_LEN + 1]; \
 }
 
 struct repo_common REPO_COMMON_DECLARE;
@@ -1585,7 +1587,14 @@ int repo_common_init_from_url(
         pr_error("Failed to add URL to string buffer\n");
         return -1;
     }
-    repo->hash_url = hash_calculate(url, len_url);
+    if ((snprintf(repo->hash_url_string, 
+                  HASH_STRING_LEN + 1, 
+                  HASH_FORMAT, 
+                  repo->hash_url = hash_calculate(url, len_url)
+                  ) != HASH_STRING_LEN)) {
+        pr_error("Failed to format hash string\n");
+        return -1;
+    }
     // This is the allocated one, without trailing / and .git
     char const *url_simple = sbuffer->buffer + repo->url_offset;
     for (char const *c = url; *c; ++c) {
@@ -1735,6 +1744,139 @@ int yamlconf_parse_repos_list_add(
     return 0;
 }
 
+static inline
+int yamlconf_parse_repo_url(
+    struct config *const restrict config,
+    yaml_event_t const *const restrict event,
+    struct yamlconf_parsing_handle *const restrict handle
+) {
+    int r = yamlconf_parse_repos_list_add(config, event);
+    handle->status = YAMLCONF_PARSING_STATUS_REPO_AFTER_URL;
+    return r;
+}
+
+static inline
+int yamlconf_parse_repo_section(
+    struct config *const restrict config,
+    yaml_event_t const *const restrict event,
+    struct yamlconf_parsing_handle *const restrict handle
+) {
+    char const *const key = (char const *)event->data.scalar.value;
+    switch (event->data.scalar.length) {
+    case 6:
+        if (!strncmp(key, "wanted", 6)) {
+            handle->status = YAMLCONF_PARSING_STATUS_WANTED_SECTION_START;
+            handle->wanted_type = YAMLCONF_WANTED_REPO;
+        }
+        break;
+    }
+    if (handle->status == YAMLCONF_PARSING_STATUS_REPO_SECTION) {
+        pr_error("Unrecognized config key '%s'\n", key);
+        return -1;
+    }
+    return 0;
+}
+
+// 0 for false, 1 for true, -1 for error parsing
+static inline
+int bool_from_string(
+    char const *const restrict string
+) {
+    if (string == NULL || string[0] == '\0') {
+        return -1;
+    }
+    if (strcasecmp(string, "yes") && 
+        strcasecmp(string, "true") && 
+        strcasecmp(string, "enabled"));
+    else {
+        return 1;
+    }
+    if (strcasecmp(string, "no") &&
+        strcasecmp(string, "false") &&
+        strcasecmp(string, "disabled"));
+    else {
+        return 0;
+    }
+    return -1;
+}
+
+static inline
+int yamlconf_parse_boolean(
+    struct config *const restrict config,
+    yaml_event_t const *const restrict event,
+    struct yamlconf_parsing_handle *const restrict handle
+) {
+    int bool_value = bool_from_string(
+        (char const *)event->data.scalar.value);
+    if (bool_value < 0) {
+        pr_error("Failed to parse '%s' into a bool value\n",
+            (char const *)event->data.scalar.value);
+        return -1;
+    }
+    switch (handle->status) {
+    case YAMLCONF_PARSING_STATUS_WANTED_OBJECT_ARCHIVE:
+    case YAMLCONF_PARSING_STATUS_WANTED_OBJECT_CHECKOUT: {
+        struct wanted_base *restrict wanted_object =
+            yamlconf_get_last_wanted_object(config, handle->wanted_type);
+        if (wanted_object == NULL) {
+            pr_error("Failed to find wanted object\n");
+            return -1;
+        }
+        switch (handle->status) {
+        case YAMLCONF_PARSING_STATUS_WANTED_OBJECT_ARCHIVE:
+            wanted_object->archive = bool_value;
+            break;
+        case YAMLCONF_PARSING_STATUS_WANTED_OBJECT_CHECKOUT:
+            wanted_object->checkout = bool_value;
+            break;
+        default: goto impossible_status;
+        }
+        break;
+    }
+    case YAMLCONF_PARSING_STATUS_DAEMON:
+        config->daemon = bool_value;
+        break;
+    case YAMLCONF_PARSING_STATUS_CLEAN_REPOS:
+        config->clean_repos = bool_value;
+        break;
+    case YAMLCONF_PARSING_STATUS_CLEAN_ARCHIVES:
+        config->clean_archives = bool_value;
+        break;
+    case YAMLCONF_PARSING_STATUS_CLEAN_CHECKOUTS:
+        config->clean_checkouts = bool_value;
+        break;
+    case YAMLCONF_PARSING_STATUS_ARCHIVE_GHPREFIX:
+        config->archive_gh_prefix = bool_value;
+        break;
+    default: goto impossible_status;
+    }
+    switch (handle->status) {
+    case YAMLCONF_PARSING_STATUS_DAEMON:
+        handle->status = 
+            YAMLCONF_PARSING_STATUS_SECTION;
+        break;
+    case YAMLCONF_PARSING_STATUS_WANTED_OBJECT_ARCHIVE:
+    case YAMLCONF_PARSING_STATUS_WANTED_OBJECT_CHECKOUT:
+        handle->status =
+            YAMLCONF_PARSING_STATUS_WANTED_OBJECT_SECTION;
+        break;
+    case YAMLCONF_PARSING_STATUS_CLEAN_REPOS:
+    case YAMLCONF_PARSING_STATUS_CLEAN_ARCHIVES:
+    case YAMLCONF_PARSING_STATUS_CLEAN_CHECKOUTS:
+        handle->status =
+            YAMLCONF_PARSING_STATUS_CLEAN_SECTION;
+        break;
+    case YAMLCONF_PARSING_STATUS_ARCHIVE_GHPREFIX:
+        handle->status = YAMLCONF_PARSING_STATUS_ARCHIVE_SECTION;
+        break;
+    default: goto impossible_status;
+    }
+    return 0;
+impossible_status:
+    pr_error("Impossible status %d (%s)\n", handle->status,
+        yamlconf_parsing_status_strings[handle->status]);
+    return -1;
+}
 
 #define YAMLCONF_EVENT_TO_STATUS(EVENT_NAME, STATUS_NAME) \
     case YAML_##EVENT_NAME##_EVENT:\
@@ -1913,78 +2055,33 @@ int config_update_from_yaml_event(
         break;
     case YAMLCONF_PARSING_STATUS_REPOS_LIST:
         switch (event->type) {
-        case YAML_SCALAR_EVENT: // url-only repo
-            if (config_add_repo_and_init_with_url(
-                config,
-                (char const *)event->data.scalar.value,
-                event->data.scalar.length,
-                REPO_ADDED_FROM_CONFIG
-            )) {
-                pr_error("Failed to add repo with url '%s'\n",
-                    (char const *) event->data.scalar.value);
-                return -1;
-            }
-            break;
+        case YAML_SCALAR_EVENT: 
+            return yamlconf_parse_repos_list_add(config, event);
         YAMLCONF_EVENT_TO_STATUS(SEQUENCE_END, SECTION);
         YAMLCONF_EVENT_TO_STATUS(MAPPING_START, REPO_URL);
         default: goto unexpected_event_type;
         }
         break;
     case YAMLCONF_PARSING_STATUS_REPO_URL:
-        // only accept repo url as mapping name
         switch (event->type) {
         case YAML_SCALAR_EVENT:
-            if (config_add_repo_and_init_with_url(
-                config,
-                (char const *)event->data.scalar.value,
-                event->data.scalar.length,
-                REPO_ADDED_FROM_CONFIG
-            )) {
-                pr_error("Failed to add repo with url '%s'\n",
-                    (char const *) event->data.scalar.value);
-                return -1;
-            }
-            handle->status = YAMLCONF_PARSING_STATUS_REPO_AFTER_URL;
-            break;
-        case YAML_MAPPING_END_EVENT:
-            handle->status = YAMLCONF_PARSING_STATUS_REPOS_LIST;
-            break;
-        default:
-            goto unexpected_event_type;
+            return yamlconf_parse_repo_url(config, event, handle);
+        YAMLCONF_EVENT_TO_STATUS(MAPPING_END, REPOS_LIST);
+        default: goto unexpected_event_type;
         }
         break;
     case YAMLCONF_PARSING_STATUS_REPO_AFTER_URL:
         switch (event->type) {
-        case YAML_MAPPING_START_EVENT:
-            handle->status = YAMLCONF_PARSING_STATUS_REPO_SECTION;
-            break;
-        default:
-            goto unexpected_event_type;
+        YAMLCONF_EVENT_TO_STATUS(MAPPING_START, REPO_SECTION);
+        default: goto unexpected_event_type;
         }
         break;
     case YAMLCONF_PARSING_STATUS_REPO_SECTION:
         switch(event->type) {
-        case YAML_SCALAR_EVENT: {
-            char const *const key = (char const *)event->data.scalar.value;
-            switch (event->data.scalar.length) {
-            case 6:
-                if (!strncmp(key, "wanted", 6)) {
-                    handle->status = YAMLCONF_PARSING_STATUS_WANTED_SECTION_START;
-                    *wanted_type = YAML_WANTED_REPO;
-                }
-                break;
-            }
-            if (handle->status == YAMLCONF_PARSING_STATUS_REPO_SECTION) {
-                pr_error("Unrecognized config key '%s'\n", key);
-                return -1;
-            }
-            break;
-        }
-        case YAML_MAPPING_END_EVENT:
-            handle->status = YAMLCONF_PARSING_STATUS_REPO_URL;
-            break;
-        default:
-            goto unexpected_event_type;
+        case YAML_SCALAR_EVENT:
+            return yamlconf_parse_repo_section(config, event, handle);
+        YAMLCONF_EVENT_TO_STATUS(MAPPING_END, REPO_URL);
+        default: goto unexpected_event_type;
         }
         break;
     // Boolean common
@@ -1996,71 +2093,8 @@ int config_update_from_yaml_event(
     case YAMLCONF_PARSING_STATUS_CLEAN_CHECKOUTS:
     case YAMLCONF_PARSING_STATUS_ARCHIVE_GHPREFIX:
         switch (event->type) {
-        case YAML_SCALAR_EVENT: {
-            int bool_value = bool_from_string(
-                (char const *)event->data.scalar.value);
-            if (bool_value < 0) {
-                pr_error("Failed to parse '%s' into a bool value\n",
-                    (char const *)event->data.scalar.value);
-                return -1;
-            }
-            switch (handle->status) {
-            case YAMLCONF_PARSING_STATUS_WANTED_OBJECT_ARCHIVE:
-            case YAMLCONF_PARSING_STATUS_WANTED_OBJECT_CHECKOUT: {
-                struct wanted_object *restrict wanted_object =
-                    config_get_last_wanted_object_of_type(config, *wanted_type);
-                if (wanted_object == NULL) goto wanted_type_unknown;
-                switch (handle->status) {
-                case YAMLCONF_PARSING_STATUS_WANTED_OBJECT_ARCHIVE:
-                    wanted_object->archive = bool_value;
-                    break;
-                case YAMLCONF_PARSING_STATUS_WANTED_OBJECT_CHECKOUT:
-                    wanted_object->checkout = bool_value;
-                    break;
-                default: goto impossible_status;
-                }
-                break;
-            }
-            case YAMLCONF_PARSING_STATUS_DAEMON:
-                config->daemon = bool_value;
-                break;
-            case YAMLCONF_PARSING_STATUS_CLEAN_REPOS:
-                config->clean_repos = bool_value;
-                break;
-            case YAMLCONF_PARSING_STATUS_CLEAN_ARCHIVES:
-                config->clean_archives = bool_value;
-                break;
-            case YAMLCONF_PARSING_STATUS_CLEAN_CHECKOUTS:
-                config->clean_checkouts = bool_value;
-                break;
-            case YAMLCONF_PARSING_STATUS_ARCHIVE_GHPREFIX:
-                config->archive_gh_prefix = bool_value;
-                break;
-            default: goto impossible_status;
-            }
-            switch (handle->status) {
-            case YAMLCONF_PARSING_STATUS_DAEMON:
-                handle->status = 
-                    YAMLCONF_PARSING_STATUS_SECTION;
-                break;
-            case YAMLCONF_PARSING_STATUS_WANTED_OBJECT_ARCHIVE:
-            case YAMLCONF_PARSING_STATUS_WANTED_OBJECT_CHECKOUT:
-                handle->status =
-                    YAMLCONF_PARSING_STATUS_WANTED_OBJECT_SECTION;
-                break;
-            case YAMLCONF_PARSING_STATUS_CLEAN_REPOS:
-            case YAMLCONF_PARSING_STATUS_CLEAN_ARCHIVES:
-            case YAMLCONF_PARSING_STATUS_CLEAN_CHECKOUTS:
-                handle->status =
-                    YAMLCONF_PARSING_STATUS_CLEAN_SECTION;
-                break;
-            case YAMLCONF_PARSING_STATUS_ARCHIVE_GHPREFIX:
-                handle->status = YAMLCONF_PARSING_STATUS_ARCHIVE_SECTION;
-                break;
-            default: goto impossible_status;
-            }
-            break;
-        }
+        case YAML_SCALAR_EVENT: 
+            return yamlconf_parse_boolean(config, event, handle);
         default: goto unexpected_event_type;
         }
         break;
@@ -2069,12 +2103,10 @@ int config_update_from_yaml_event(
 unexpected_event_type:
     pr_error(
         "Unexpected YAML event type %d (%s) for current status %d (%s)\n",
-        event->type, yaml_event_type_strings[event->type],
-        handle->status, yaml_parsing_status_strings[handle->status]);
+        event->type, yamlconf_event_type_strings[event->type],
+        handle->status, yamlconf_parsing_status_strings[handle->status]);
     return -1;
 }
-
-
 
 int config_from_yaml(
     struct config *const restrict config,
@@ -2085,10 +2117,7 @@ int config_from_yaml(
     yaml_event_t event;
     yaml_event_type_t event_type;
 
-    enum yaml_parsing_status status =
-        YAMLCONF_PARSING_STATUS_NONE;
-    enum yaml_wanted_type wanted_type =
-        YAML_WANTED_UNKNOWN;
+    struct yamlconf_parsing_handle handle = {0};
     yaml_parser_initialize(&parser);
     yaml_parser_set_input_string(&parser, buffer, size);
     int r = -1;
@@ -2099,7 +2128,7 @@ int config_from_yaml(
             goto delete_parser;
         }
         if (config_update_from_yaml_event(
-            config, &event, &status, &wanted_type)) {
+            config, &event, &handle)) {
             pr_error("Failed to update config from yaml event"
 #ifdef DEBUGGING
             ", current read config:\n");
@@ -2113,8 +2142,8 @@ int config_from_yaml(
         yaml_event_delete(&event);
     } while (event_type != YAML_STREAM_END_EVENT);
 
-    if (status != YAMLCONF_PARSING_STATUS_NONE ||
-        wanted_type != YAML_WANTED_UNKNOWN) {
+    if (handle.status != YAMLCONF_PARSING_STATUS_NONE ||
+        handle.wanted_type != YAMLCONF_WANTED_UNKNOWN) {
         pr_error("Config parsing unclean\n");
         goto delete_parser;
     }
@@ -2123,6 +2152,147 @@ int config_from_yaml(
 delete_parser:
     yaml_parser_delete(&parser);
     return r;
+}
+
+
+int repo_config_finish(
+    struct repo_config *const restrict repo,
+    struct config const *const restrict config
+) {
+    if (!repo->wanted_objects_count && 
+        config->empty_wanted_objects_count
+    ) {
+        pr_warn("Repo '%s' does not have wanted objects defined, adding global "
+                "wanted objects (when empty) to it as wanted\n", 
+                config_get_string(repo->url));
+        if (repo->wanted_objects) {
+            pr_warn("Wanted objects already allocated? "
+                    "This should not happen\n");
+            free(repo->wanted_objects);
+        }
+        if ((repo->wanted_objects = malloc(
+            sizeof *repo->wanted_objects * empty_wanted_objects_count)) == NULL)
+        {
+            pr_error("Failed to allocate memory\n");
+            return -1;
+        }
+        memcpy(repo->wanted_objects, empty_wanted_objects,
+            sizeof *repo->wanted_objects * empty_wanted_objects_count);
+        repo->wanted_objects_count = empty_wanted_objects_count;
+        repo->wanted_objects_allocated = empty_wanted_objects_count;
+    }
+    if (config->always_wanted_objects_count) {
+        pr_info("Add always wanted objects to repo '%s'\n", repo->url);
+        unsigned long const new_wanted_objects_count =
+            repo->wanted_objects_count + always_wanted_objects_count;
+        if (new_wanted_objects_count > repo->wanted_objects_allocated) {
+            struct wanted_object *wanted_objects_new =
+                realloc(repo->wanted_objects,
+                    sizeof *wanted_objects_new * new_wanted_objects_count);
+            if (wanted_objects_new == NULL) {
+                pr_error("Failed to allocate more memory\n");
+                return -1;
+            }
+            repo->wanted_objects = wanted_objects_new;
+            repo->wanted_objects_allocated = new_wanted_objects_count;
+        }
+        memcpy(repo->wanted_objects + repo->wanted_objects_count,
+                always_wanted_objects,
+                sizeof *repo->wanted_objects * always_wanted_objects_count);
+        repo->wanted_objects_count = new_wanted_objects_count;
+    }
+    repo->wanted_objects_count_original = repo->wanted_objects_count;
+    for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
+        struct wanted_object const *const restrict wanted_object =
+            repo->wanted_objects + i;
+        switch (wanted_object->type) {
+        case WANTED_TYPE_UNKNOWN:
+            pr_error(
+                "Type of wanted object '%s' for repo '%s' is unknown, "
+                "you must set it explicitly\n", wanted_object->name, repo->url);
+            return -1;
+        case WANTED_TYPE_ALL_BRANCHES:
+        case WANTED_TYPE_ALL_TAGS:
+        case WANTED_TYPE_BRANCH:
+        case WANTED_TYPE_TAG:
+        case WANTED_TYPE_HEAD:
+            repo->wanted_dynamic = true;
+            break;
+        default:
+            break;
+        }
+    }
+    if (repo->wanted_dynamic) {
+        pr_debug("Repo '%s' needs dynamic object, will need to update it\n",
+                repo->url);
+    }
+    repo->len_dir_path = len_dir_repos + HASH_STRING_LEN + 1;
+    if (snprintf(repo->dir_path, repo->len_dir_path + 1, "%s/"HASH_FORMAT,
+        dir_repos, repo->url_hash) < 0) {
+        pr_error_with_errno(
+            "Failed to format dir path of repo '%s'\n",
+            repo->url);
+        return -1;
+    }
+    pr_debug("Repo '%s' will be stored at '%s'\n", repo->url, repo->dir_path);
+    return 0;
+}
+
+#define config_set_default_dir(LOWERNAME, UPPERNAME) \
+    if (!config->len_dir_##LOWERNAME##s) { \
+        config->dir_##LOWERNAME##s_offset = config->string_buffer.used; \
+        if (string_buffer_add(&config->string_buffer, \
+            DIR_##UPPERNAME##S_DEFAULT, \
+            config->len_dir_##LOWERNAME##s = \
+                sizeof DIR_##UPPERNAME##S_DEFAULT - 1) \
+        ) { \
+            pr_error("Failed to set default dir for "#LOWERNAME"s\n"); \
+            return -1; \
+        } \
+    }
+
+int config_finish(
+    struct config *const restrict config
+) {
+    config_set_default_dir(repo, REPO);
+    config_set_default_dir(archive, ARCHIVE);
+    config_set_default_dir(checkout, CHECKOUT);
+    if (!config->len_proxy_url && config->proxy_after) {
+        pr_warn(
+            "You've set proxy_after but not set proxy, "
+            "fixing proxy_after to 0\n");
+        config->proxy_after = 0;
+    }
+    if (config->empty_wanted_objects == NULL) {
+        pr_warn("Global wanted objects (when empty) not defined, adding 'HEAD' "
+            "as default\n");
+        if ((config->empty_wanted_objects =
+            malloc(sizeof *config->empty_wanted_objects)) == NULL) {
+            pr_error(
+                "Failed to allocate memory for global wanted objects "
+                "(when empty)\n");
+            return -1;
+        }
+        config->empty_wanted_objects_count = 1;
+        config->empty_wanted_objects_allocated = 1;
+        config->empty_wanted_objects->type = WANTED_TYPE_HEAD;
+    }
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        if (repo_finish(
+            config->repos + i, config->dir_repos, config->len_dir_repos,
+            config->empty_wanted_objects, config->always_wanted_objects,
+            config->empty_wanted_objects_count,
+            config->always_wanted_objects_count)) {
+            pr_error("Failed to finish repo\n");
+            return -1;
+        }
+    }
+    config->repos_count_original = config->repos_count;
+#ifdef DEBUGGING
+    pr_info("Finished config, config is as follows:\n");
+    print_config(config);
+#endif
+    return 0;
 }
 
 int config_read(
@@ -3044,21 +3214,6 @@ close_archives_repo_links_dirfd:
     return r;
 }
 
-// 0 for false, 1 for true, -1 for error parsing
-int bool_from_string(
-    char const *const restrict string
-) {
-    if (string == NULL || string[0] == '\0') {
-        return -1;
-    }
-    if (!strcasecmp(string, "yes") || !strcmp(string, "true")) {
-        return 1;
-    }
-    if (!strcasecmp(string, "no") || !strcmp(string, "false")) {
-        return 0;
-    }
-    return -1;
-}
 
 struct wanted_object *config_get_last_wanted_object_of_last_repo(
     struct config *const restrict config
@@ -3311,95 +3466,6 @@ int repo_guarantee_symlink(
     return 0;
 }
 
-int repo_finish(
-    struct repo *const restrict repo,
-    char const *const restrict dir_repos,
-    unsigned short len_dir_repos,
-    struct wanted_object const *const restrict empty_wanted_objects,
-    struct wanted_object const *const restrict always_wanted_objects,
-    unsigned long const empty_wanted_objects_count,
-    unsigned long const always_wanted_objects_count
-) {
-    if (repo == NULL || dir_repos == NULL || len_dir_repos == 0) {
-        pr_error("Internal: invalid arguments\n");
-        return -1;
-    }
-    if (repo->wanted_objects_count == 0 && empty_wanted_objects_count != 0) {
-        pr_warn("Repo '%s' does not have wanted objects defined, adding global "
-            "wanted objects (when empty) to it as wanted\n", repo->url);
-        if (repo->wanted_objects) {
-            pr_error("Wanted objects already allocated? "
-                    "This should not happen\n");
-            return -1;
-        }
-        if ((repo->wanted_objects = malloc(
-            sizeof *repo->wanted_objects * empty_wanted_objects_count)) == NULL)
-        {
-            pr_error("Failed to allocate memory\n");
-            return -1;
-        }
-        memcpy(repo->wanted_objects, empty_wanted_objects,
-            sizeof *repo->wanted_objects * empty_wanted_objects_count);
-        repo->wanted_objects_count = empty_wanted_objects_count;
-        repo->wanted_objects_allocated = empty_wanted_objects_count;
-    }
-    if (always_wanted_objects_count != 0) {
-        pr_info("Add always wanted objects to repo '%s'\n", repo->url);
-        unsigned long const new_wanted_objects_count =
-            repo->wanted_objects_count + always_wanted_objects_count;
-        if (new_wanted_objects_count > repo->wanted_objects_allocated) {
-            struct wanted_object *wanted_objects_new =
-                realloc(repo->wanted_objects,
-                    sizeof *wanted_objects_new * new_wanted_objects_count);
-            if (wanted_objects_new == NULL) {
-                pr_error("Failed to allocate more memory\n");
-                return -1;
-            }
-            repo->wanted_objects = wanted_objects_new;
-            repo->wanted_objects_allocated = new_wanted_objects_count;
-        }
-        memcpy(repo->wanted_objects + repo->wanted_objects_count,
-                always_wanted_objects,
-                sizeof *repo->wanted_objects * always_wanted_objects_count);
-        repo->wanted_objects_count = new_wanted_objects_count;
-    }
-    repo->wanted_objects_count_original = repo->wanted_objects_count;
-    for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
-        struct wanted_object const *const restrict wanted_object =
-            repo->wanted_objects + i;
-        switch (wanted_object->type) {
-        case WANTED_TYPE_UNKNOWN:
-            pr_error(
-                "Type of wanted object '%s' for repo '%s' is unknown, "
-                "you must set it explicitly\n", wanted_object->name, repo->url);
-            return -1;
-        case WANTED_TYPE_ALL_BRANCHES:
-        case WANTED_TYPE_ALL_TAGS:
-        case WANTED_TYPE_BRANCH:
-        case WANTED_TYPE_TAG:
-        case WANTED_TYPE_HEAD:
-            repo->wanted_dynamic = true;
-            break;
-        default:
-            break;
-        }
-    }
-    if (repo->wanted_dynamic) {
-        pr_debug("Repo '%s' needs dynamic object, will need to update it\n",
-                repo->url);
-    }
-    repo->len_dir_path = len_dir_repos + HASH_STRING_LEN + 1;
-    if (snprintf(repo->dir_path, repo->len_dir_path + 1, "%s/"HASH_FORMAT,
-        dir_repos, repo->url_hash) < 0) {
-        pr_error_with_errno(
-            "Failed to format dir path of repo '%s'\n",
-            repo->url);
-        return -1;
-    }
-    pr_debug("Repo '%s' will be stored at '%s'\n", repo->url, repo->dir_path);
-    return 0;
-}
-
 int repo_finish_bare(
     struct repo *const restrict repo,
     char const *const restrict dir_repos,
@@ -3419,87 +3485,6 @@ int repo_finish_bare(
         return -1;
     }
     pr_debug("Repo '%s' will be stored at '%s'\n", repo->url, repo->dir_path);
-    return 0;
-}
-
-int config_finish(
-    struct config *const restrict config
-) {
-    if (config->archive_pipe_args_count >= ARCHIVE_PIPE_ARGS_MAX_COUNT) {
-        pr_error("Archive pipe arguemnts too many\n");
-        return -1;
-    }
-    if (isatty(STDOUT_FILENO)) {
-        config->fetch_options.callbacks.sideband_progress = sideband_progress;
-        config->fetch_options.callbacks.transfer_progress = fetch_progress;
-    }
-    if (config->dir_repos[0] == '\0') {
-        memcpy(config->dir_repos, DIR_REPOS, sizeof(DIR_REPOS));
-        config->len_dir_repos = sizeof(DIR_REPOS) - 1;
-    }
-    pr_debug("Repos will be stored in '%s'\n", config->dir_repos);
-    if (config->dir_archives[0] == '\0') {
-        memcpy(config->dir_archives, DIR_ARCHIVES, sizeof(DIR_ARCHIVES));
-        config->len_dir_archives = sizeof(DIR_ARCHIVES) - 1;
-    }
-    pr_debug("Archives will be stored in '%s'\n", config->dir_archives);
-    if (config->dir_checkouts[0] == '\0') {
-        memcpy(config->dir_checkouts, DIR_CHECKOUTS, sizeof(DIR_CHECKOUTS));
-        config->len_dir_checkouts = sizeof(DIR_CHECKOUTS) - 1;
-    }
-    pr_debug("Checkouts will be stored in '%s'\n", config->dir_checkouts);
-    if (config->proxy_url[0] != '\0') {
-        if (config->proxy_after) {
-            pr_debug("Will use proxy '%s' after %hu failed fetches\n",
-                config->proxy_url, config->proxy_after);
-        } else {
-            pr_debug("Will use proxy '%s'\n", config->proxy_url);
-        }
-        config->fetch_options.proxy_opts.url = config->proxy_url;
-    } else if (config->proxy_after) {
-        pr_warn(
-            "You've set proxy_after but not set proxy, "
-            "fixing proxy_after to 0\n");
-        config->proxy_after = 0;
-    }
-    if (config->empty_wanted_objects == NULL) {
-        pr_warn("Global wanted objects (when empty) not defined, adding 'HEAD' "
-            "as default\n");
-#ifdef CONFIG_EMPTY_WANTED_OBJECTS_HEAD_SIMPLE_ALLOCATE
-        // This wastes memory for 9 objects
-        if (config_add_empty_wanted_object_no_init(config)) {
-            pr_error("Failed to add global wanted objects (when empty)\n");
-            return -1;
-        }
-        (get_last(config->empty_wanted_objects))->reference = WANTED_HEAD_INIT;
-#else
-        if ((config->empty_wanted_objects =
-            malloc(sizeof *config->empty_wanted_objects)) == NULL) {
-            pr_error(
-                "Failed to allocate memory for global wanted objects "
-                "(when empty)\n");
-            return -1;
-        }
-        config->empty_wanted_objects_count = 1;
-        config->empty_wanted_objects_allocated = 1;
-        config->empty_wanted_objects->reference = WANTED_HEAD_INIT;
-#endif
-    }
-    for (unsigned long i = 0; i < config->repos_count; ++i) {
-        if (repo_finish(
-            config->repos + i, config->dir_repos, config->len_dir_repos,
-            config->empty_wanted_objects, config->always_wanted_objects,
-            config->empty_wanted_objects_count,
-            config->always_wanted_objects_count)) {
-            pr_error("Failed to finish repo\n");
-            return -1;
-        }
-    }
-    config->repos_count_original = config->repos_count;
-#ifdef DEBUGGING
-    pr_info("Finished config, config is as follows:\n");
-    print_config(config);
-#endif
     return 0;
 }
 
