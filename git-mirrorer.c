@@ -327,6 +327,9 @@ struct config {
             daemon;
 };
 
+#define config_get_string(config, name) \
+    config->string_buffer.buffer + name##_offset
+
 #define DIR_REPOS_DEFAULT   "repos"
 #define DIR_ARCHIVES_DEFAULT    "archives"
 #define DIR_CHECKOUTS_DEFAULT   "checkouts"
@@ -917,6 +920,34 @@ on_error:
     return (size_t)-1;
 }
 
+#define YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS_RAW(value, target_status) \
+    if (!strcmp(key, value)) \
+        handle->status = YAMLCONF_PARSING_STATUS_##target_status
+
+#define YAMLCONF_PARSE_SECTION_LENGTH_VALUE_TO_STATUS( \
+            length, value, status) \
+    case length: \
+        YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS_RAW(value, status); \
+        break;
+
+#define YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS( \
+            value, status) \
+        YAMLCONF_PARSE_SECTION_LENGTH_VALUE_TO_STATUS( \
+            sizeof value - 1, value, status)
+
+#define YAMLCONF_PARSE_SECTION_LENGTH_VALUE_TO_STATUS_TWO( \
+            length, value1, status1, value2, status2) \
+    case length: \
+        YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS_RAW(value1, status1); \
+        else YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS_RAW(value2, status2); \
+        break;
+
+#define YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS_TWO( \
+            value1, status1, value2, status2) \
+static_assert(sizeof value1 == sizeof value2, "length different"); \
+        YAMLCONF_PARSE_SECTION_LENGTH_VALUE_TO_STATUS_TWO( \
+            sizeof value1 - 1, value1, status1, value2, status2)
+
 static inline
 int yamlconf_parse_section(
     yaml_event_t const *const restrict event,
@@ -924,54 +955,22 @@ int yamlconf_parse_section(
 ) {
     char const *const key = (char const *)event->data.scalar.value;
     switch (event->data.scalar.length) {
-    case 5:
-        if (!strcmp(key, "proxy"))
-            handle->status = YAMLCONF_PARSING_STATUS_PROXY;
-        else if (!strcmp(key, "repos"))
-            handle->status = YAMLCONF_PARSING_STATUS_REPOS;
-        break;
-    case 6:
-        if (!strcmp(key, "wanted"))
-            handle->status = YAMLCONF_PARSING_STATUS_WANTED;
-        else if (!strcmp(key, "daemon"))
-            handle->status = YAMLCONF_PARSING_STATUS_DAEMON;
-        break;
-    case 7:
-        if (!strcmp(key, "archive"))
-            handle->status = YAMLCONF_PARSING_STATUS_ARCHIVE;
-        else if (!strcmp(key, "cleanup"))
-            handle->status = YAMLCONF_PARSING_STATUS_CLEAN;
-        break;
-    case 9:
-        if (!strcmp(key, "dir_repos"))
-            handle->status = YAMLCONF_PARSING_STATUS_DIR_REPOS;
-        break;
-    case 11:
-        if (!strcmp(key, "proxy_after"))
-            handle->status = YAMLCONF_PARSING_STATUS_PROXY_AFTER;
-        break;
-    case 12:
-        if (!strcmp(key, "dir_archives"))
-            handle->status = YAMLCONF_PARSING_STATUS_DIR_ARCHIVES;
-        break;
-    case 13:
-        if (!strcmp(key, "dir_checkouts"))
-            handle->status = YAMLCONF_PARSING_STATUS_DIR_CHECKOUTS;
-        break;
-    case 14:
-        if (!strcmp(key, "export_threads"))
-            handle->status = YAMLCONF_PARSING_STATUS_EXPORT_THREADS;
-        break;
-    case 15:
-        if (!strcmp(key, "daemon_interval"))
-            handle->status = YAMLCONF_PARSING_STATUS_DAEMON_INTERVAL;
-        else if (!strcmp(key, "connect_timeout"))
-            handle->status = YAMLCONF_PARSING_STATUS_CONNECT_TIMEOUT;
-        break;
-    case 22:
-        if (!strcmp(key, "connections_per_server"))
-            handle->status = YAMLCONF_PARSING_STATUS_CONNECTIONS_PER_SERVER;
-        break;
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS_TWO(
+        "proxy", PROXY, "repos", REPOS);
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS_TWO(
+        "wanted", WANTED, "daemon", DAEMON);
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS_TWO(\
+        "archive", ARCHIVE, "cleanup", CLEAN);
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS("dir_repos", DIR_REPOS);
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS("proxy_after", PROXY_AFTER);
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS("dir_archives", DIR_ARCHIVES);
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS("dir_checkouts", DIR_CHECKOUTS);
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS("export_threads", EXPORT_THREADS);
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS_TWO(
+        "daemon_interval", DAEMON_INTERVAL, 
+        "connect_timeout", CONNECT_TIMEOUT);
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS(
+        "connections_per_server", CONNECTIONS_PER_SERVER);
     }
     if (handle->status == YAMLCONF_PARSING_STATUS_SECTION) {
         pr_error("Unrecognized config key '%s'\n", key);
@@ -1049,18 +1048,10 @@ int yamlconf_parse_archive_section(
 ) {
     char const *const key = (char const *)event->data.scalar.value;
     switch (event->data.scalar.length) {
-    case 6:
-        if (!strcmp(key, "suffix"))
-            handle->status = YAMLCONF_PARSING_STATUS_ARCHIVE_SUFFIX;
-        break;
-    case 12:
-        if (!strcmp(key, "pipe_through"))
-            handle->status = YAMLCONF_PARSING_STATUS_ARCHIVE_PIPE;
-        break;
-    case 18:
-        if (!strcmp(key, "github_like_prefix"))
-            handle->status = YAMLCONF_PARSING_STATUS_ARCHIVE_GHPREFIX;
-        break;
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS("suffix", ARCHIVE_SUFFIX);
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS("pipe_through", ARCHIVE_PIPE);
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS(
+        "github_like_prefix", ARCHIVE_GHPREFIX);
     }
     if (handle->status == YAMLCONF_PARSING_STATUS_ARCHIVE_SECTION) {
         pr_error("Unrecognized key '%s'\n", key);
@@ -1076,22 +1067,10 @@ int yamlconf_parse_clean_section(
 ) {
     char const *const key = (char const *)event->data.scalar.value;
     switch (event->data.scalar.length) {
-    case 5:
-        if (!strcmp(key, "repos"))
-            handle->status = YAMLCONF_PARSING_STATUS_CLEAN_REPOS;
-        break;
-    case 8:
-        if (!strcmp(key, "archives"))
-            handle->status = YAMLCONF_PARSING_STATUS_CLEAN_ARCHIVES;
-        break;
-    case 9:
-        if (!strcmp(key, "checkouts"))
-            handle->status = YAMLCONF_PARSING_STATUS_CLEAN_CHECKOUTS;
-        break;
-    case 10:
-        if (!strcmp(key, "links_pass"))
-            handle->status = YAMLCONF_PARSING_STATUS_CLEAN_LINKS_PASS;
-        break;
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS("repos", CLEAN_REPOS);
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS("archives", CLEAN_ARCHIVES);
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS("checkouts", CLEAN_CHECKOUTS);
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS("links_pass", CLEAN_LINKS_PASS);
     }
     if (handle->status == YAMLCONF_PARSING_STATUS_CLEAN_SECTION) {
         pr_error("Unrecognized config key '%s'\n", key);
@@ -1137,15 +1116,17 @@ int yamlconf_parse_archive_pipe(
     if (event->data.scalar.length == 0) {
         return 0;
     }
-    unsigned int args_buffer_offset = config->string_buffer.used;
-    if (yamlconf_add_string(config, event)) {
-        pr_error("Failed to add archive pipe args to string buffer\n");
+    unsigned short const args_length = event->data.scalar.length;
+    char *args_buffer = malloc(sizeof *args_buffer * (args_length + 1));
+    if (!args_buffer) {
+        pr_error("Failed to allocate memory for buffer\n");
         return -1;
     }
-    char *args_buffer = config->string_buffer.buffer + args_buffer_offset;
-    // Go first run to remove all whitespaces and count args
+    memcpy(args_buffer, event->data.scalar.value, args_length);
+    args_buffer[args_length] = '\0';
+    // Go first run to 1) remove all whitespaces and 2) count args
     bool arg_parsing = false;
-    for (unsigned short i = 0; i < event->data.scalar.length; ++i) {
+    for (unsigned short i = 0; i < args_length; ++i) {
         if (arg_parsing) {
             switch (args_buffer[i]) {
             case '\t':
@@ -1174,12 +1155,13 @@ int yamlconf_parse_archive_pipe(
                     arg_parsing = true;
                     ++config->archive_pipe_args_count;
             }
-
         }
     }
+    int r;
     if (!config->archive_pipe_args_count) {
         // only whitespace, empty arg
-        return 0;
+        r = 0;
+        goto free_args_buffer;
     }
     bool need_alloc;
     if (config->archive_pipe_args) {
@@ -1200,41 +1182,52 @@ int yamlconf_parse_archive_pipe(
             pr_error_with_errno(
                 "Failed to allocate memory for archive pipe args");
             config->archive_pipe_args_allocated = 0;
-            return -1;
+            r = -1;
+            goto free_args_buffer;
         }
         config->archive_pipe_args_allocated = config->archive_pipe_args_count;
     }
     unsigned int id = 0;
+    unsigned int start = 0;
     arg_parsing = false;
-    for (unsigned short i = 0; i < event->data.scalar.length; ++i) {
+    for (unsigned short i = 0; i < args_length + 1; ++i) {
         if (arg_parsing) {
             if (!args_buffer[i]) {
                 arg_parsing = false;
-                config->archive_pipe_args[id].len = 
-                    i - config->archive_pipe_args[id].offset;
+                if (string_buffer_add(
+                        &config->string_buffer, 
+                        args_buffer + start, 
+                        (config->archive_pipe_args[id].len = 
+                            i - start))) {
+                    pr_error("Failed to add arg to string buffer\n");
+                    r = -1;
+                    goto free_args_buffer;
+                }
                 if (++id > config->archive_pipe_args_count) {
                     pr_error("Too many args\n");
-                    return -1;
+                    r = -1;
+                    goto free_args_buffer;
                 }
             }
         } else {
             if (args_buffer[i]) {
                 arg_parsing = true;
-                config->archive_pipe_args[id].offset = i;
+                start = i;
+                config->archive_pipe_args[id].offset = 
+                    config->string_buffer.used;
             }
         }
     }
-    if (id == config->archive_pipe_args_count);
-    else if (id == config->archive_pipe_args_count - 1) {
-        // Last one not ended yet
-        config->archive_pipe_args[id].len = event->data.scalar.length - 
-            config->archive_pipe_args[id].offset;
-    } else {
+    if (id != config->archive_pipe_args_count) {
         pr_error("Impossible value\n");
-        return -1;
+        r = -1;
+        goto free_args_buffer;
     }
     handle->status = YAMLCONF_PARSING_STATUS_ARCHIVE_SECTION;
-    return 0;
+    r = 0;
+free_args_buffer:
+    free(args_buffer);
+    return r;
 }
 
 static inline
@@ -1262,21 +1255,90 @@ int yamlconf_parse_archive_pipe_list(
     return 0;
 }
 
+static inline bool object_name_is_sha1(
+    char const *const restrict object
+) {
+    for (unsigned short i = 0; i < 40; ++i) {
+        switch (object[i]) {
+        case '0'...'9':
+        case 'a'...'f':
+        case 'A'...'F':
+            break;
+        default:
+            return false;
+        }
+    }
+    return true;
+}
+
+enum wanted_type wanted_type_guess_from_name(
+    char const *const restrict name,
+    unsigned short len_name
+) {
+    switch (len_name) {
+    case 3:
+        if (!strncasecmp(name, "dev", 3)) return WANTED_TYPE_BRANCH;
+        break;
+    case 4:
+        if (!strncmp(name, "HEAD", 4)) return WANTED_TYPE_HEAD;
+        else if (!strncasecmp(name, "main", 4)) return WANTED_TYPE_BRANCH;
+        break;
+    case 6:
+        if (!strncasecmp(name, "master", 6)) return WANTED_TYPE_BRANCH;
+        break;
+    case 8:
+        if (!strncasecmp(name, "all_tags", 8)) return WANTED_TYPE_ALL_TAGS;
+        break;
+    case 12:
+        if (!strncasecmp(name, "all_branches", 12))
+            return WANTED_TYPE_ALL_BRANCHES;
+        break;
+    case 40:
+        if (object_name_is_sha1(name)) return WANTED_TYPE_COMMIT;
+        break;
+    default:
+        break;
+    }
+    switch (name[0]) {
+    case 'v':
+    case 'V':
+        switch (name[1]) {
+        case '0'...'9':
+            return WANTED_TYPE_TAG;
+        default:
+            break;
+        }
+        break;
+    default:
+        break;
+    }
+    if (!strncmp(name, "refs/", 5)) return WANTED_TYPE_REFERENCE;
+    pr_error("Failed to figure out the type of wanted object '%s', "
+        "try to set it explicitly e.g. type: branch\n", name);
+    return WANTED_TYPE_UNKNOWN;
+}
+
 #define YAMLCONF_PARSE_WANTED_LIST_ASSIGN(PREFIX) \
     wanted_objects = &PREFIX##wanted_objects; \
     count = &PREFIX##wanted_objects_count; \
     alloc = &PREFIX##wanted_objects_allocated
 
-
 static inline
-int yamlconf_parse_wanted_list(
+int yamlconf_parse_wanted_list_add_object(
     struct config *const restrict config,
     yaml_event_t const *const restrict event,
-    struct yamlconf_parsing_handle *const restrict handle
+    struct yamlconf_parsing_handle *const restrict handle,
+    bool const guess_type
 ) {
     char const *const name = (char const *)event->data.scalar.value;
     unsigned short const len_name = event->data.scalar.length;
-    int r = -1;
+    enum wanted_type const type = guess_type ?
+        wanted_type_guess_from_name(name, len_name) :
+        WANTED_TYPE_UNKNOWN;
+    if (!type) {
+        pr_error("Failed to guess type of '%s'\n", name);
+        return -1;
+    }
     struct wanted_base **wanted_objects = NULL;
     unsigned long *count = NULL, *alloc = NULL;
     switch (handle->wanted_type) {
@@ -1295,16 +1357,215 @@ int yamlconf_parse_wanted_list(
     }
     if (dynamic_array_add(wanted_objects, sizeof **wanted_objects, 
                         count, alloc)) {
-        pr_error("Failed to add wanted object to array");
+        pr_error("Failed to add wanted object to array\n");
         return -1;
     }
     struct wanted_base *wanted_object_last = *wanted_objects + *count - 1;
-    if (r) {
-        pr_error("Failed to add wanted object\n");
+    wanted_object_last->name_offset = config->string_buffer.used;
+    if (string_buffer_add(&config->string_buffer, name, len_name)) {
+        pr_error("Failed to add string\n");
+        return -1;
+    }
+    wanted_object_last->len_name = len_name;
+    wanted_object_last->archive = false;
+    wanted_object_last->checkout = false;
+    wanted_object_last->type = type;
+    return 0;
+}
+
+#define yamlconf_parse_wanted_list(config, event, handle) \
+    yamlconf_parse_wanted_list_add_object(config, event, handle, true)
+
+static inline
+int yamlconf_parse_wanted_list_end(
+    struct yamlconf_parsing_handle *const restrict handle
+) {
+    switch (handle->wanted_type) {
+    case YAMLCONF_WANTED_UNKNOWN:
+        pr_error("Current wanted type (global/empty/repo) unknown\n");
+        return -1;
+    case YAMLCONF_WANTED_GLOBAL_EMPTY:
+    case YAMLCONF_WANTED_GLOBAL_ALWAYS:
+        handle->status = YAMLCONF_PARSING_STATUS_WANTED_SECTION;
+        break;
+    case YAMLCONF_WANTED_REPO:
+        handle->status = YAMLCONF_PARSING_STATUS_REPO_SECTION;
+        break;
+    }
+    handle->wanted_type = YAMLCONF_WANTED_UNKNOWN;
+    return 0;
+}
+
+static inline
+int yamlconf_parse_wanted_object(
+    struct config *const restrict config,
+    yaml_event_t const *const restrict event,
+    struct yamlconf_parsing_handle *const restrict handle
+) {
+    int r = yamlconf_parse_wanted_list_add_object(
+        config, event, handle, false);
+    handle->status = YAMLCONF_PARSING_STATUS_WANTED_OBJECT_START;
+    return r;
+}
+
+static inline
+yamlconf_get_last_wanted_object(
+    struct config *const restrict config,
+    enum yamlconf_wanted_type type
+) {
+    switch (type) {
+    case YAMLCONF_WANTED_UNKNOWN:
+        pr_error("Wanted type unknown\n");
+        return NULL;
+    case YAMLCONF_WANTED_GLOBAL_EMPTY:
+        return get_last(config->empty_wanted_objects);
+    case YAMLCONF_WANTED_GLOBAL_ALWAYS:
+        return get_last(config->always_wanted_objects);
+    case YAMLCONF_WANTED_REPO:
+        struct repo_config const *const restrict repo 
+            = get_last(config->repos);
+        return get_last(repo->wanted_objects);
+    }
+}
+
+static inline
+int yamlconf_parse_wanted_object_end(
+    struct config *const restrict config,
+    struct yamlconf_parsing_handle *const restrict handle
+) {
+    struct wanted_base *const restrict wanted_object = 
+        yamlconf_get_last_wanted_object(config, handle->wanted_type);
+    if (wanted_object == NULL) {
+        pr_error("Failed to get last wanted object\n");
+        return -1;
+    }
+    if (!wanted_object->type) {
+        if (!(wanted_object->type = wanted_type_guess_from_name(
+            config_get_string(config, wanted_object->name), 
+            wanted_object->len_name))) {
+            pr_error("Failed to guess type\n");
+            return -1;
+        }
+    }
+    handle->status = YAMLCONF_PARSING_STATUS_WANTED_LIST;
+    return 0;
+}
+
+static inline
+int yamlconf_parse_wanted_object_section(
+    struct config *const restrict config,
+    yaml_event_t const *const restrict event,
+    struct yamlconf_parsing_handle *const restrict handle
+) {
+    char const *const key = (char const *)event->data.scalar.value;
+    switch (event->data.scalar.length) {
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS("type", WANTED_OBJECT_TYPE);
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS("archive", WANTED_OBJECT_ARCHIVE);
+    YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS("checkout", WANTED_OBJECT_CHECKOUT);
+    }
+    if (handle->status == YAMLCONF_PARSING_STATUS_WANTED_OBJECT_SECTION) {
+        pr_error("Unrecognized config key '%s'\n", key);
         return -1;
     }
     return 0;
 }
+
+static inline
+int yamlconf_parse_wanted_object_type(
+    struct config *const restrict config,
+    yaml_event_t const *const restrict event,
+    struct yamlconf_parsing_handle *const restrict handle
+) {
+    struct wanted_base *restrict wanted_object =
+        yamlconf_get_last_wanted_object(config, handle->wanted_type);
+    if (wanted_object == NULL) {
+        pr_error("Failed to get last wanted object\n");
+        return -1;
+    }
+    char const *const type_string =
+        (char const *)event->data.scalar.value;
+    wanted_object->type = WANTED_TYPE_UNKNOWN;
+    for (enum wanted_type type_cmp = WANTED_TYPE_UNKNOWN; 
+        type_cmp < WANTED_TYPE_MAX; ++type_cmp) {
+        if (!strcasecmp(wanted_type_strings[type_cmp], type_string)) {
+            wanted_object->type = type_cmp;
+            break;
+        }
+    }
+    switch (wanted_object->type) {
+    case WANTED_TYPE_UNKNOWN:
+        pr_error("Wanted type still unknown after setting\n");
+        return -1;
+    case WANTED_TYPE_ALL_BRANCHES:
+    case WANTED_TYPE_ALL_TAGS:
+    case WANTED_TYPE_HEAD:
+        pr_error("Not allowed to manually set type %d ('%s' =~ '%s')\n",
+            wanted_object->type, 
+            wanted_type_strings[wanted_object->type],
+            type_string);
+        return -1;
+    }
+    handle->status = YAMLCONF_PARSING_STATUS_WANTED_OBJECT_SECTION;
+    return 0;
+}
+
+static inline
+int yamlconf_parse_unsigned_integer(
+    struct config *const restrict config,
+    yaml_event_t const *const restrict event,
+    struct yamlconf_parsing_handle *const restrict handle
+) {
+    unsigned long value = strtoul(
+        (char const *)event->data.scalar.value, NULL, 10);
+    switch (handle->status) {
+    case YAMLCONF_PARSING_STATUS_DAEMON_INTERVAL:
+        config->daemon_interval = value;
+        break;
+    case YAMLCONF_PARSING_STATUS_PROXY_AFTER:
+        config->proxy_after = value;
+        break;
+    case YAMLCONF_PARSING_STATUS_CONNECT_TIMEOUT:
+        config->timeout_connect = value;
+        break;
+    case YAMLCONF_PARSING_STATUS_EXPORT_THREADS:
+        config->export_threads = value;
+        break;
+    case YAMLCONF_PARSING_STATUS_CONNECTIONS_PER_SERVER:
+        config->connections_per_server = value;
+        break;
+    case YAMLCONF_PARSING_STATUS_CLEAN_LINKS_PASS:
+        config->clean_links_pass = value;
+        break;
+    default: goto impossible_status;
+    }
+    switch (handle->status) {
+    case YAMLCONF_PARSING_STATUS_DAEMON_INTERVAL:
+    case YAMLCONF_PARSING_STATUS_PROXY_AFTER:
+    case YAMLCONF_PARSING_STATUS_CONNECT_TIMEOUT:
+    case YAMLCONF_PARSING_STATUS_EXPORT_THREADS:
+    case YAMLCONF_PARSING_STATUS_CONNECTIONS_PER_SERVER:
+        handle->status = YAMLCONF_PARSING_STATUS_SECTION;
+        break;
+    case YAMLCONF_PARSING_STATUS_CLEAN_LINKS_PASS:
+        handle->status = YAMLCONF_PARSING_STATUS_CLEAN_SECTION;
+        break;
+    default: goto impossible_status;
+    }
+    return 0;
+impossible_status:
+    pr_error("Impossible status %d (%s)\n", handle->status,
+        yamlconf_parsing_status_strings[handle->status]);
+    return -1;
+}
+
+static inline
+int yamlconf_parse_repos_list_add(
+    struct config *const restrict config,
+    yaml_event_t const *const restrict event
+) {
+    
+}
+
 
 #define YAMLCONF_EVENT_TO_STATUS(EVENT_NAME, STATUS_NAME) \
     case YAML_##EVENT_NAME##_EVENT:\
@@ -1427,136 +1688,39 @@ int config_update_from_yaml_event(
         switch (event->type) {
         case YAML_SCALAR_EVENT: // Simple wanted object with only name
             return yamlconf_parse_wanted_list(config, event, handle);
-        case YAML_MAPPING_START_EVENT: // Complex wanted object
-            handle->status = YAMLCONF_PARSING_STATUS_WANTED_OBJECT;
-            break;
         case YAML_SEQUENCE_END_EVENT:
-            switch (handle->wanted_type) {
-            case YAMLCONF_WANTED_UNKNOWN:
-                goto wanted_type_unknown;
-            case YAMLCONF_WANTED_GLOBAL_EMPTY:
-            case YAMLCONF_WANTED_GLOBAL_ALWAYS:
-                handle->status = YAMLCONF_PARSING_STATUS_WANTED_SECTION;
-                break;
-            case YAMLCONF_WANTED_REPO:
-                handle->status = YAMLCONF_PARSING_STATUS_REPO_SECTION;
-                break;
-            }
-            handle->wanted_type = YAMLCONF_WANTED_UNKNOWN;
-            break;
+            return yamlconf_parse_wanted_list_end(handle);
+        YAMLCONF_EVENT_TO_STATUS(MAPPING_START, WANTED_OBJECT);
         default: goto unexpected_event_type;
         }
         break;
     case YAMLCONF_PARSING_STATUS_WANTED_OBJECT:
         switch (event->type) {
-        case YAML_SCALAR_EVENT: { // Simple wanted object with only name
-            char const *const name = (char const *)event->data.scalar.value;
-            unsigned short const len_name = event->data.scalar.length;
-            int r = -1;
-            switch (*wanted_type) {
-            case YAML_WANTED_UNKNOWN:
-                goto wanted_type_unknown;
-            case YAML_WANTED_GLOBAL_EMPTY:
-                r =
-                config_add_empty_wanted_object_and_init_with_name_no_complete(
-                    config, name, len_name);
-                break;
-            case YAML_WANTED_GLOBAL_ALWAYS:
-                r =
-                config_add_always_wanted_object_and_init_with_name_no_complete(
-                    config, name, len_name);
-                break;
-            case YAML_WANTED_REPO:
-                r = repo_add_wanted_object_and_init_with_name_no_complete(
-                    get_last(config->repos), name, len_name);
-                break;
-            }
-            if (r) {
-                pr_error("Failed to add wanted object\n");
-                return -1;
-            }
-            handle->status = YAMLCONF_PARSING_STATUS_WANTED_OBJECT_START;
-            break;
-        }
-        case YAML_MAPPING_END_EVENT: {
-            struct wanted_object *const restrict wanted_object =
-                config_get_last_wanted_object_of_type(config, *wanted_type);
-            if (wanted_object == NULL) {
-                pr_error("Failed to get last wanted object\n");
-                return -1;
-            }
-            if (wanted_object_complete(wanted_object)) {
-                pr_error("Failed to finish wanted object\n");
-                return -1;
-            }
-            handle->status = YAMLCONF_PARSING_STATUS_WANTED_LIST;
-            break;
-        }
-        default:
-            goto unexpected_event_type;
+        case YAML_SCALAR_EVENT: // Complex wanted object
+            return yamlconf_parse_wanted_object(config, event, handle);
+        case YAML_MAPPING_END_EVENT:
+            return yamlconf_parse_wanted_object_end(config, handle);
+        default: goto unexpected_event_type;
         }
         break;
     case YAMLCONF_PARSING_STATUS_WANTED_OBJECT_START:
         switch (event->type) {
-        case YAML_MAPPING_START_EVENT:
-            handle->status =
-                YAMLCONF_PARSING_STATUS_WANTED_OBJECT_SECTION;
-            break;
-        default:
-            goto unexpected_event_type;
+        YAMLCONF_EVENT_TO_STATUS(MAPPING_START, WANTED_OBJECT_SECTION);
+        default: goto unexpected_event_type;
         }
         break;
     case YAMLCONF_PARSING_STATUS_WANTED_OBJECT_SECTION:
         switch (event->type) {
-        case YAML_SCALAR_EVENT:{
-            char const *const key = (char const *)event->data.scalar.value;
-            switch (event->data.scalar.length) {
-            case 4:
-                if (!strncmp(key, "type", 4))
-                    handle->status = YAMLCONF_PARSING_STATUS_WANTED_OBJECT_TYPE;
-                break;
-            case 7:
-                if (!strncmp(key, "archive", 7))
-                    handle->status = YAMLCONF_PARSING_STATUS_WANTED_OBJECT_ARCHIVE;
-                break;
-            case 8:
-                if (!strncmp(key, "checkout", 8))
-                    handle->status = YAMLCONF_PARSING_STATUS_WANTED_OBJECT_CHECKOUT;
-                break;
-            }
-            if (handle->status ==
-                YAMLCONF_PARSING_STATUS_WANTED_OBJECT_SECTION) {
-                pr_error("Unrecognized config key '%s'\n", key);
-                return -1;
-            }
-            break;
-        }
-        case YAML_MAPPING_END_EVENT:
-            handle->status = YAMLCONF_PARSING_STATUS_WANTED_OBJECT;
-            break;
+        case YAML_SCALAR_EVENT:
+            return yamlconf_parse_wanted_object_section(config, event, handle);
+        YAMLCONF_EVENT_TO_STATUS(MAPPING_END, WANTED_OBJECT);
         default: goto unexpected_event_type;
         }
         break;
     case YAMLCONF_PARSING_STATUS_WANTED_OBJECT_TYPE:
         switch (event->type) {
-        case YAML_SCALAR_EVENT: {
-            struct wanted_object *restrict wanted_object =
-                config_get_last_wanted_object_of_type(config, *wanted_type);
-            if (wanted_object == NULL) {
-                pr_error("Failed to get last wanted object\n");
-                return -1;
-            }
-            char const *const type_string =
-                (char const *)event->data.scalar.value;
-            if (wanted_object_fill_type_from_string(
-                    wanted_object, type_string)) {
-                pr_error(
-                    "Invalid object type '%s'\n", type_string);
-                return -1;
-            }
-            handle->status = YAMLCONF_PARSING_STATUS_WANTED_OBJECT_SECTION;
-            break;
-        }
+        case YAML_SCALAR_EVENT:
+            return yamlconf_parse_wanted_object_type(config, event, handle);
         default: goto unexpected_event_type;
         }
         break;
@@ -1567,55 +1731,15 @@ int config_update_from_yaml_event(
     case YAMLCONF_PARSING_STATUS_CONNECTIONS_PER_SERVER:
     case YAMLCONF_PARSING_STATUS_CLEAN_LINKS_PASS:
         switch (event->type) {
-        case YAML_SCALAR_EVENT: {
-            unsigned long value = strtoul(
-                (char const *)event->data.scalar.value, NULL, 10);
-            switch (handle->status) {
-            case YAMLCONF_PARSING_STATUS_DAEMON_INTERVAL:
-                config->daemon_interval = value;
-                break;
-            case YAMLCONF_PARSING_STATUS_PROXY_AFTER:
-                config->proxy_after = value;
-                break;
-            case YAMLCONF_PARSING_STATUS_CONNECT_TIMEOUT:
-                config->timeout_connect = value;
-                break;
-            case YAMLCONF_PARSING_STATUS_EXPORT_THREADS:
-                config->export_threads = value;
-                break;
-            case YAMLCONF_PARSING_STATUS_CONNECTIONS_PER_SERVER:
-                config->connections_per_server = value;
-                break;
-            case YAMLCONF_PARSING_STATUS_CLEAN_LINKS_PASS:
-                config->clean_links_pass = value;
-                break;
-            default: goto impossible_status;
-            }
-            switch (handle->status) {
-            case YAMLCONF_PARSING_STATUS_DAEMON_INTERVAL:
-            case YAMLCONF_PARSING_STATUS_PROXY_AFTER:
-            case YAMLCONF_PARSING_STATUS_CONNECT_TIMEOUT:
-            case YAMLCONF_PARSING_STATUS_EXPORT_THREADS:
-            case YAMLCONF_PARSING_STATUS_CONNECTIONS_PER_SERVER:
-                handle->status = YAMLCONF_PARSING_STATUS_SECTION;
-                break;
-            case YAMLCONF_PARSING_STATUS_CLEAN_LINKS_PASS:
-                handle->status = YAMLCONF_PARSING_STATUS_CLEAN_SECTION;
-                break;
-            default: goto impossible_status;
-            }
-            break;
-        }
+        case YAML_SCALAR_EVENT:
+            return yamlconf_parse_unsigned_integer(config, event, handle);
         default: goto unexpected_event_type;
         }
         break;
     case YAMLCONF_PARSING_STATUS_REPOS:
         switch (event->type) {
-        case YAML_SEQUENCE_START_EVENT:
-            handle->status = YAMLCONF_PARSING_STATUS_REPOS_LIST;
-            break;
-        default:
-            goto unexpected_event_type;
+        YAMLCONF_EVENT_TO_STATUS(SEQUENCE_START, REPOS_LIST);
+        default: goto unexpected_event_type;
         }
         break;
     case YAMLCONF_PARSING_STATUS_REPOS_LIST:
@@ -1632,14 +1756,9 @@ int config_update_from_yaml_event(
                 return -1;
             }
             break;
-        case YAML_SEQUENCE_END_EVENT: // all end
-            handle->status = YAMLCONF_PARSING_STATUS_SECTION;
-            break;
-        case YAML_MAPPING_START_EVENT: // advanced repo config
-            handle->status = YAMLCONF_PARSING_STATUS_REPO_URL;
-            break;
-        default:
-            goto unexpected_event_type;
+        YAMLCONF_EVENT_TO_STATUS(SEQUENCE_END, SECTION);
+        YAMLCONF_EVENT_TO_STATUS(MAPPING_START, REPO_URL);
+        default: goto unexpected_event_type;
         }
         break;
     case YAMLCONF_PARSING_STATUS_REPO_URL:
@@ -1778,14 +1897,6 @@ int config_update_from_yaml_event(
         break;
     }
     return 0;
-wanted_type_unknown:
-    pr_error("Wanted type unknown (global empty/ global always/ repo), "
-                "this shouldn't happen\n");
-    return -1;
-impossible_status:
-    pr_error("Impossible status %d (%s)\n", handle->status,
-        yaml_parsing_status_strings[handle->status]);
-    return -1;
 unexpected_event_type:
     pr_error(
         "Unexpected YAML event type %d (%s) for current status %d (%s)\n",
@@ -2367,167 +2478,105 @@ int config_add_repo_and_init_with_url(
     return 0;
 }
 
-static inline bool object_name_is_sha1(
-    char const *const restrict object
-) {
-    for (unsigned short i = 0; i < 40; ++i) {
-        switch (object[i]) {
-        case '0'...'9':
-        case 'a'...'f':
-        case 'A'...'F':
-            break;
-        default:
-            return false;
-        }
-    }
-    return true;
-}
 
-enum wanted_type wanted_type_guess_from_name(
-    char const *const restrict name,
-    unsigned short len_name
-) {
-    switch (len_name) {
-    case 3:
-        if (!strncasecmp(name, "dev", 3)) return WANTED_TYPE_BRANCH;
-        break;
-    case 4:
-        if (!strncmp(name, "HEAD", 4)) return WANTED_TYPE_HEAD;
-        else if (!strncasecmp(name, "main", 4)) return WANTED_TYPE_BRANCH;
-        break;
-    case 6:
-        if (!strncasecmp(name, "master", 6)) return WANTED_TYPE_BRANCH;
-        break;
-    case 8:
-        if (!strncasecmp(name, "all_tags", 8)) return WANTED_TYPE_ALL_TAGS;
-        break;
-    case 12:
-        if (!strncasecmp(name, "all_branches", 12))
-            return WANTED_TYPE_ALL_BRANCHES;
-        break;
-    case 40:
-        if (object_name_is_sha1(name)) return WANTED_TYPE_COMMIT;
-        break;
-    default:
-        break;
-    }
-    switch (name[0]) {
-    case 'v':
-    case 'V':
-        switch (name[1]) {
-        case '0'...'9':
-            return WANTED_TYPE_TAG;
-        default:
-            break;
-        }
-        break;
-    default:
-        break;
-    }
-    if (!strncmp(name, "refs/", 5)) return WANTED_TYPE_REFERENCE;
-    pr_error("Failed to figure out the type of wanted object '%s', "
-        "try to set it explicitly e.g. type: branch\n", name);
-    return WANTED_TYPE_UNKNOWN;
-}
+// int wanted_object_guess_type_self_optional(
+//     struct wanted_object *wanted_object
+// ) {
+//     if (wanted_object->type != WANTED_TYPE_UNKNOWN) return 0;
+//     if ((wanted_object->type = wanted_type_guess_from_name(
+//         wanted_object->name, wanted_object->len_name
+//     )) == WANTED_TYPE_UNKNOWN) {
+//         pr_error("Failed to guess type\n");
+//         return -1;
+//     }
+//     return 0;
+// }
 
-int wanted_object_guess_type_self_optional(
-    struct wanted_object *wanted_object
-) {
-    if (wanted_object->type != WANTED_TYPE_UNKNOWN) return 0;
-    if ((wanted_object->type = wanted_type_guess_from_name(
-        wanted_object->name, wanted_object->len_name
-    )) == WANTED_TYPE_UNKNOWN) {
-        pr_error("Failed to guess type\n");
-        return -1;
-    }
-    return 0;
-}
+// int wanted_object_fill_type_from_string(
+//     struct wanted_object *wanted_object,
+//     char const *const restrict type
+// ) {
+//     for (enum wanted_type i = 1; i <= WANTED_TYPE_MAX; ++i) {
+//         if (!strcmp(type, wanted_type_strings[i])) {
+//             wanted_object->type = i;
+//             return 0;
+//         }
+//     }
+//     return -1;
+// }
 
-int wanted_object_fill_type_from_string(
-    struct wanted_object *wanted_object,
-    char const *const restrict type
-) {
-    for (enum wanted_type i = 1; i <= WANTED_TYPE_MAX; ++i) {
-        if (!strcmp(type, wanted_type_strings[i])) {
-            wanted_object->type = i;
-            return 0;
-        }
-    }
-    return -1;
-}
+// int wanted_object_complete_commit(
+//     struct wanted_commit *wanted_object
+// ) {
+//     if (git_oid_fromstr(&wanted_object->oid, wanted_object->name)) {
+//         pr_error("Failed to resolve '%s' to a git object id\n",
+//             wanted_object->name);
+//         return -1;
+//     }
+//     if (git_oid_tostr(
+//             wanted_object->hex_string,
+//             sizeof wanted_object->hex_string,
+//             &wanted_object->oid
+//         )[0] == '\0') {
+//         pr_error("Failed to format git oid hex string\n");
+//         return -1;
+//     }
+//     return 0;
+// }
 
-int wanted_object_complete_commit(
-    struct wanted_commit *wanted_object
-) {
-    if (git_oid_fromstr(&wanted_object->oid, wanted_object->name)) {
-        pr_error("Failed to resolve '%s' to a git object id\n",
-            wanted_object->name);
-        return -1;
-    }
-    if (git_oid_tostr(
-            wanted_object->hex_string,
-            sizeof wanted_object->hex_string,
-            &wanted_object->oid
-        )[0] == '\0') {
-        pr_error("Failed to format git oid hex string\n");
-        return -1;
-    }
-    return 0;
-}
+// int wanted_object_complete(
+//     struct wanted_object *wanted_object
+// ) {
+//     if (wanted_object_guess_type_self_optional(wanted_object)) {
+//         pr_error("Failed to guess type of object with unknown type\n");
+//         return -1;
+//     }
+//     switch (wanted_object->type) {
+//     case WANTED_TYPE_UNKNOWN:
+//         pr_error("Impossible to complete an object with unknown type\n");
+//         return -1;
+//     case WANTED_TYPE_ALL_BRANCHES: // These two does not need to be upgraded
+//     case WANTED_TYPE_ALL_TAGS:
+//     case WANTED_TYPE_REFERENCE:
+//     case WANTED_TYPE_BRANCH:
+//     case WANTED_TYPE_TAG:
+//     case WANTED_TYPE_HEAD:
+//         return 0;
+//     case WANTED_TYPE_COMMIT:
+//         return wanted_object_complete_commit(
+//             (struct wanted_commit *)wanted_object);
+//     default:
+//         pr_error("Impossible routine\n");
+//         return -1;
+//     }
+//     return 0;
+// }
 
-int wanted_object_complete(
-    struct wanted_object *wanted_object
-) {
-    if (wanted_object_guess_type_self_optional(wanted_object)) {
-        pr_error("Failed to guess type of object with unknown type\n");
-        return -1;
-    }
-    switch (wanted_object->type) {
-    case WANTED_TYPE_UNKNOWN:
-        pr_error("Impossible to complete an object with unknown type\n");
-        return -1;
-    case WANTED_TYPE_ALL_BRANCHES: // These two does not need to be upgraded
-    case WANTED_TYPE_ALL_TAGS:
-    case WANTED_TYPE_REFERENCE:
-    case WANTED_TYPE_BRANCH:
-    case WANTED_TYPE_TAG:
-    case WANTED_TYPE_HEAD:
-        return 0;
-    case WANTED_TYPE_COMMIT:
-        return wanted_object_complete_commit(
-            (struct wanted_commit *)wanted_object);
-    default:
-        pr_error("Impossible routine\n");
-        return -1;
-    }
-    return 0;
-}
+// void wanted_object_init_with_name(
+//     struct wanted_object *wanted_object,
+//     char const *const restrict name,
+//     unsigned short const len_name
+// ) {
+//     *wanted_object = WANTED_OBJECT_INIT;
+//     memcpy(wanted_object->name, name, len_name);
+//     wanted_object->name[len_name] = '\0';
+//     wanted_object->len_name = len_name;
+// }
 
-void wanted_object_init_with_name(
-    struct wanted_object *wanted_object,
-    char const *const restrict name,
-    unsigned short const len_name
-) {
-    *wanted_object = WANTED_OBJECT_INIT;
-    memcpy(wanted_object->name, name, len_name);
-    wanted_object->name[len_name] = '\0';
-    wanted_object->len_name = len_name;
-}
-
-int wanted_object_init_with_name_and_type_and_complete(
-    struct wanted_object *wanted_object,
-    char const *const restrict name,
-    unsigned short const len_name,
-    enum wanted_type const wanted_type
-) {
-    wanted_object_init_with_name(wanted_object, name, len_name);
-    wanted_object->type = wanted_type;
-    if (wanted_object_complete(wanted_object)) {
-        pr_error("Failed to complete object\n");
-        return -1;
-    }
-    return 0;
-}
+// int wanted_object_init_with_name_and_type_and_complete(
+//     struct wanted_object *wanted_object,
+//     char const *const restrict name,
+//     unsigned short const len_name,
+//     enum wanted_type const wanted_type
+// ) {
+//     wanted_object_init_with_name(wanted_object, name, len_name);
+//     wanted_object->type = wanted_type;
+//     if (wanted_object_complete(wanted_object)) {
+//         pr_error("Failed to complete object\n");
+//         return -1;
+//     }
+//     return 0;
+// }
 
 // #define declare_func_add_wanted_object_and_init_with_name_no_complete(\
 //     PARENT, CHILDPREFIX...) \
