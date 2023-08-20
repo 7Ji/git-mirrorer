@@ -2170,21 +2170,21 @@ int repo_config_finish(
                     "This should not happen\n");
             free(repo->wanted_objects);
         }
-        if ((repo->wanted_objects = malloc(
-            sizeof *repo->wanted_objects * empty_wanted_objects_count)) == NULL)
-        {
+        size_t const size = 
+            sizeof *repo->wanted_objects * config->empty_wanted_objects_count;
+        if (!(repo->wanted_objects = malloc(size))) {
             pr_error("Failed to allocate memory\n");
             return -1;
         }
-        memcpy(repo->wanted_objects, empty_wanted_objects,
-            sizeof *repo->wanted_objects * empty_wanted_objects_count);
-        repo->wanted_objects_count = empty_wanted_objects_count;
-        repo->wanted_objects_allocated = empty_wanted_objects_count;
+        memcpy(repo->wanted_objects, config->empty_wanted_objects, size);
+        repo->wanted_objects_count = config->empty_wanted_objects_count;
+        repo->wanted_objects_allocated = config->empty_wanted_objects_count;
     }
     if (config->always_wanted_objects_count) {
-        pr_info("Add always wanted objects to repo '%s'\n", repo->url);
+        pr_info("Add always wanted objects to repo '%s'\n", 
+                    config_get_string(repo->url));
         unsigned long const new_wanted_objects_count =
-            repo->wanted_objects_count + always_wanted_objects_count;
+            repo->wanted_objects_count + config->always_wanted_objects_count;
         if (new_wanted_objects_count > repo->wanted_objects_allocated) {
             struct wanted_object *wanted_objects_new =
                 realloc(repo->wanted_objects,
@@ -2197,44 +2197,25 @@ int repo_config_finish(
             repo->wanted_objects_allocated = new_wanted_objects_count;
         }
         memcpy(repo->wanted_objects + repo->wanted_objects_count,
-                always_wanted_objects,
-                sizeof *repo->wanted_objects * always_wanted_objects_count);
+                config->always_wanted_objects,
+                sizeof *repo->wanted_objects * 
+                    config->always_wanted_objects_count);
         repo->wanted_objects_count = new_wanted_objects_count;
     }
-    repo->wanted_objects_count_original = repo->wanted_objects_count;
-    for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
-        struct wanted_object const *const restrict wanted_object =
-            repo->wanted_objects + i;
-        switch (wanted_object->type) {
-        case WANTED_TYPE_UNKNOWN:
-            pr_error(
-                "Type of wanted object '%s' for repo '%s' is unknown, "
-                "you must set it explicitly\n", wanted_object->name, repo->url);
-            return -1;
-        case WANTED_TYPE_ALL_BRANCHES:
-        case WANTED_TYPE_ALL_TAGS:
-        case WANTED_TYPE_BRANCH:
-        case WANTED_TYPE_TAG:
-        case WANTED_TYPE_HEAD:
-            repo->wanted_dynamic = true;
-            break;
-        default:
-            break;
-        }
-    }
-    if (repo->wanted_dynamic) {
-        pr_debug("Repo '%s' needs dynamic object, will need to update it\n",
-                repo->url);
-    }
-    repo->len_dir_path = len_dir_repos + HASH_STRING_LEN + 1;
-    if (snprintf(repo->dir_path, repo->len_dir_path + 1, "%s/"HASH_FORMAT,
-        dir_repos, repo->url_hash) < 0) {
-        pr_error_with_errno(
-            "Failed to format dir path of repo '%s'\n",
-            repo->url);
+    char path[NAME_MAX + 1];
+    memcpy(path, config_get_string(config->dir_repos), config->len_dir_repos);
+    path[repo->len_path] = '/';
+    memcpy(path + config->len_dir_repos + 1, 
+           repo->hash_url_string, 
+           HASH_STRING_LEN);
+    if (string_buffer_add(&config->string_buffer, 
+                          path, 
+                          repo->len_path = 
+                            config->len_dir_repos + HASH_STRING_LEN + 1)
+    ) {
+        pr_error("Failed to add string to buffer\n");
         return -1;
     }
-    pr_debug("Repo '%s' will be stored at '%s'\n", repo->url, repo->dir_path);
     return 0;
 }
 
@@ -2278,7 +2259,7 @@ int config_finish(
         config->empty_wanted_objects->type = WANTED_TYPE_HEAD;
     }
     for (unsigned long i = 0; i < config->repos_count; ++i) {
-        if (repo_finish(
+        if (repo_config_finish(
             config->repos + i, config->dir_repos, config->len_dir_repos,
             config->empty_wanted_objects, config->always_wanted_objects,
             config->empty_wanted_objects_count,
