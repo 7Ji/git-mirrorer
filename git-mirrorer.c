@@ -196,10 +196,13 @@ struct wanted_base WANTED_BASE_DECLARE;
 
 struct wanted_base const WANTED_BASE_INIT = {0};
 
-struct wanted_base const WANTED_ALL_BRANCHES_INIT = {
+struct wanted_base const WANTED_BASE_HEAD_INIT = {
+    .type = WANTED_TYPE_HEAD};
+
+struct wanted_base const WANTED_BASE_ALL_BRANCHES_INIT = {
     .type = WANTED_TYPE_ALL_BRANCHES };
 
-struct wanted_base const WANTED_ALL_TAGS_INIT = {
+struct wanted_base const WANTED_BASE_ALL_TAGS_INIT = {
     .type = WANTED_TYPE_ALL_TAGS };
 
 #define WANTED_COMMIT_DECLARE { \
@@ -295,7 +298,6 @@ struct repo_work {
     bool from_config, wanted_dynamic, updated;
 };
 
-
 /* Config */
 
 struct archive_pipe_arg {
@@ -334,6 +336,7 @@ struct config {
 #define config_get_string(name) \
     config->string_buffer.buffer + name##_offset
 
+#define DIR_LINKS   "links"
 #define DIR_REPOS_DEFAULT   "repos"
 #define DIR_ARCHIVES_DEFAULT    "archives"
 #define DIR_CHECKOUTS_DEFAULT   "checkouts"
@@ -343,9 +346,9 @@ struct config {
 #define CLEAN_LINKS_PASS_DEFAULT    1
 #define DAEMON_INTERVAL_DEFAULT 60
 
-#define STRING_ASSIGN(KEY, VALUE) \
-    .KEY = VALUE, \
-    .len_##KEY = sizeof VALUE - 1
+// #define STRING_ASSIGN(KEY, VALUE) \
+//     .KEY = VALUE, \
+//     .len_##KEY = sizeof VALUE - 1
 
 struct config const CONFIG_INIT = {
     .connections_per_server = CONNECTIONS_PER_SERVER_DEFAULT,
@@ -357,23 +360,36 @@ struct config const CONFIG_INIT = {
 
 /* Work */
 
-struct work_directory {
-    char const *path;
-    int dirfd;
-    int links_dirfd;
-    DYNAMIC_ARRAY_DECLARE_RAW(char (*keeps)[NAME_MAX + 1], keep);
+struct work_keep {
+    unsigned int offset;
+    unsigned short len;
 };
 
+struct work_directory {
+    STRING_DECLARE(path);
+    int fd;
+    int linkfd;
+    DYNAMIC_ARRAY_DECLARE(struct work_keep, keep);
+};
+
+#define WORK_DIRECTORY_INIT_ASSIGN .fd = -1, .linkfd = -1
 struct work_directory const WORK_DIRECTORY_INIT = {
-    .dirfd = -1, .links_dirfd = -1};
+    WORK_DIRECTORY_INIT_ASSIGN};
 
 struct work_handle {
+    struct string_buffer string_buffer;
     struct config const *config;
     char const *config_path;
     DYNAMIC_ARRAY_DECLARE(struct repo_work, repo);
-    struct work_directory workdir_repos,
-                          workdir_archives,
-                          workdir_checkouts;
+    struct work_directory dir_repos,
+                          dir_archives,
+                          dir_checkouts;
+};
+
+struct work_handle const WORK_HANDLE_INIT = {
+    .dir_repos = {WORK_DIRECTORY_INIT_ASSIGN},
+    .dir_archives = {WORK_DIRECTORY_INIT_ASSIGN},
+    .dir_checkouts = {WORK_DIRECTORY_INIT_ASSIGN}
 };
 
 /* TAR */
@@ -815,6 +831,57 @@ int string_buffer_add(
     return 0;
 }
 
+int string_buffer_partial_free(
+    struct string_buffer *const restrict sbuffer
+) {
+    char *buffer_new;
+    if (!sbuffer) {
+        pr_error("Internal: called passed NULL pointer to us\n");
+        return -1;
+    }
+    if (!sbuffer->used) {
+        if (sbuffer->buffer) free(sbuffer->buffer);
+        sbuffer->buffer = NULL;
+        sbuffer->size = 0;
+        return 0;
+    }
+    if (!sbuffer->buffer) {
+        pr_error("String buffer not allocated but it's marked as used\n");
+        return -1;
+    }
+    if (sbuffer->size == sbuffer->used) return 0;
+    if (sbuffer->used > sbuffer->size) {
+        pr_error("Used buffer larger than size, impossible\n");
+        return -1;
+    }
+    if (!(buffer_new = realloc(sbuffer->buffer, sbuffer->used))) {
+        pr_error_with_errno("Failed to re-allocate memory for buffer");
+        return -1;
+    }
+    sbuffer->buffer = buffer_new;
+    sbuffer->size = sbuffer->used;
+    return 0;
+}
+
+int string_buffer_clone(
+    struct string_buffer *const restrict target,
+    struct string_buffer const *const restrict source
+) {
+    if (target && source);
+    else {
+        pr_error("Internal: called passed NULL pointer to us\n");
+        return -1;
+    }
+    target->size = (source->used + PAGE_SIZE - 1) / PAGE_SIZE  * PAGE_SIZE;
+    if (!(target->buffer = malloc(target->size))) {
+        pr_error_with_errno("Failed to allocate memory for new string buffer");
+        return -1;
+    }
+    if (!(target->used = source->used)) return 0;
+    memcpy(target->buffer, source->buffer, target->used);
+    return 0;
+}
+
 int dynamic_array_add(
     void const **const restrict array, 
     size_t const size, // Size of an array member 
@@ -833,29 +900,67 @@ int dynamic_array_add(
             return -1;
         }
     }
-    if (++*count > *alloc) {
-        while (*count > *alloc) {
-            if (*alloc == ULONG_MAX) {
-                pr_error("Impossible to allocate more memory, allocate count"
-                    "at max possible value\n");
-                return -1;
-            } else if (*alloc >= ULONG_MAX / ALLOC_MULTIPLIER) {
-                *alloc = ULONG_MAX;
-            } else {
-                *alloc *= ALLOC_MULTIPLIER;
-            }
-        }
-        if (!(array_new = realloc(*array, size * *alloc))) {
-            pr_error_with_errno("Failed to re-allocate memory for array");
+    if (++*count <= *alloc) return 0;
+    while (*count > *alloc) {
+        if (*alloc == ULONG_MAX) {
+            pr_error("Impossible to allocate more memory, allocate count"
+                "at max possible value\n");
             return -1;
+        } else if (*alloc >= ULONG_MAX / ALLOC_MULTIPLIER) {
+            *alloc = ULONG_MAX;
+        } else {
+            *alloc *= ALLOC_MULTIPLIER;
         }
-        *array = array_new;
     }
+    if (!(array_new = realloc(*array, size * *alloc))) {
+        pr_error_with_errno("Failed to re-allocate memory for array");
+        return -1;
+    }
+    *array = array_new;
     return 0;
 }
 
 #define dynamic_array_add_to(name) \
     dynamic_array_add(&name, sizeof *name, &name##_count, &name##_allocated)
+
+int dynamic_array_partial_free(
+    void const **const restrict array, 
+    size_t const size, // Size of an array member 
+    unsigned long const count, 
+    unsigned long *const restrict alloc
+) {
+    void *array_new;
+    if (array && alloc);
+    else {
+        pr_error("Caller passed NULL pointer to us\n");
+        return -1;
+    }
+    if (!count) {
+        if (*array) free(*array);
+        *array = NULL;
+        *alloc = 0;
+        return 0;
+    }
+    if (!*array) {
+        pr_error("Array not allocated but it's marked as used\n");
+        return -1;
+    }
+    if (count == *alloc) return 0;
+    if (count > *alloc) {
+        pr_error("Current count larger than allocated, impossible\n");
+        return -1;
+    }
+    if (!(array_new = realloc(*array, size * count))) {
+        pr_error_with_errno("Failed to re-allocate memory for array");
+        return -1;
+    }
+    *array = array_new;
+    *alloc = count;
+    return 0;
+}
+
+#define dynamic_array_partial_free_to(name) \
+    dynamic_array_partial_free(&name, sizeof *name, name##_count, &name##_allocated)
 
 #define BUFFER_READ_CHUNK PAGE_SIZE * 64
 
@@ -1592,7 +1697,7 @@ int repo_common_init_from_url(
                   HASH_FORMAT, 
                   repo->hash_url = hash_calculate(url, len_url)
                   ) != HASH_STRING_LEN)) {
-        pr_error("Failed to format hash string\n");
+        pr_error_with_errno("Failed to format hash string");
         return -1;
     }
     // This is the allocated one, without trailing / and .git
@@ -1618,7 +1723,7 @@ int repo_common_init_from_url(
         // (mainly used for local path)
     // Short name always ends without .git 
         // (mainly used for gh-like archive prefix)
-    char long_name[256];
+    char long_name[PATH_MAX];
     long_name[0] = '\0';
     repo->len_long_name = 0;
     repo->depth_long_name = 1; // depth always starts from 1
@@ -1641,7 +1746,12 @@ int repo_common_init_from_url(
             ++repo->depth_long_name;
             short_name = c + 1;
         }
-        long_name[repo->len_long_name++] = *c;
+        long_name[repo->len_long_name] = *c;
+        if (++repo->len_long_name >= PATH_MAX) {
+            pr_error("Long name of url '%s' too long\n",
+                sbuffer->buffer + repo->url_offset);
+            return -1;
+        }
     }
     if (!repo->len_long_name) {
         pr_error("Long name for url '%s' is empty\n", 
@@ -2202,9 +2312,9 @@ int repo_config_finish(
                     config->always_wanted_objects_count);
         repo->wanted_objects_count = new_wanted_objects_count;
     }
-    char path[NAME_MAX + 1];
+    char path[PATH_MAX];
     memcpy(path, config_get_string(config->dir_repos), config->len_dir_repos);
-    path[repo->len_path] = '/';
+    path[config->len_dir_repos] = '/';
     memcpy(path + config->len_dir_repos + 1, 
            repo->hash_url_string, 
            HASH_STRING_LEN);
@@ -2256,23 +2366,58 @@ int config_finish(
         }
         config->empty_wanted_objects_count = 1;
         config->empty_wanted_objects_allocated = 1;
-        config->empty_wanted_objects->type = WANTED_TYPE_HEAD;
+        *config->empty_wanted_objects = WANTED_BASE_HEAD_INIT;
     }
     for (unsigned long i = 0; i < config->repos_count; ++i) {
         if (repo_config_finish(
-            config->repos + i, config->dir_repos, config->len_dir_repos,
-            config->empty_wanted_objects, config->always_wanted_objects,
-            config->empty_wanted_objects_count,
-            config->always_wanted_objects_count)) {
+            config->repos + i, config)) {
             pr_error("Failed to finish repo\n");
             return -1;
         }
     }
-    config->repos_count_original = config->repos_count;
-#ifdef DEBUGGING
-    pr_info("Finished config, config is as follows:\n");
-    print_config(config);
-#endif
+    return 0;
+}
+
+static inline
+int repo_config_partial_free(
+    struct repo_config *const restrict repo
+) {
+    return dynamic_array_partial_free_to(repo->wanted_objects);
+}
+
+// Free the parts not needed anymore
+static inline
+int config_partial_free(
+    struct config *const restrict config
+) {
+    if (config->repos) {
+        for (unsigned long i = 0; i < config->repos_count; ++i) {
+            if (repo_config_partial_free(config->repos + i)) {
+                pr_error("Failed to release memory used by repo\n");
+                return -1;
+            }
+        }
+        if (dynamic_array_partial_free_to(config->repos)) {
+            pr_error("Failed to release memory used by repos\n");
+            return -1;
+        }
+    }
+    if (dynamic_array_partial_free_to(config->always_wanted_objects)) {
+        pr_error("Failed to relaese memory used by always wanted objects\n");
+        return -1;
+    }
+    if (dynamic_array_partial_free_to(config->empty_wanted_objects)) {
+        pr_error("Failed to relaese memory used by empty wanted objects\n");
+        return -1;
+    }
+    if (dynamic_array_partial_free_to(config->archive_pipe_args)) {
+        pr_error("Failed to relaese memory used by archive pipe args\n");
+        return -1;
+    }
+    if (string_buffer_partial_free(&config->string_buffer)) {
+        pr_error("Failed to release memory used by string buffer\n");
+        return -1;
+    }
     return 0;
 }
 
@@ -2312,6 +2457,10 @@ int config_read(
         pr_error("Failed to finish config\n");
         goto free_config_buffer;
     }
+    if (config_partial_free(config)) {
+        pr_error("Failed to free memory allocated but not used by config\n");
+        goto free_config_buffer;
+    }
     r = 0;
 free_config_buffer:
     if (config_buffer) free(config_buffer);
@@ -2320,8 +2469,7 @@ close_config_fd:
     return r;
 }
 
-
-
+static inline
 int mkdir_allow_existing(
     char *const restrict path
 ) {
@@ -2347,25 +2495,345 @@ int mkdir_allow_existing(
 }
 
 int mkdir_recursively(
-    char *const restrict path
+    char const *const restrict path,
+    unsigned short const len_path
 ) {
-    for (char *c = path; ; ++c) {
-        switch (*c) {
-        case '\0':
-            return mkdir_allow_existing(path);
+    if (path && len_path);
+    else {
+        pr_error("Internal: caller passed NULL pointer or 0-length path\n");
+        return -1;
+    }
+    char path_stack[0x100]; // 256 is long enough for normal paths
+    char *path_heap = NULL;
+    char *path_dup;
+    if (len_path >= sizeof path_stack) {
+        if (!(path_heap = malloc(len_path + 1))) {
+            pr_error_with_errno("Failed to allocate memory");
+            return -1;
+        }
+        path_dup = path_heap;
+    } else {
+        path_dup = path_stack;
+    }
+    memcpy(path_dup, path, len_path);
+    path_dup[len_path] = '\0';
+    unsigned short from_left = 0;
+    int r;
+    /* Go from right to reduce mkdir calls */
+    /* In the worst case this takes double the time than from left */
+    /* but in the most cases parents should exist and this should */
+    /* skip redundant mkdir syscalls */
+    for (unsigned short i = len_path; i; --i) {
+        bool revert_slash = false;
+        switch (path_dup[i]) {
         case '/':
-            *c = '\0';
-            int r = mkdir_allow_existing(path);
-            *c = '/';
+            path_dup[i] = '\0';
+            revert_slash = true;
+            __attribute__((fallthrough));
+        case '\0':
+            r = mkdir_allow_existing(path_dup);
+            if (revert_slash) path_dup[i] = '/';
+            if (!r) {
+                if (!revert_slash) return 0;
+                from_left = i + 1;
+                goto from_left;
+            }
+            break;
+        }
+    }
+from_left:
+    for (unsigned short i = from_left; i < len_path; ++i) {
+        bool revert_slash = false;
+        switch (path_dup[i]) {
+        case '/':
+            path_dup[i] = '\0';
+            revert_slash = true;
+            __attribute__((fallthrough));
+        case '\0':
+            r = mkdir_allow_existing(path_dup);
+            if (revert_slash) path_dup[i] = '/';
             if (r) {
-                pr_error("Failed to mkdir recursively '%s'\n", path);
+                pr_error("Failed to mkdir '%s'\n", path_dup);
+                r = -1;
+                goto free_path_heap;
+            }
+            break;
+        }
+    }
+    r = 0;
+free_path_heap:
+    if (path_heap) free(path_heap);
+    return r;
+}
+
+int work_directory_init_from_path(
+    struct work_directory *const restrict workdir,
+    struct string_buffer *const restrict sbuffer,
+    char const *const restrict path,
+    unsigned short const len_path,
+    struct work_keep const *const restrict links_keep
+) {
+    workdir->path_offset = sbuffer->used;
+    if (string_buffer_add(sbuffer, path, len_path)) {
+        pr_error("Failed to add path '%s' to string buffer\n", path);
+        return -1;
+    }
+    workdir->len_path = len_path;
+
+    if ((workdir->fd =
+        open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+        switch (errno) {
+        case ENOENT:
+            if (mkdir_recursively(path, len_path)) {
+                pr_error("Failed to create folder '%s'\n", path);
+                return -1;
+            }
+            if ((workdir->fd =
+                open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+                pr_error_with_errno("Still failed to open '%s' as directory\n",
+                                    path);
                 return -1;
             }
             break;
         default:
-            break;
+            pr_error_with_errno("Failed to open '%s' as directory", path);
+            return -1;
         }
     }
+
+    if ((workdir->linkfd = openat(
+                workdir->fd, DIR_LINKS,
+                O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+        switch (errno) {
+        case ENOENT:
+            if (mkdirat(workdir->fd, DIR_LINKS, 0755) < 0) {
+                pr_error_with_errno(
+                    "Failed to create links subdir under '%s'", path);
+                goto close_dirfd;
+            }
+            if ((workdir->linkfd = openat(
+                        workdir->fd, DIR_LINKS,
+                        O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+                pr_error_with_errno(
+                    "Failed to open links subdir under '%s' as directory after "
+                    "creating it", path);
+                goto close_dirfd;
+            }
+            break;
+        default:
+            pr_error_with_errno(
+                "Failed to open links subdir under '%s' as directory", path);
+            goto close_dirfd;
+        }
+    }
+
+    if (links_keep) {
+        if (!(workdir->keeps = malloc(sizeof *workdir->keeps * ALLOC_BASE))) {
+            pr_error_with_errno("Failed to allocae memory for keeps");
+            goto close_dirfd;
+        }
+        *workdir->keeps = *links_keep;
+        workdir->keeps_allocated = ALLOC_BASE;
+        workdir->keeps_count = 1;
+    } else {
+        workdir->keeps = NULL;
+        workdir->keeps_allocated = 0;
+        workdir->keeps_count = 0;
+    }
+    return 0;
+close_linkfd:
+    if (close(workdir->linkfd))
+        pr_error_with_errno("Failed to close links fd for work directory");
+close_dirfd:
+    if (close(workdir->fd))
+        pr_error_with_errno("Failed to close dir fd for work directory");
+    return -1;
+}
+
+#define work_directory_init_from_config(NAME) \
+    work_directory_init_from_path( \
+        &work_handle->dir_##NAME##s,  \
+        &work_handle->string_buffer, \
+        config_get_string(config->dir_##NAME##s), \
+        config->len_dir_##NAME##s, \
+        config->clean_##NAME##s ? &links_keep : NULL)
+
+static inline
+int work_handle_work_directories_init_from_config(
+    struct work_handle *const restrict work_handle,
+    struct config const *const restrict config
+) {
+    struct work_keep links_keep = {0};
+    if (config->clean_repos || 
+        config->clean_archives || 
+        config->clean_checkouts) 
+    {
+        links_keep.offset = work_handle->string_buffer.used;
+        if (string_buffer_add(
+                &work_handle->string_buffer, 
+                DIR_LINKS, 
+                sizeof DIR_LINKS - 1)) 
+        {
+            pr_error("Failed to add links to string buffer\n");
+            return -1;
+        }
+    }
+    if (work_directory_init_from_config(repo)) {
+        pr_error("Failed to open work directory '%s' for repos\n",
+            config_get_string(config->dir_repos));
+        return -1;
+    }
+    if (work_directory_init_from_config(archive)) {
+        pr_error("Failed to open work directory '%s' for archives\n",
+                config_get_string(config->dir_archives));
+        goto free_workdir_repos;
+    }
+    if (work_directory_init_from_config(checkout)) {
+        pr_error("Failed to open work directory '%s' for checkouts\n",
+                config_get_string(config->dir_checkouts));
+        goto free_workdir_archives;
+    }
+    return 0;
+free_workdir_archives:
+    if (close(work_handle->dir_archives.fd))
+        pr_error_with_errno("Failed to close dirfd for archives workdir");
+    if (work_handle->dir_archives.keeps) 
+        free(work_handle->dir_archives.keeps);
+free_workdir_repos:
+    if (close(work_handle->dir_repos.fd))
+        pr_error_with_errno("Failed to close dirfd for repos workdir");
+    if (work_handle->dir_repos.keeps)
+        free(work_handle->dir_repos.keeps);
+    return -1;
+}
+
+static inline
+int wanted_object_work_from_config(
+    struct wanted_object *const restrict wanted_work,
+    struct wanted_base const *const restrict wanted_config
+) {
+    wanted_work->base = *wanted_config;
+    
+
+    return 0;
+}
+
+static inline
+int repo_work_from_config(
+    struct repo_work *restrict repo_work,
+    struct repo_config const *const restrict repo_config
+) {
+    repo_work->wanted_dynamic = false;
+    if (repo_config->wanted_objects_count) {
+        if (!repo_config->wanted_objects) {
+            pr_error("Repo does not have wanted objects allocated but "
+                    "marked it has\n");
+            return -1;
+        }
+        if (!(repo_work->wanted_objects = malloc(
+                sizeof *repo_work->wanted_objects *
+                    (repo_work->wanted_objects_allocated = 
+                        repo_config->wanted_objects_count))))
+        {
+            pr_error("Failed to allocate memory for wanted obejcts\n");;
+            return -1;
+        }
+        for (unsigned long j = 0; 
+            j < repo_config->wanted_objects_count; 
+            ++j) {
+            if (wanted_object_work_from_config(
+                repo_work->wanted_objects + j,
+                repo_config->wanted_objects + j)) {
+                pr_error("Failed to create work wanted object from config\n");
+                return -1;
+            }
+        }
+        repo_work->wanted_objects_count = repo_config->wanted_objects_count;
+    } else {
+        pr_warn("No wanted object defined\n");
+        repo_work->wanted_objects = NULL;
+        repo_work->wanted_objects_allocated = 0;
+        repo_work->wanted_objects_count = 0;
+    }
+    repo_work->commits = NULL;
+    repo_work->commits_count = 0;
+    repo_work->commits_allocated = 0;
+    repo_work->git_repository = NULL;
+    repo_work->wanted_dynamic = false;
+    repo_work->updated = false;
+    repo_work->common = &repo_config->common;
+    repo_work->from_config = true;
+    return 0;
+}
+
+static inline
+int work_handle_repos_init_from_config(
+    struct work_handle *const restrict work_handle,
+    struct config const *const restrict config
+) {
+    if (!config->repos_count) {
+        pr_warn("No repos defined");
+        work_handle->repos = NULL;
+        work_handle->repos_allocated = 0;
+        work_handle->repos_count = 0;
+        return 0;
+    }
+    if (!config->repos) {
+        pr_error("Internal: config repos is NULL pointer\n");
+        return -1;
+    }
+    work_handle->repos_allocated = 
+        (config->repos_count + ALLOC_BASE - 1) / ALLOC_BASE * ALLOC_BASE;
+    if (!(work_handle->repos = malloc(
+            sizeof *work_handle->repos * 
+                work_handle->repos_allocated))) 
+    {
+        pr_error("Failed to allocate memory for work repos\n");
+        return -1;
+    }
+    work_handle->repos_count = 0;
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        if (repo_work_from_config(work_handle->repos + i, config->repos+ i)) {
+            pr_error("Failed to create work repo from config\n");
+            goto free_objects;
+        }
+        ++work_handle->repos_count;
+    }
+    return 0;
+free_objects:
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        if (work_handle->repos[i].wanted_objects) {
+            free (work_handle->repos[i].wanted_objects);
+            work_handle->repos[i].wanted_objects = NULL;
+        }
+    }
+    free(work_handle->repos);
+    return -1;
+}
+
+int work_handle_init_from_config(
+    struct work_handle *const restrict work_handle,
+    struct config const *const restrict config
+) {
+    work_handle->string_buffer.buffer = NULL;
+    work_handle->string_buffer.used = 0;
+    work_handle->string_buffer.size = 0;
+    if (work_handle_work_directories_init_from_config(work_handle, config)) {
+        pr_error("Failed to init work directories\n");
+        return -1;
+    }
+    if (work_handle_repos_init_from_config(work_handle, config)) {
+        pr_error("Failed to init repos\n");
+        return -1;
+    }
+    // work_handle->
+    // work_handle->
+    work_handle->config = config;
+    // work_handle->
+
+
+
+    return 0;
 }
 
 int mkdir_allow_existing_at(
@@ -3486,121 +3954,6 @@ int work_directory_add_keep(
     memcpy(keep_last, keep, len_keep);
     keep_last[len_keep] = '\0';
     return 0;
-}
-
-int work_directory_from_path(
-    struct work_directory *const restrict work_directory,
-    char const *const restrict path,
-    unsigned short const len_path,
-    bool init_keep
-) {
-    if (len_path >= PATH_MAX) {
-        pr_error("Path too long\n");
-        return -1;
-    }
-    if ((work_directory->dirfd =
-        open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
-        switch (errno) {
-        case ENOENT:
-            char path_dup[PATH_MAX];
-            memcpy(path_dup, path, len_path);
-            path_dup[len_path] = '\0';
-            if (mkdir_recursively(path_dup)) {
-                pr_error("Failed to create folder '%s'\n", path);
-                return -1;
-            }
-            if ((work_directory->dirfd =
-                open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
-                pr_error_with_errno("Still failed to open '%s' as directory\n",
-                                    path);
-                return -1;
-            }
-            break;
-        default:
-            pr_error_with_errno("Failed to open '%s' as directory", path);
-            return -1;
-        }
-    }
-    if ((work_directory->links_dirfd = openat(
-                work_directory->dirfd, "links",
-                O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
-        switch (errno) {
-        case ENOENT:
-            if (mkdirat(work_directory->dirfd, "links", 0755) < 0) {
-                pr_error_with_errno(
-                    "Failed to create links subdir under '%s'", path);
-                goto close_dirfd;
-            }
-            if ((work_directory->links_dirfd = openat(
-                        work_directory->dirfd, "links",
-                        O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
-                pr_error_with_errno(
-                    "Failed to open links subdir under '%s' as directory after "
-                    "creating it", path);
-                goto close_dirfd;
-            }
-            break;
-        default:
-            pr_error_with_errno(
-                "Failed to open links subdir under '%s' as directory", path);
-            goto close_dirfd;
-        }
-    }
-    work_directory->path = path;
-    work_directory->keeps = NULL;
-    work_directory->keeps_allocated = 0;
-    work_directory->keeps_count = 0;
-    if (init_keep) {
-        if (work_directory_add_keep(work_directory, "links", 5)) {
-            pr_error("Faild to init keeps\n");
-            goto close_dirfd;
-        }
-    }
-    return 0;
-close_dirfd:
-    if (close(work_directory->dirfd)) {
-        pr_error_with_errno("Failed to close dir fd for work directory");
-    }
-    return -1;
-}
-
-int work_directories_from_config(
-    struct work_directory *const restrict workdir_repos,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts,
-    struct config const *const restrict config
-) {
-    if (work_directory_from_path(workdir_repos, config->dir_repos,
-            config->len_dir_repos, config->clean_repos)) {
-        pr_error("Failed to open work directory '%s' for repos\n",
-            config->dir_repos);
-        return -1;
-    }
-    if (work_directory_from_path(workdir_archives, config->dir_archives,
-                        config->len_dir_archives, config->clean_archives)) {
-        pr_error("Failed to open work directory '%s' for archives\n",
-                config->dir_archives);
-        goto free_workdir_repos;
-    }
-    if (work_directory_from_path(workdir_checkouts, config->dir_checkouts,
-                        config->len_dir_checkouts, config->clean_checkouts)) {
-
-        pr_error("Failed to open work directory '%s' for checkouts\n",
-                config->dir_checkouts);
-        goto free_workdir_archives;
-    }
-    return 0;
-free_workdir_archives:
-    if (close(workdir_archives->dirfd)) {
-        pr_error_with_errno("Failed to close dirfd for archives workdir");
-    }
-    if (workdir_archives->keeps) free(workdir_archives->keeps);
-free_workdir_repos:
-    if (close(workdir_repos->dirfd)) {
-        pr_error_with_errno("Failed to close dirfd for repos workdir");
-    }
-    if (workdir_repos->keeps) free(workdir_repos->keeps);
-    return -1;
 }
 
 static inline
