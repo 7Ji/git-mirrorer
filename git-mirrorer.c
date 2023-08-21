@@ -98,6 +98,12 @@ struct string_buffer {
     unsigned int used, size;
 };
 
+#define buffer_get_string(string_buffer, name) \
+    string_buffer->buffer + name##_offset
+
+#define get_string_from(parent, name) \
+    parent->string_buffer.buffer + name##_offset
+
 #define STRING_DECLARE(NAME) \
     unsigned int NAME##_offset; \
     unsigned short len_##NAME
@@ -291,7 +297,10 @@ struct repo_config {
 };
 
 struct repo_work {
-    struct repo_common *common; // points to the one in config, or allocated
+    union {
+        struct repo_common common;
+        struct REPO_COMMON_DECLARE;
+    };
     DYNAMIC_ARRAY_DECLARE_SAME(wanted_object);
     DYNAMIC_ARRAY_DECLARE_SAME(commit);
     git_repository *git_repository;
@@ -307,34 +316,41 @@ struct archive_pipe_arg {
 
 #define ARCHIVE_PIPE_ARGS_MAX_COUNT 64
 
+#define CONFIG_STATIC_DECLARE { \
+    STRING_DECLARE(proxy_url); \
+    STRING_DECLARE(dir_repos); \
+    STRING_DECLARE(dir_archives); \
+    STRING_DECLARE(dir_checkouts); \
+    STRING_DECLARE(archive_suffix); \
+    unsigned int    daemon_interval; \
+    int             timeout_connect; \
+    unsigned short  proxy_after, \
+                    connections_per_server, \
+                    export_threads, \
+                    clean_links_pass; \
+    bool    archive_gh_prefix, \
+            clean_repos, \
+            clean_archives, \
+            clean_checkouts, \
+            daemon; \
+}
+
+struct config_static CONFIG_STATIC_DECLARE;
+
 struct config {
     struct string_buffer string_buffer;
     DYNAMIC_ARRAY_DECLARE(struct repo_config, repo);
     DYNAMIC_ARRAY_DECLARE(struct wanted_base, empty_wanted_object);
     DYNAMIC_ARRAY_DECLARE(struct wanted_base, always_wanted_object);
     DYNAMIC_ARRAY_DECLARE_SAME(archive_pipe_arg);
-    STRING_DECLARE(proxy_url);
-    STRING_DECLARE(dir_repos);
-    STRING_DECLARE(dir_archives);
-    STRING_DECLARE(dir_checkouts);
-    STRING_DECLARE(archive_suffix);
-    unsigned int    daemon_interval;
-    int             timeout_connect; // Technically this should be unsigned,
-                                     // but libgit2 wants an int -v-
-    unsigned short  proxy_after,
-                    len_archive_suffix,
-                    connections_per_server,
-                    export_threads,
-                    clean_links_pass;
-    bool    archive_gh_prefix,
-            clean_repos,
-            clean_archives,
-            clean_checkouts,
-            daemon;
+    union {
+        struct config_static _static;
+        struct CONFIG_STATIC_DECLARE;
+    };
 };
 
 #define config_get_string(name) \
-    config->string_buffer.buffer + name##_offset
+    get_string_from(config, name)
 
 #define DIR_LINKS   "links"
 #define DIR_REPOS_DEFAULT   "repos"
@@ -345,10 +361,6 @@ struct config {
 #define EXPORT_THREADS_DEFAULT  10
 #define CLEAN_LINKS_PASS_DEFAULT    1
 #define DAEMON_INTERVAL_DEFAULT 60
-
-// #define STRING_ASSIGN(KEY, VALUE) \
-//     .KEY = VALUE, \
-//     .len_##KEY = sizeof VALUE - 1
 
 struct config const CONFIG_INIT = {
     .connections_per_server = CONNECTIONS_PER_SERVER_DEFAULT,
@@ -378,13 +390,18 @@ struct work_directory const WORK_DIRECTORY_INIT = {
 
 struct work_handle {
     struct string_buffer string_buffer;
-    struct config const *config;
-    char const *config_path;
     DYNAMIC_ARRAY_DECLARE(struct repo_work, repo);
     struct work_directory dir_repos,
                           dir_archives,
                           dir_checkouts;
+    union {
+        struct config_static _static;
+        struct CONFIG_STATIC_DECLARE;
+    };
 };
+
+#define work_handle_get_string(name) \
+    get_string_from(work_handle, name)    
 
 struct work_handle const WORK_HANDLE_INIT = {
     .dir_repos = {WORK_DIRECTORY_INIT_ASSIGN},
@@ -632,142 +649,6 @@ struct yamlconf_parsing_handle {
 
 /* Functions */
 
-// #define declare_func_add_object_and_realloc_if_necessary_no_init_typed( \
-//         PARENT, CHILD, CHILDNEW) \
-// int PARENT##_add_##CHILD##_no_init( \
-//     struct PARENT *const restrict PARENT \
-// ) { \
-//     if (PARENT->CHILD##s == NULL) { \
-//         if ((PARENT->CHILD##s = malloc( \
-//             sizeof *PARENT->CHILD##s * ALLOC_BASE)) == NULL) { \
-//             pr_error("Failed to allocate memory\n"); \
-//             return -1; \
-//         } \
-//         PARENT->CHILD##s_allocated = ALLOC_BASE; \
-//     } \
-//     if (++PARENT->CHILD##s_count > PARENT->CHILD##s_allocated) { \
-//         while (PARENT->CHILD##s_count > ( \
-//             PARENT->CHILD##s_allocated *= 2)) { \
-//             if (PARENT->CHILD##s_allocated == ULONG_MAX) { \
-//                 pr_error( \
-//                     "Impossible to allocate more, how is this possible?\n"); \
-//                 return -1; \
-//             } else if (PARENT->CHILD##s_allocated >= \
-//                     ULONG_MAX / ALLOC_MULTIPLY) { \
-//                 PARENT->CHILD##s_allocated = ULONG_MAX; \
-//             } else { \
-//                 PARENT->CHILD##s_allocated *= ALLOC_MULTIPLY; \
-//             } \
-//         } \
-//         CHILDNEW = realloc( \
-//             PARENT->CHILD##s, \
-//             sizeof *CHILD##s_new * PARENT->CHILD##s_allocated \
-//         ); \
-//         if (CHILD##s_new == NULL) { \
-//             pr_error("Failed to allocate memory\n"); \
-//             return -1; \
-//         } \
-//         PARENT->CHILD##s = CHILD##s_new; \
-//     } \
-//     return 0; \
-// }
-
-// #define declare_func_add_object_and_realloc_if_necessary_no_init( \
-//         PARENT, STRUCT_CHILD, CHILD) \
-//         declare_func_add_object_and_realloc_if_necessary_no_init_typed( \
-//         PARENT, CHILD, struct STRUCT_CHILD *CHILD##s_new)
-
-// declare_func_add_object_and_realloc_if_necessary_no_init(
-//     commit, commit_submodule, submodule)
-
-// declare_func_add_object_and_realloc_if_necessary_no_init(
-//     repo, wanted_object, wanted_object)
-
-// declare_func_add_object_and_realloc_if_necessary_no_init(
-//     repo, parsed_commit, parsed_commit)
-
-// declare_func_add_object_and_realloc_if_necessary_no_init(
-//     config, repo, repo)
-
-// declare_func_add_object_and_realloc_if_necessary_no_init(
-//     config, wanted_object, empty_wanted_object)
-
-// declare_func_add_object_and_realloc_if_necessary_no_init(
-//     config, wanted_object, always_wanted_object)
-
-// declare_func_add_object_and_realloc_if_necessary_no_init_typed(
-//     work_directory, keep, char (*keeps_new)[NAME_MAX + 1])
-
-// declare_func_add_object_and_realloc_if_necessary_no_init(
-//     update_status, update_server_repo_activity, server)
-
-// declare_func_add_object_and_realloc_if_necessary_no_init_typed(
-//     update_status, repo_id, unsigned long *repo_ids_new)
-
-// int sideband_progress(char const *string, int len, void *payload) {
-// 	// (void)payload; /* unused */
-//     pr_info("Repo '%s': Remote: %.*s",
-//         ((struct repo const*)payload)->url, len, string);
-// 	return 0;
-// }
-
-// #define declare_func_size_to_human_readable_type(TYPE, SUFFIX) \
-// static inline \
-// TYPE size_to_human_readable_##SUFFIX(TYPE size, char *const suffix) { \
-//     char const suffixes[] = "BKMGTPEZY"; \
-//     unsigned short suffix_id = 0; \
-//     while (size >= 1024) { \
-//         ++suffix_id; \
-//         size /= 1024; \
-//     } \
-//     *suffix = suffixes[suffix_id]; \
-//     return size; \
-// }
-
-// declare_func_size_to_human_readable_type(size_t, size_t)
-// declare_func_size_to_human_readable_type(unsigned int, uint)
-
-
-// static inline void print_progress(
-//     git_indexer_progress const *const restrict stats,
-//     struct repo const *const restrict repo
-// ) {
-// 	if (stats->total_objects &&
-// 		stats->received_objects == stats->total_objects) {
-// 		pr_info("Repo '%s': Resolving deltas %u%% (%u/%u)\r",
-//                 repo->url,
-//                 stats->total_deltas > 0 ?
-//                     100 * stats->indexed_deltas / stats->total_deltas :
-//                     0,
-//                 stats->indexed_deltas,
-//                 stats->total_deltas);
-// 	} else {
-//         char suffix;
-//         unsigned int size_human_readable = size_to_human_readable_uint(
-//             stats->received_bytes, &suffix);
-// 		pr_info(
-//             "Repo '%s': Receiving objects %u%% (%u%c, %u); "
-//             "Indexing objects %u%% (%u); "
-//             "Total objects %u.\r",
-//             repo->url,
-//             stats->total_objects > 0 ?
-//                 100 * stats->received_objects / stats->total_objects :
-//                 0,
-//             size_human_readable, suffix,
-//             stats->received_objects,
-//             stats->total_objects > 0 ?
-//                 100 * stats->indexed_objects/ stats->total_objects :
-//                 0,
-//             stats->indexed_objects,
-//             stats->total_objects);
-// 	}
-// }
-
-// int fetch_progress(git_indexer_progress const *stats, void *payload) {
-// 	print_progress(stats, (struct repo const *)payload);
-// 	return 0;
-// }
-
 // Dumb help message
 static inline void help() {
     fputs(
@@ -883,7 +764,7 @@ int string_buffer_clone(
 }
 
 int dynamic_array_add(
-    void const **const restrict array, 
+    void **const restrict array, 
     size_t const size, // Size of an array member 
     unsigned long *const restrict count, 
     unsigned long *const restrict alloc
@@ -921,10 +802,10 @@ int dynamic_array_add(
 }
 
 #define dynamic_array_add_to(name) \
-    dynamic_array_add(&name, sizeof *name, &name##_count, &name##_allocated)
+    dynamic_array_add((void **)&name, sizeof *name, &name##_count, &name##_allocated)
 
 int dynamic_array_partial_free(
-    void const **const restrict array, 
+    void **const restrict array, 
     size_t const size, // Size of an array member 
     unsigned long const count, 
     unsigned long *const restrict alloc
@@ -960,7 +841,7 @@ int dynamic_array_partial_free(
 }
 
 #define dynamic_array_partial_free_to(name) \
-    dynamic_array_partial_free(&name, sizeof *name, name##_count, &name##_allocated)
+    dynamic_array_partial_free((void **)&name, sizeof *name, name##_count, &name##_allocated)
 
 #define BUFFER_READ_CHUNK PAGE_SIZE * 64
 
@@ -969,8 +850,9 @@ size_t buffer_read_from_fd(
     unsigned char **const restrict buffer, 
     int const fd
 ) {
-    size_t size_alloc = BUFFER_READ_CHUNK;
-    size_t size_total = 0, size_current = 0;
+    size_t size_alloc = BUFFER_READ_CHUNK,
+           size_total = 0;
+    ssize_t size_current = 0;
     unsigned char *buffer_new;
     if (!buffer || fd < 0) {
         pr_error("Caller passed NULL pointer or "
@@ -1229,10 +1111,18 @@ int yamlconf_parse_archive_pipe(
         return 0;
     }
     unsigned short const args_length = event->data.scalar.length;
-    char *args_buffer = malloc(sizeof *args_buffer * (args_length + 1));
-    if (!args_buffer) {
-        pr_error("Failed to allocate memory for buffer\n");
-        return -1;
+    char args_buffer_stack[0x100];
+    char *args_buffer_heap = NULL;
+    char *args_buffer;
+    if (args_length >= 0x100) {
+        if (!(args_buffer_heap = malloc(
+                sizeof *args_buffer * (args_length + 1)))) {
+            pr_error("Failed to allocate memory for buffer\n");
+            return -1;
+        }
+        args_buffer = args_buffer_heap;
+    } else {
+        args_buffer = args_buffer_stack;
     }
     memcpy(args_buffer, event->data.scalar.value, args_length);
     args_buffer[args_length] = '\0';
@@ -1338,7 +1228,7 @@ int yamlconf_parse_archive_pipe(
     handle->status = YAMLCONF_PARSING_STATUS_ARCHIVE_SECTION;
     r = 0;
 free_args_buffer:
-    free(args_buffer);
+    if (args_buffer_heap) free(args_buffer_heap);
     return r;
 }
 
@@ -1460,10 +1350,13 @@ int yamlconf_parse_wanted_list_add_object(
         YAMLCONF_PARSE_WANTED_LIST_ASSIGN(config->always_);
         break;
     case YAMLCONF_WANTED_REPO:
-        YAMLCONF_PARSE_WANTED_LIST_ASSIGN((get_last(config->repos))->);
+        struct repo_config *repo = get_last(config->repos);
+        wanted_objects = &repo->wanted_objects; 
+        count = &repo->wanted_objects_count; 
+        alloc = &repo->wanted_objects_allocated;
         break;
     }
-    if (dynamic_array_add(wanted_objects, sizeof **wanted_objects, 
+    if (dynamic_array_add((void **)wanted_objects, sizeof **wanted_objects, 
                         count, alloc)) {
         pr_error("Failed to add wanted object to array\n");
         return -1;
@@ -1517,7 +1410,7 @@ int yamlconf_parse_wanted_object(
 }
 
 static inline
-yamlconf_get_last_wanted_object(
+struct wanted_base *yamlconf_get_last_wanted_object(
     struct config *const restrict config,
     enum yamlconf_wanted_type type
 ) {
@@ -1561,7 +1454,6 @@ int yamlconf_parse_wanted_object_end(
 
 static inline
 int yamlconf_parse_wanted_object_section(
-    struct config *const restrict config,
     yaml_event_t const *const restrict event,
     struct yamlconf_parsing_handle *const restrict handle
 ) {
@@ -1612,6 +1504,8 @@ int yamlconf_parse_wanted_object_type(
             wanted_type_strings[wanted_object->type],
             type_string);
         return -1;
+    default:
+        break;
     }
     handle->status = YAMLCONF_PARSING_STATUS_WANTED_OBJECT_SECTION;
     return 0;
@@ -1670,7 +1564,7 @@ static inline
 int repo_common_init_from_url(
     struct repo_common *const restrict repo,
     struct string_buffer *const restrict sbuffer,
-    char const *const restrict url,
+    char const *restrict url,
     unsigned short len_url
 ) {
     // Drop trailing slashes
@@ -1700,63 +1594,86 @@ int repo_common_init_from_url(
         pr_error_with_errno("Failed to format hash string");
         return -1;
     }
-    // This is the allocated one, without trailing / and .git
-    char const *url_simple = sbuffer->buffer + repo->url_offset;
-    for (char const *c = url; *c; ++c) {
-        if (*c == ':' && *(c + 1) == '/' && *(c + 2) == '/') {
-            if (*(c + 3) == '\0') {
+    for (unsigned short i = 0; i < len_url - 2; ++i) {
+        if (!strncmp(url + i, "://", 3)) {
+            unsigned short const offset = i + 3;
+            if (offset == len_url) {
                 pr_error("Illegal URL '%s': ending with scheme\n",
                     url);
                 return -1;
             }
-            url_simple = c + 3;
+            url += offset;
+            len_url -= offset;
             break;
         }
     }
     // Drop leading slashes
-    while (*url_simple == '/') ++url_simple;
+    while (*url == '/') {
+        ++url;
+        --len_url;
+    }
     // The above logic should change url_simple to like the following:
-    // https://github.com/xxx -> github.com/xxx
-    // file:///what/ever -> what/ever
+    // https://github.com/xxx/yyy.git -> github.com/xxx/yyy
+    // file:///what/ever.git/ -> what/ever
 
     // Long name always ends with .git 
         // (mainly used for local path)
     // Short name always ends without .git 
         // (mainly used for gh-like archive prefix)
-    char long_name[PATH_MAX];
+    char long_name_stack[0x100];
+    char *long_name_heap = NULL;
+    char *long_name;
+#ifdef TREAT_DOTGIT_AS_DIFFERENT_REPO
+    if (len_url < 0x100) {
+        long_name = long_name_stack;
+    } else {
+        if (!(long_name_heap = malloc(len_url + 1))) {
+            pr_error("Failed to allocate memory for long name\n");
+            return -1;
+        }
+        long_name = long_name_heap;
+    }
+#else
+    if (len_url + 4 < 0x100) {
+        long_name = long_name_stack;
+    } else {
+        if (!(long_name_heap = malloc(len_url + 5))) {
+            pr_error("Failed to allocate memory for long name\n");
+            return -1;
+        }
+        long_name = long_name_heap;
+    }
+#endif
     long_name[0] = '\0';
     repo->len_long_name = 0;
     repo->depth_long_name = 1; // depth always starts from 1
     repo->hash_server = 0;
-    char *short_name = url_simple;
-    for (char const *c = url_simple; *c; ++c) {
-        if (*c == '/') {
+    unsigned short short_name_offset = 0;
+    int r;
+    for (unsigned short i = 0; i < len_url; ++i) {
+        if (url[i] == '/') {
             if (repo->depth_long_name == 1) {
                 // Only record hash, won't access string later
-                repo->hash_server = hash_calculate(url_simple,
+                repo->hash_server = hash_calculate(url,
                                                    repo->len_long_name);
             }
             // Skip all continous leading /
-            for (; *(c + 1) =='/'; ++c);
+            for (; url[i + 1] =='/' && i < len_url; ++i);
             // When the above loop ends, we're at the last /
             // of potentially a list of /
             // In case url is like a/b/c/, ending with /,
             // we don't want to copy the ending /
-            if (*(c + 1) == '\0') break;
+            if (i >= len_url - 1) break;
             ++repo->depth_long_name;
-            short_name = c + 1;
+            short_name_offset = i + 1;
         }
-        long_name[repo->len_long_name] = *c;
-        if (++repo->len_long_name >= PATH_MAX) {
-            pr_error("Long name of url '%s' too long\n",
-                sbuffer->buffer + repo->url_offset);
-            return -1;
-        }
+        long_name[repo->len_long_name++] = url[i];
     }
     if (!repo->len_long_name) {
         pr_error("Long name for url '%s' is empty\n", 
                     sbuffer->buffer + repo->url_offset);
-        return -1;
+        r = -1;
+        goto free_long_name_heap;
     }
 #ifndef TREAT_DOTGIT_AS_DIFFERENT_REPO
     memcpy(long_name + repo->len_long_name, ".git", 4);
@@ -1767,41 +1684,46 @@ int repo_common_init_from_url(
         long_name[repo->len_long_name] = '\0';
         pr_error("Failed to add long name '%s' to string buffer\n",
                     long_name);
-        return -1;
+        r = -1;
+        goto free_long_name_heap;
     }
     repo->hash_long_name = hash_calculate(long_name, repo->len_long_name);
     
-    repo->len_short_name = 0;
-    for (char const *c = short_name; !repo->len_short_name; ++c) {
-        switch (*c) {
-        case '.':
-            if (strcmp(c + 1, "git")) break;
-            __attribute__((fallthrough));
-        case '\0':
-            repo->len_short_name = c - short_name;
-            break;
-        }
+
+    // user/repo.git
+    //      ^~~ short_name_offset is here, len_url is 13, offset 5, len 8
+    // user/.git
+    //      ^~~ the extreme case, len_url is 9, offset is 5, diff is 4
+    if ((repo->len_short_name = len_url - short_name_offset) >= 4 &&
+        !strncmp(".git", url + len_url - 4, 4)) 
+    {
+        repo->len_short_name -= 4;
     }
     if (!repo->len_short_name) {
         pr_error("Short name for repo '%s' is empty\n", 
                     sbuffer->buffer + repo->url_offset);
-        return -1;
+        r = -1;
+        goto free_long_name_heap;
     }
+    char const *const short_name = url + short_name_offset;
     repo->short_name_offset = sbuffer->used;
     if (string_buffer_add(sbuffer, short_name, repo->len_short_name)) {
         pr_error("Failed to add short name '%s' to string buffer\n",
-                short_name);
-        return -1;
+                url + short_name_offset);
+        r = -1;
+        goto free_long_name_heap;
     }
     repo->hash_short_name = hash_calculate(short_name, repo->len_short_name);
-    return 0;
-
+    r = 0;
+free_long_name_heap:
+    if (long_name_heap) free(long_name_heap);
+    return r;
 }
 
 static inline
 int repo_config_init_from_url(
     struct repo_config *const restrict repo,
-    struct config *const restrict config,
+    struct string_buffer *const restrict sbuffer,
     char const *const restrict url,
     unsigned short len_url
 ) {
@@ -1809,7 +1731,7 @@ int repo_config_init_from_url(
     repo->wanted_objects_allocated = 0;
     repo->wanted_objects_count = 0;
     return repo_common_init_from_url(
-        &repo->common, &config->string_buffer, url, len_url);
+        &repo->common, sbuffer, url, len_url);
 }
 
 static inline
@@ -1867,7 +1789,6 @@ int yamlconf_parse_repo_url(
 
 static inline
 int yamlconf_parse_repo_section(
-    struct config *const restrict config,
     yaml_event_t const *const restrict event,
     struct yamlconf_parsing_handle *const restrict handle
 ) {
@@ -2133,7 +2054,7 @@ int config_update_from_yaml_event(
     case YAMLCONF_PARSING_STATUS_WANTED_OBJECT_SECTION:
         switch (event->type) {
         case YAML_SCALAR_EVENT:
-            return yamlconf_parse_wanted_object_section(config, event, handle);
+            return yamlconf_parse_wanted_object_section(event, handle);
         YAMLCONF_EVENT_TO_STATUS(MAPPING_END, WANTED_OBJECT);
         default: goto unexpected_event_type;
         }
@@ -2189,7 +2110,7 @@ int config_update_from_yaml_event(
     case YAMLCONF_PARSING_STATUS_REPO_SECTION:
         switch(event->type) {
         case YAML_SCALAR_EVENT:
-            return yamlconf_parse_repo_section(config, event, handle);
+            return yamlconf_parse_repo_section(event, handle);
         YAMLCONF_EVENT_TO_STATUS(MAPPING_END, REPO_URL);
         default: goto unexpected_event_type;
         }
@@ -2267,7 +2188,7 @@ delete_parser:
 
 int repo_config_finish(
     struct repo_config *const restrict repo,
-    struct config const *const restrict config
+    struct config *const restrict config
 ) {
     if (!repo->wanted_objects_count && 
         config->empty_wanted_objects_count
@@ -2296,7 +2217,7 @@ int repo_config_finish(
         unsigned long const new_wanted_objects_count =
             repo->wanted_objects_count + config->always_wanted_objects_count;
         if (new_wanted_objects_count > repo->wanted_objects_allocated) {
-            struct wanted_object *wanted_objects_new =
+            struct wanted_base *wanted_objects_new =
                 realloc(repo->wanted_objects,
                     sizeof *wanted_objects_new * new_wanted_objects_count);
             if (wanted_objects_new == NULL) {
@@ -2630,7 +2551,7 @@ int work_directory_init_from_path(
     if (links_keep) {
         if (!(workdir->keeps = malloc(sizeof *workdir->keeps * ALLOC_BASE))) {
             pr_error_with_errno("Failed to allocae memory for keeps");
-            goto close_dirfd;
+            goto close_linkfd;
         }
         *workdir->keeps = *links_keep;
         workdir->keeps_allocated = ALLOC_BASE;
@@ -2650,23 +2571,23 @@ close_dirfd:
     return -1;
 }
 
-#define work_directory_init_from_config(NAME) \
+#define work_directory_init_from_handle(NAME) \
     work_directory_init_from_path( \
         &work_handle->dir_##NAME##s,  \
         &work_handle->string_buffer, \
-        config_get_string(config->dir_##NAME##s), \
-        config->len_dir_##NAME##s, \
-        config->clean_##NAME##s ? &links_keep : NULL)
+        work_handle_get_string(work_handle->dir_##NAME##s), \
+        work_handle->len_dir_##NAME##s, \
+        work_handle->clean_##NAME##s ? &links_keep : NULL)
+
 
 static inline
-int work_handle_work_directories_init_from_config(
-    struct work_handle *const restrict work_handle,
-    struct config const *const restrict config
+int work_handle_work_directories_init(
+    struct work_handle *const restrict work_handle
 ) {
     struct work_keep links_keep = {0};
-    if (config->clean_repos || 
-        config->clean_archives || 
-        config->clean_checkouts) 
+    if (work_handle->clean_repos || 
+        work_handle->clean_archives || 
+        work_handle->clean_checkouts) 
     {
         links_keep.offset = work_handle->string_buffer.used;
         if (string_buffer_add(
@@ -2678,19 +2599,19 @@ int work_handle_work_directories_init_from_config(
             return -1;
         }
     }
-    if (work_directory_init_from_config(repo)) {
+    if (work_directory_init_from_handle(repo)) {
         pr_error("Failed to open work directory '%s' for repos\n",
-            config_get_string(config->dir_repos));
+            work_handle_get_string(work_handle->dir_repos));
         return -1;
     }
-    if (work_directory_init_from_config(archive)) {
+    if (work_directory_init_from_handle(archive)) {
         pr_error("Failed to open work directory '%s' for archives\n",
-                config_get_string(config->dir_archives));
+                work_handle_get_string(work_handle->dir_archives));
         goto free_workdir_repos;
     }
-    if (work_directory_init_from_config(checkout)) {
+    if (work_directory_init_from_handle(checkout)) {
         pr_error("Failed to open work directory '%s' for checkouts\n",
-                config_get_string(config->dir_checkouts));
+                work_handle_get_string(work_handle->dir_checkouts));
         goto free_workdir_archives;
     }
     return 0;
@@ -2708,20 +2629,86 @@ free_workdir_repos:
 }
 
 static inline
+void work_directory_free(
+    struct work_directory *const restrict workdir
+) {
+    if (workdir->fd > 0) {
+        if (close(workdir->fd)) {
+            pr_error_with_errno("Failed to close dirfd for workdir");
+        }
+        workdir->fd = -1;
+    }
+    if (workdir->linkfd > 0) {
+        if (close(workdir->linkfd)) {
+            pr_error_with_errno("Failed to close links dirfd for workdir");
+        }
+        workdir->linkfd = -1;
+    }
+    if (workdir->keeps) {
+        free(workdir->keeps);
+        workdir->keeps = NULL;
+    }
+}
+
+static inline
+void work_handle_work_directories_free(
+    struct work_handle *const restrict work_handle
+) {
+    work_directory_free(&work_handle->dir_repos);
+    work_directory_free(&work_handle->dir_archives);
+    work_directory_free(&work_handle->dir_checkouts);
+}
+
+static inline
+int wanted_object_complete_from_base(
+    struct wanted_object *const restrict wanted_object,
+    struct string_buffer const *const restrict sbuffer
+) {
+    char const *const restrict name = 
+        buffer_get_string(sbuffer, wanted_object->name);
+    if (!wanted_object->type && 
+        !(wanted_object->type = 
+            wanted_type_guess_from_name(
+                name, wanted_object->len_name))) {
+        pr_error("Failed to guess type of wanted object\n");
+        return -1;
+    }
+    wanted_object->commit_resolved = false;
+    wanted_object->parsed_commit_id = (unsigned long) -1;
+    if (wanted_object->type != WANTED_TYPE_COMMIT) {
+        memset(&wanted_object->oid, 0, sizeof wanted_object->oid);
+        wanted_object->hex_string[0] = '\0';
+        return 0;
+    }
+    if (git_oid_fromstr(&wanted_object->oid, name)) {
+        pr_error("Failed to convert '%s' to a git oid\n", name);
+        return -1;
+    }
+    if (!git_oid_fmt(
+            wanted_object->hex_string,
+            &wanted_object->oid)) {
+        pr_error("Failed to format git oid hex string\n");
+        return -1;
+    }
+    wanted_object->hex_string[sizeof wanted_object->hex_string - 1] = '\0';
+    return 0;
+}
+
+static inline
 int wanted_object_work_from_config(
     struct wanted_object *const restrict wanted_work,
-    struct wanted_base const *const restrict wanted_config
+    struct wanted_base const *const restrict wanted_config,
+    struct string_buffer const *const restrict sbuffer
 ) {
     wanted_work->base = *wanted_config;
-    
-
-    return 0;
+    return wanted_object_complete_from_base(wanted_work, sbuffer);
 }
 
 static inline
 int repo_work_from_config(
     struct repo_work *restrict repo_work,
-    struct repo_config const *const restrict repo_config
+    struct repo_config const *const restrict repo_config,
+    struct string_buffer const *const restrict sbuffer
 ) {
     repo_work->wanted_dynamic = false;
     if (repo_config->wanted_objects_count) {
@@ -2743,7 +2730,8 @@ int repo_work_from_config(
             ++j) {
             if (wanted_object_work_from_config(
                 repo_work->wanted_objects + j,
-                repo_config->wanted_objects + j)) {
+                repo_config->wanted_objects + j,
+                sbuffer)) {
                 pr_error("Failed to create work wanted object from config\n");
                 return -1;
             }
@@ -2761,7 +2749,7 @@ int repo_work_from_config(
     repo_work->git_repository = NULL;
     repo_work->wanted_dynamic = false;
     repo_work->updated = false;
-    repo_work->common = &repo_config->common;
+    repo_work->common = repo_config->common;
     repo_work->from_config = true;
     return 0;
 }
@@ -2793,7 +2781,8 @@ int work_handle_repos_init_from_config(
     }
     work_handle->repos_count = 0;
     for (unsigned long i = 0; i < config->repos_count; ++i) {
-        if (repo_work_from_config(work_handle->repos + i, config->repos+ i)) {
+        if (repo_work_from_config(work_handle->repos + i, config->repos+ i,
+                                &work_handle->string_buffer)) {
             pr_error("Failed to create work repo from config\n");
             goto free_objects;
         }
@@ -2815,5418 +2804,5419 @@ int work_handle_init_from_config(
     struct work_handle *const restrict work_handle,
     struct config const *const restrict config
 ) {
-    work_handle->string_buffer.buffer = NULL;
-    work_handle->string_buffer.used = 0;
-    work_handle->string_buffer.size = 0;
-    if (work_handle_work_directories_init_from_config(work_handle, config)) {
-        pr_error("Failed to init work directories\n");
-        return -1;
+    if (string_buffer_clone(
+            &work_handle->string_buffer, 
+            &config->string_buffer)) {
+        pr_error("Failed to clone string buffer from config\n");
     }
+    work_handle->_static = config->_static;
     if (work_handle_repos_init_from_config(work_handle, config)) {
         pr_error("Failed to init repos\n");
-        return -1;
+        goto free_string_buffer;
     }
-    // work_handle->
-    // work_handle->
-    work_handle->config = config;
-    // work_handle->
-
-
+    if (work_handle_work_directories_init(work_handle)) {
+        pr_error("Failed to init work directories\n");
+        goto free_repos;
+    }
 
     return 0;
-}
-
-int mkdir_allow_existing_at(
-    int const dirfd,
-    char *const restrict path
-) {
-    if (mkdirat(dirfd, path, 0755)) {
-        if (errno == EEXIST) {
-            struct stat stat_buffer;
-            if (fstatat(dirfd, path, &stat_buffer, AT_SYMLINK_NOFOLLOW)) {
-                pr_error_with_errno("Failed to stat '%s'", path);
-                return -1;
+free_repos:
+    if (work_handle->repos) {
+        for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+            if (work_handle->repos[i].wanted_objects) {
+                free(work_handle->repos[i].wanted_objects);
             }
-            if ((stat_buffer.st_mode & S_IFMT) == S_IFDIR) {
-                return 0;
-            } else {
-                pr_error("Exisitng '%s' is not a folder\n", path);
-                return -1;
-            }
-        } else {
-            pr_error_with_errno("Failed to mkdir '%s'", path);
-            return -1;
         }
+        free(work_handle->repos);
     }
-    return 0;
-}
-
-int mkdir_recursively_at(
-    int const dirfd,
-    char *const restrict path
-) {
-    for (char *c = path; ; ++c) {
-        switch (*c) {
-        case '\0':
-            return mkdir_allow_existing_at(dirfd, path);
-        case '/':
-            *c = '\0';
-            int r = mkdir_allow_existing_at(dirfd, path);
-            *c = '/';
-            if (r) {
-                pr_error("Failed to mkdir recursively '%s'\n", path);
-                return -1;
-            }
-            break;
-        default:
-            break;
-        }
-    }
-}
-
-int remove_dir_recursively(
-    DIR * const restrict dir_p
-) {
-    struct dirent *entry;
-    errno = 0;
-    int dir_fd = dirfd(dir_p);
-    while ((entry = readdir(dir_p)) != NULL) {
-        if (entry->d_name[0] == '.') {
-            switch (entry->d_name[1]) {
-            case '\0':
-                continue;
-            case '.':
-                if (entry->d_name[2] == '\0') continue;
-                break;
-            }
-        }
-        switch (entry->d_type) {
-        case DT_REG:
-        case DT_LNK:
-            if (unlinkat(dir_fd, entry->d_name, 0)) {
-                pr_error_with_errno(
-                    "Failed to delete '%s' recursively", entry->d_name);
-                return -1;
-            }
-            break;
-        case DT_DIR: {
-            int dir_fd_r = openat(dir_fd, entry->d_name, O_RDONLY);
-            if (dir_fd_r < 0) {
-                pr_error_with_errno(
-                    "Failed to open dir entry '%s'", entry->d_name);
-                return -1;
-            }
-            DIR *dir_p_r = fdopendir(dir_fd_r);
-            if (dir_p_r == NULL) {
-                pr_error_with_errno(
-                    "Failed to open '%s' as subdir", entry->d_name);
-                if (close(dir_fd_r)) {
-                    pr_error_with_errno("Failed to close fd for recursive dir");
-                }
-                return -1;
-            }
-            int r = remove_dir_recursively(dir_p_r);
-            if (closedir(dir_p_r)) {
-                pr_error_with_errno("Faild to close dir");
-            }
-            if (r) {
-                pr_error("Failed to remove dir '%s' recursively\n",
-                    entry->d_name);
-                return -1;
-            }
-            if (unlinkat(dir_fd, entry->d_name, AT_REMOVEDIR)) {
-                pr_error_with_errno(
-                    "Failed to rmdir '%s' recursively", entry->d_name);
-                return -1;
-            }
-            break;
-        }
-        default:
-            pr_error("Unsupported file type %d for '%s'\n",
-                entry->d_type, entry->d_name);
-            return -1;
-        }
-
-    }
-    if (errno) {
-        pr_error_with_errno("Failed to read dir\n");
-        return -1;
-    }
-    return 0;
-}
-
-int ensure_path_non_exist( // essentially rm -rf
-    char const *const restrict path
-) {
-    struct stat stat_buffer;
-    if (stat(path, &stat_buffer)) {
-        switch(errno) {
-        case ENOENT:
-            return 0;
-        default:
-            pr_error_with_errno("Failed to get stat of path '%s'", path);
-            return -1;
-        }
-    }
-    mode_t mode = stat_buffer.st_mode & S_IFMT;
-    switch (mode) {
-    case S_IFDIR: {
-        DIR *const restrict dir_p = opendir(path);
-        if (dir_p == NULL) {
-            pr_error_with_errno("Failed to opendir '%s'", path);
-            return -1;
-        }
-        int r = remove_dir_recursively(dir_p);
-        if (closedir(dir_p)) {
-            pr_error_with_errno("Failed to close dir");
-        }
-        if (r) {
-            pr_error("Failed to remove '%s' recursively\n", path);
-            return -1;
-        }
-        if (rmdir(path)) {
-            pr_error_with_errno("Failed to rmdir '%s'", path);
-            return -1;
-        }
-        break;
-    }
-    case S_IFREG:
-        if (unlink(path)) {
-            pr_error_with_errno("Failed to remove regular file '%s'", path);
-            return -1;
-        }
-        break;
-    default:
-        pr_error("Cannot remove existing '%s' with type %d\n", path, mode);
-        return -1;
-    }
-    return 0;
-}
-
-int ensure_path_non_exist_at( // essentially rm -rf
-    int const dir_fd,
-    char const *const restrict path
-) {
-    struct stat stat_buffer;
-    if (fstatat(dir_fd, path, &stat_buffer, AT_SYMLINK_NOFOLLOW)) {
-        switch(errno) {
-        case ENOENT:
-            return 0;
-        default:
-            pr_error_with_errno("Failed to get stat of path '%s'", path);
-            return -1;
-        }
-    }
-    mode_t mode = stat_buffer.st_mode & S_IFMT;
-    switch (mode) {
-    case S_IFDIR: {
-        int const subdir_fd = openat(dir_fd, path, O_RDONLY | O_DIRECTORY);
-        // DIR *const restrict dir_p = opendir;
-        if (subdir_fd < 0) {
-            pr_error_with_errno("Failed to open subdir '%s'", path);
-            return -1;
-        }
-        DIR *const restrict dir_p = fdopendir(subdir_fd);
-        if (dir_p == NULL) {
-            pr_error_with_errno("Failed to opendir '%s'", path);
-            if (close(subdir_fd)) {
-                pr_error_with_errno("Failed to close fd for subdir");
-            }
-            return -1;
-        }
-        int r = remove_dir_recursively(dir_p);
-        if (closedir(dir_p)) {
-            pr_error_with_errno("Failed to close dir");
-        }
-        if (r) {
-            pr_error("Failed to remove '%s' recursively\n", path);
-            return -1;
-        }
-        if (unlinkat(dir_fd, path, AT_REMOVEDIR)) {
-            pr_error_with_errno("Failed to rmdir '%s'", path);
-            return -1;
-        }
-        break;
-    }
-    case S_IFREG:
-    case S_IFLNK:
-        if (unlinkat(dir_fd, path, 0)) {
-            pr_error_with_errno("Failed to remove regular file '%s'", path);
-            return -1;
-        }
-        break;
-    default:
-        pr_error("Cannot remove existing '%s' with type %d\n", path, mode);
-        return -1;
-    }
-    return 0;
-}
-
-int ensure_parent_dir(
-    char *const restrict path,
-    unsigned short const len_path
-) {
-    for (unsigned short i = len_path; i > 0; --i) {
-        if (path[i - 1] == '/') {
-            path[i - 1] = '\0';
-            int r = mkdir_recursively(path);
-            path[i - 1] = '/';
-            if (r) {
-                pr_error("Failed to ensure parent dir of '%s'\n", path);
-                return -1;
-            }
-            return 0;
-        }
-    }
-    pr_error("Path '%s' does not have parent\n", path);
+free_string_buffer:
+    if (work_handle->string_buffer.buffer) 
+        free(work_handle->string_buffer.buffer);
     return -1;
 }
 
-int ensure_parent_dir_at(
-    int const dir_fd,
-    char *const restrict path,
-    unsigned short const len_path
+
+
+int gcb_sideband_progress(char const *string, int len, void *payload) {
+    pr_info("Repo '%s': Remote: %.*s",
+        (char const *)payload, len, string);
+	return 0;
+}
+
+#define declare_func_size_to_human_readable_type(TYPE, SUFFIX) \
+static inline \
+TYPE size_to_human_readable_##SUFFIX(TYPE size, char *const suffix) { \
+    char const suffixes[] = "BKMGTPEZY"; \
+    unsigned short suffix_id = 0; \
+    while (size >= 1024) { \
+        ++suffix_id; \
+        size /= 1024; \
+    } \
+    *suffix = suffixes[suffix_id]; \
+    return size; \
+}
+
+declare_func_size_to_human_readable_type(size_t, size_t)
+declare_func_size_to_human_readable_type(unsigned int, uint)
+
+static inline void gcb_print_progress(
+    git_indexer_progress const *const restrict stats,
+    char const *const restrict repo
 ) {
-    for (unsigned short i = len_path; i > 0; --i) {
-        if (path[i - 1] == '/') {
-            path[i - 1] = '\0';
-            int r = mkdir_recursively_at(dir_fd, path);
-            path[i - 1] = '/';
-            if (r) {
-                pr_error("Failed to ensure parent dir of '%s'\n", path);
-                return -1;
-            }
-            return 0;
-        }
-    }
-    pr_error("Path '%s' does not have parent\n", path);
-    return -1;
+	if (stats->total_objects &&
+		stats->received_objects == stats->total_objects) {
+		pr_info("Repo '%s': Resolving deltas %u%% (%u/%u)\r",
+                repo,
+                stats->total_deltas > 0 ?
+                    100 * stats->indexed_deltas / stats->total_deltas :
+                    0,
+                stats->indexed_deltas,
+                stats->total_deltas);
+	} else {
+        char suffix;
+        unsigned int size_human_readable = size_to_human_readable_uint(
+            stats->received_bytes, &suffix);
+		pr_info(
+            "Repo '%s': Receiving objects %u%% (%u%c, %u); "
+            "Indexing objects %u%% (%u); "
+            "Total objects %u.\r",
+            repo,
+            stats->total_objects > 0 ?
+                100 * stats->received_objects / stats->total_objects :
+                0,
+            size_human_readable, suffix,
+            stats->received_objects,
+            stats->total_objects > 0 ?
+                100 * stats->indexed_objects/ stats->total_objects :
+                0,
+            stats->indexed_objects,
+            stats->total_objects);
+	}
 }
 
-unsigned short get_unsigned_short_decimal_width(unsigned short number) {
-    unsigned short width = 0;
-    if (!number) return 1;
-    while (number) {
-        number /= 10;
-        ++width;
-    }
-    return width;
+int gcb_fetch_progress(git_indexer_progress const *stats, void *payload) {
+	gcb_print_progress(stats, (char const *)payload);
+	return 0;
 }
 
-static inline unsigned int
-    tar_header_checksum(struct tar_header *header) {
-    unsigned int checksum = 0;
-    for (unsigned i = 0; i < sizeof *header; ++i) {
-        switch (i) {
-        case 148 ... 155:
-            checksum += ' ';
-            break;
-        default:
-            checksum += ((unsigned char *)header)[i];
-            break;
-        }
-    }
-    return checksum;
-}
-
-int tar_header_checksum_self(struct tar_header *header) {
-    if (snprintf(header->chksum, sizeof header->chksum - 1, "%06o",
-        tar_header_checksum(header)) < 0) {
-        pr_error_with_errno("Failed to format header checksum");
-        return -1;
-    }
-    header->chksum[sizeof header->chksum - 1] = ' ';
-    return 0;
-}
-
-// Read from fd until EOF,
-// return the size being read, or -1 if failed,
-// the pointer should be free'd by caller
-
-
-// May re-allocate config->repos
-// int config_add_repo_and_init_with_url(
-//     struct config *const restrict config,
-//     char const *const restrict url,
-//     unsigned short const len_url,
-//     enum repo_added_from added_from
+// int mkdir_allow_existing_at(
+//     int const dirfd,
+//     char *const restrict path
 // ) {
-//     if (config == NULL || url == NULL || len_url == 0) {
-//         pr_error("Internal: invalid argument\n");
-//         return -1;
+//     if (mkdirat(dirfd, path, 0755)) {
+//         if (errno == EEXIST) {
+//             struct stat stat_buffer;
+//             if (fstatat(dirfd, path, &stat_buffer, AT_SYMLINK_NOFOLLOW)) {
+//                 pr_error_with_errno("Failed to stat '%s'", path);
+//                 return -1;
+//             }
+//             if ((stat_buffer.st_mode & S_IFMT) == S_IFDIR) {
+//                 return 0;
+//             } else {
+//                 pr_error("Exisitng '%s' is not a folder\n", path);
+//                 return -1;
+//             }
+//         } else {
+//             pr_error_with_errno("Failed to mkdir '%s'", path);
+//             return -1;
+//         }
 //     }
-    
+//     return 0;
 // }
 
-
-// int wanted_object_guess_type_self_optional(
-//     struct wanted_object *wanted_object
+// int mkdir_recursively_at(
+//     int const dirfd,
+//     char *const restrict path
 // ) {
-//     if (wanted_object->type != WANTED_TYPE_UNKNOWN) return 0;
-//     if ((wanted_object->type = wanted_type_guess_from_name(
-//         wanted_object->name, wanted_object->len_name
-//     )) == WANTED_TYPE_UNKNOWN) {
-//         pr_error("Failed to guess type\n");
+//     for (char *c = path; ; ++c) {
+//         switch (*c) {
+//         case '\0':
+//             return mkdir_allow_existing_at(dirfd, path);
+//         case '/':
+//             *c = '\0';
+//             int r = mkdir_allow_existing_at(dirfd, path);
+//             *c = '/';
+//             if (r) {
+//                 pr_error("Failed to mkdir recursively '%s'\n", path);
+//                 return -1;
+//             }
+//             break;
+//         default:
+//             break;
+//         }
+//     }
+// }
+
+// int remove_dir_recursively(
+//     DIR * const restrict dir_p
+// ) {
+//     struct dirent *entry;
+//     errno = 0;
+//     int dir_fd = dirfd(dir_p);
+//     while ((entry = readdir(dir_p)) != NULL) {
+//         if (entry->d_name[0] == '.') {
+//             switch (entry->d_name[1]) {
+//             case '\0':
+//                 continue;
+//             case '.':
+//                 if (entry->d_name[2] == '\0') continue;
+//                 break;
+//             }
+//         }
+//         switch (entry->d_type) {
+//         case DT_REG:
+//         case DT_LNK:
+//             if (unlinkat(dir_fd, entry->d_name, 0)) {
+//                 pr_error_with_errno(
+//                     "Failed to delete '%s' recursively", entry->d_name);
+//                 return -1;
+//             }
+//             break;
+//         case DT_DIR: {
+//             int dir_fd_r = openat(dir_fd, entry->d_name, O_RDONLY);
+//             if (dir_fd_r < 0) {
+//                 pr_error_with_errno(
+//                     "Failed to open dir entry '%s'", entry->d_name);
+//                 return -1;
+//             }
+//             DIR *dir_p_r = fdopendir(dir_fd_r);
+//             if (dir_p_r == NULL) {
+//                 pr_error_with_errno(
+//                     "Failed to open '%s' as subdir", entry->d_name);
+//                 if (close(dir_fd_r)) {
+//                     pr_error_with_errno("Failed to close fd for recursive dir");
+//                 }
+//                 return -1;
+//             }
+//             int r = remove_dir_recursively(dir_p_r);
+//             if (closedir(dir_p_r)) {
+//                 pr_error_with_errno("Faild to close dir");
+//             }
+//             if (r) {
+//                 pr_error("Failed to remove dir '%s' recursively\n",
+//                     entry->d_name);
+//                 return -1;
+//             }
+//             if (unlinkat(dir_fd, entry->d_name, AT_REMOVEDIR)) {
+//                 pr_error_with_errno(
+//                     "Failed to rmdir '%s' recursively", entry->d_name);
+//                 return -1;
+//             }
+//             break;
+//         }
+//         default:
+//             pr_error("Unsupported file type %d for '%s'\n",
+//                 entry->d_type, entry->d_name);
+//             return -1;
+//         }
+
+//     }
+//     if (errno) {
+//         pr_error_with_errno("Failed to read dir\n");
 //         return -1;
 //     }
 //     return 0;
 // }
 
-// int wanted_object_fill_type_from_string(
-//     struct wanted_object *wanted_object,
-//     char const *const restrict type
+// int ensure_path_non_exist( // essentially rm -rf
+//     char const *const restrict path
 // ) {
-//     for (enum wanted_type i = 1; i <= WANTED_TYPE_MAX; ++i) {
-//         if (!strcmp(type, wanted_type_strings[i])) {
-//             wanted_object->type = i;
+//     struct stat stat_buffer;
+//     if (stat(path, &stat_buffer)) {
+//         switch(errno) {
+//         case ENOENT:
 //             return 0;
+//         default:
+//             pr_error_with_errno("Failed to get stat of path '%s'", path);
+//             return -1;
+//         }
+//     }
+//     mode_t mode = stat_buffer.st_mode & S_IFMT;
+//     switch (mode) {
+//     case S_IFDIR: {
+//         DIR *const restrict dir_p = opendir(path);
+//         if (dir_p == NULL) {
+//             pr_error_with_errno("Failed to opendir '%s'", path);
+//             return -1;
+//         }
+//         int r = remove_dir_recursively(dir_p);
+//         if (closedir(dir_p)) {
+//             pr_error_with_errno("Failed to close dir");
+//         }
+//         if (r) {
+//             pr_error("Failed to remove '%s' recursively\n", path);
+//             return -1;
+//         }
+//         if (rmdir(path)) {
+//             pr_error_with_errno("Failed to rmdir '%s'", path);
+//             return -1;
+//         }
+//         break;
+//     }
+//     case S_IFREG:
+//         if (unlink(path)) {
+//             pr_error_with_errno("Failed to remove regular file '%s'", path);
+//             return -1;
+//         }
+//         break;
+//     default:
+//         pr_error("Cannot remove existing '%s' with type %d\n", path, mode);
+//         return -1;
+//     }
+//     return 0;
+// }
+
+// int ensure_path_non_exist_at( // essentially rm -rf
+//     int const dir_fd,
+//     char const *const restrict path
+// ) {
+//     struct stat stat_buffer;
+//     if (fstatat(dir_fd, path, &stat_buffer, AT_SYMLINK_NOFOLLOW)) {
+//         switch(errno) {
+//         case ENOENT:
+//             return 0;
+//         default:
+//             pr_error_with_errno("Failed to get stat of path '%s'", path);
+//             return -1;
+//         }
+//     }
+//     mode_t mode = stat_buffer.st_mode & S_IFMT;
+//     switch (mode) {
+//     case S_IFDIR: {
+//         int const subdir_fd = openat(dir_fd, path, O_RDONLY | O_DIRECTORY);
+//         // DIR *const restrict dir_p = opendir;
+//         if (subdir_fd < 0) {
+//             pr_error_with_errno("Failed to open subdir '%s'", path);
+//             return -1;
+//         }
+//         DIR *const restrict dir_p = fdopendir(subdir_fd);
+//         if (dir_p == NULL) {
+//             pr_error_with_errno("Failed to opendir '%s'", path);
+//             if (close(subdir_fd)) {
+//                 pr_error_with_errno("Failed to close fd for subdir");
+//             }
+//             return -1;
+//         }
+//         int r = remove_dir_recursively(dir_p);
+//         if (closedir(dir_p)) {
+//             pr_error_with_errno("Failed to close dir");
+//         }
+//         if (r) {
+//             pr_error("Failed to remove '%s' recursively\n", path);
+//             return -1;
+//         }
+//         if (unlinkat(dir_fd, path, AT_REMOVEDIR)) {
+//             pr_error_with_errno("Failed to rmdir '%s'", path);
+//             return -1;
+//         }
+//         break;
+//     }
+//     case S_IFREG:
+//     case S_IFLNK:
+//         if (unlinkat(dir_fd, path, 0)) {
+//             pr_error_with_errno("Failed to remove regular file '%s'", path);
+//             return -1;
+//         }
+//         break;
+//     default:
+//         pr_error("Cannot remove existing '%s' with type %d\n", path, mode);
+//         return -1;
+//     }
+//     return 0;
+// }
+
+// int ensure_parent_dir(
+//     char *const restrict path,
+//     unsigned short const len_path
+// ) {
+//     for (unsigned short i = len_path; i > 0; --i) {
+//         if (path[i - 1] == '/') {
+//             path[i - 1] = '\0';
+//             int r = mkdir_recursively(path);
+//             path[i - 1] = '/';
+//             if (r) {
+//                 pr_error("Failed to ensure parent dir of '%s'\n", path);
+//                 return -1;
+//             }
+//             return 0;
+//         }
+//     }
+//     pr_error("Path '%s' does not have parent\n", path);
+//     return -1;
+// }
+
+// int ensure_parent_dir_at(
+//     int const dir_fd,
+//     char *const restrict path,
+//     unsigned short const len_path
+// ) {
+//     for (unsigned short i = len_path; i > 0; --i) {
+//         if (path[i - 1] == '/') {
+//             path[i - 1] = '\0';
+//             int r = mkdir_recursively_at(dir_fd, path);
+//             path[i - 1] = '/';
+//             if (r) {
+//                 pr_error("Failed to ensure parent dir of '%s'\n", path);
+//                 return -1;
+//             }
+//             return 0;
+//         }
+//     }
+//     pr_error("Path '%s' does not have parent\n", path);
+//     return -1;
+// }
+
+// unsigned short get_unsigned_short_decimal_width(unsigned short number) {
+//     unsigned short width = 0;
+//     if (!number) return 1;
+//     while (number) {
+//         number /= 10;
+//         ++width;
+//     }
+//     return width;
+// }
+
+// static inline unsigned int
+//     tar_header_checksum(struct tar_header *header) {
+//     unsigned int checksum = 0;
+//     for (unsigned i = 0; i < sizeof *header; ++i) {
+//         switch (i) {
+//         case 148 ... 155:
+//             checksum += ' ';
+//             break;
+//         default:
+//             checksum += ((unsigned char *)header)[i];
+//             break;
+//         }
+//     }
+//     return checksum;
+// }
+
+// int tar_header_checksum_self(struct tar_header *header) {
+//     if (snprintf(header->chksum, sizeof header->chksum - 1, "%06o",
+//         tar_header_checksum(header)) < 0) {
+//         pr_error_with_errno("Failed to format header checksum");
+//         return -1;
+//     }
+//     header->chksum[sizeof header->chksum - 1] = ' ';
+//     return 0;
+// }
+
+// // Read from fd until EOF,
+// // return the size being read, or -1 if failed,
+// // the pointer should be free'd by caller
+
+
+// // May re-allocate config->repos
+// // int config_add_repo_and_init_with_url(
+// //     struct config *const restrict config,
+// //     char const *const restrict url,
+// //     unsigned short const len_url,
+// //     enum repo_added_from added_from
+// // ) {
+// //     if (config == NULL || url == NULL || len_url == 0) {
+// //         pr_error("Internal: invalid argument\n");
+// //         return -1;
+// //     }
+    
+// // }
+
+
+// // int wanted_object_guess_type_self_optional(
+// //     struct wanted_object *wanted_object
+// // ) {
+// //     if (wanted_object->type != WANTED_TYPE_UNKNOWN) return 0;
+// //     if ((wanted_object->type = wanted_type_guess_from_name(
+// //         wanted_object->name, wanted_object->len_name
+// //     )) == WANTED_TYPE_UNKNOWN) {
+// //         pr_error("Failed to guess type\n");
+// //         return -1;
+// //     }
+// //     return 0;
+// // }
+
+// // int wanted_object_fill_type_from_string(
+// //     struct wanted_object *wanted_object,
+// //     char const *const restrict type
+// // ) {
+// //     for (enum wanted_type i = 1; i <= WANTED_TYPE_MAX; ++i) {
+// //         if (!strcmp(type, wanted_type_strings[i])) {
+// //             wanted_object->type = i;
+// //             return 0;
+// //         }
+// //     }
+// //     return -1;
+// // }
+
+// // int wanted_object_complete_commit(
+// //     struct wanted_commit *wanted_object
+// // ) {
+// //     if (git_oid_fromstr(&wanted_object->oid, wanted_object->name)) {
+// //         pr_error("Failed to resolve '%s' to a git object id\n",
+// //             wanted_object->name);
+// //         return -1;
+// //     }
+// //     if (git_oid_tostr(
+// //             wanted_object->hex_string,
+// //             sizeof wanted_object->hex_string,
+// //             &wanted_object->oid
+// //         )[0] == '\0') {
+// //         pr_error("Failed to format git oid hex string\n");
+// //         return -1;
+// //     }
+// //     return 0;
+// // }
+
+// // int wanted_object_complete(
+// //     struct wanted_object *wanted_object
+// // ) {
+// //     if (wanted_object_guess_type_self_optional(wanted_object)) {
+// //         pr_error("Failed to guess type of object with unknown type\n");
+// //         return -1;
+// //     }
+// //     switch (wanted_object->type) {
+// //     case WANTED_TYPE_UNKNOWN:
+// //         pr_error("Impossible to complete an object with unknown type\n");
+// //         return -1;
+// //     case WANTED_TYPE_ALL_BRANCHES: // These two does not need to be upgraded
+// //     case WANTED_TYPE_ALL_TAGS:
+// //     case WANTED_TYPE_REFERENCE:
+// //     case WANTED_TYPE_BRANCH:
+// //     case WANTED_TYPE_TAG:
+// //     case WANTED_TYPE_HEAD:
+// //         return 0;
+// //     case WANTED_TYPE_COMMIT:
+// //         return wanted_object_complete_commit(
+// //             (struct wanted_commit *)wanted_object);
+// //     default:
+// //         pr_error("Impossible routine\n");
+// //         return -1;
+// //     }
+// //     return 0;
+// // }
+
+// // void wanted_object_init_with_name(
+// //     struct wanted_object *wanted_object,
+// //     char const *const restrict name,
+// //     unsigned short const len_name
+// // ) {
+// //     *wanted_object = WANTED_OBJECT_INIT;
+// //     memcpy(wanted_object->name, name, len_name);
+// //     wanted_object->name[len_name] = '\0';
+// //     wanted_object->len_name = len_name;
+// // }
+
+// // int wanted_object_init_with_name_and_type_and_complete(
+// //     struct wanted_object *wanted_object,
+// //     char const *const restrict name,
+// //     unsigned short const len_name,
+// //     enum wanted_type const wanted_type
+// // ) {
+// //     wanted_object_init_with_name(wanted_object, name, len_name);
+// //     wanted_object->type = wanted_type;
+// //     if (wanted_object_complete(wanted_object)) {
+// //         pr_error("Failed to complete object\n");
+// //         return -1;
+// //     }
+// //     return 0;
+// // }
+
+
+// int opendir_create_if_non_exist_at(
+//     int const dir_fd,
+//     char const *const restrict path,
+//     unsigned short const len_path
+// ) {
+//     int subdir_fd = openat(
+//             dir_fd, path,
+//             O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+//     if (subdir_fd < 0) {
+//         switch (errno) {
+//         case ENOENT:
+//             char path_dup[PATH_MAX];
+//             memcpy(path_dup, path, len_path + 1);
+//             if (mkdir_recursively_at(dir_fd, path_dup)) {
+//                 pr_error("Failed to create dir '%s'\n", path);
+//                 return -1;
+//             }
+//             if ((subdir_fd = openat(
+//                 dir_fd, path,
+//                 O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+//                 pr_error_with_errno("Failed to open dir '%s'", path);
+//                 return -1;
+//             }
+//             break;
+//         default:
+//             pr_error_with_errno("Failed to open dir '%s'", path);
+//             return -1;
+//         }
+//     }
+//     return subdir_fd;
+// }
+
+// int guarantee_symlink_at (
+//     int const links_dirfd,
+//     char const *const restrict symlink_path,
+//     unsigned short const len_symlink_path,
+//     char const *const restrict symlink_target
+// ) {
+//     if (len_symlink_path >= PATH_MAX) {
+//         pr_error("Symlink path too long\n");
+//         return -1;
+//     }
+//     char path[PATH_MAX];
+//     ssize_t len = readlinkat(links_dirfd, symlink_path, path, PATH_MAX);
+//     if (len < 0) {
+//         switch (errno) {
+//         case ENOENT:
+//             break;
+//         default:
+//             pr_error_with_errno("Failed to read link at '%s'", symlink_path);
+//             return -1;
+//         }
+//     } else {
+//         path[len] = '\0';
+//         if (strcmp(path, symlink_target)) {
+//             pr_warn("Symlink at '%s' points to '%s' instead of '%s', "
+//             "if you see this message for too many times, you've probably set "
+//             "too many repos with same path but different schemes.\n",
+//             symlink_path, path, symlink_target);
+//             if (unlinkat(links_dirfd, symlink_path, 0) < 0) {
+//                 pr_error_with_errno("Faild to unlink '%s'", symlink_path);
+//                 return -1;
+//             }
+//         } else {
+//             // pr_info("Symlink '%s' -> '%s' already existing\n",
+//             //     symlink_path, symlink_target);
+//             return 0;
+//         }
+//     }
+//     if (symlinkat(symlink_target, links_dirfd, symlink_path) < 0) {
+//         switch (errno) {
+//         case ENOENT:
+//             break;
+//         default:
+//             pr_error_with_errno(
+//                 "Failed to create symlink '%s' -> '%s'",
+//                 symlink_path, symlink_target);
+//             return -1;
+//         }
+//     } else {
+//         pr_debug("Created symlink '%s' -> '%s'\n",
+//             symlink_path, symlink_target);
+//         return 0;
+//     }
+//     // After above routine, the only possiblity is missing dirs
+//     char symlink_path_dup[PATH_MAX];
+//     memcpy(symlink_path_dup, symlink_path, len_symlink_path);
+//     symlink_path_dup[len_symlink_path] = '\0';
+//     unsigned short last_sep = 0;
+//     for (unsigned short i = len_symlink_path; i > 0; --i) {
+//         char *c = symlink_path_dup + i;
+//         if (*c == '/') {
+//             if (!last_sep) {
+//                 last_sep = i;
+//             }
+//             *c = '\0';
+//             if (mkdirat(links_dirfd, symlink_path_dup, 0755)) {
+//                 if (errno != ENOENT) {
+//                     pr_error_with_errno(
+//                         "Failed to create folder '%s' as parent of symlink "
+//                         "'%s' -> '%s'",
+//                         symlink_path_dup, symlink_path, symlink_target);
+//                     return -1;
+//                 }
+//             } else {
+//                 for (unsigned short j = i; j < last_sep; ++j) {
+//                     c = symlink_path_dup + j;
+//                     if (*c == '\0') {
+//                         *c = '/';
+//                         if (mkdirat(links_dirfd, symlink_path_dup, 0755)) {
+//                             pr_error_with_errno(
+//                                 "Failed to create folder '%s' as parent of "
+//                                 "symlink '%s' -> '%s'",
+//                                 symlink_path_dup, symlink_path, symlink_target);
+//                             return -1;
+//                         }
+//                     }
+//                 }
+//                 break;
+//             }
+//         }
+//     }
+//     if (symlinkat(symlink_target, links_dirfd, symlink_path) < 0) {
+//         pr_error_with_errno(
+//             "Failed to create symlink '%s' -> '%s'",
+//             symlink_path, symlink_target);
+//         return -1;
+//     }
+//     pr_debug("Created symlink '%s' -> '%s'\n",
+//         symlink_path, symlink_target);
+//     return 0;
+// }
+
+// int wanted_object_guarantee_symlinks(
+//     struct wanted_object const *const restrict wanted_object,
+//     struct repo const *const restrict repo,
+//     char const *const restrict archive_suffix,
+//     unsigned short const len_archive_suffix,
+//     int const archives_links_dirfd,
+//     int const checkouts_links_dirfd
+// ) {
+//     /* links/[sanitized url]/[commit hash](archive suffix)
+//                             /named/[name](a.s.)
+//                             /tags -> refs/tags
+//                             /branches -> refs/heads
+//      undetermimed layers -> /refs/[ref name](a.s.)
+//                             /HEAD(a.s.)
+//     */
+//     bool    link_tags_to_dir_refs_tags = false,
+//             link_branches_to_dir_refs_heads = false;
+//     bool const  archive = wanted_object->archive,
+//                 checkout = wanted_object->checkout;
+//     char const *dir_link = "";
+//     // E.g.
+//     //  archive: archives/abcdef.tar.gz
+//     //  link: archives/links/github.com/user/repo/abcdeg.tar.gz
+//     //  target: ../../../../abcdef.tar.gz
+//     //   github.com/user/repo has 3 parts, depth is 4
+//     unsigned short link_depth = repo->url_no_scheme_sanitized_parts + 1;
+//     switch (wanted_object->type) {
+//         case WANTED_TYPE_UNKNOWN:
+//             pr_error("Wanted type unknown for '%s'\n", wanted_object->name);
+//             return -1;
+//         case WANTED_TYPE_ALL_BRANCHES:
+//         case WANTED_TYPE_ALL_TAGS:
+//             return 0;
+//         case WANTED_TYPE_BRANCH:
+//             link_branches_to_dir_refs_heads = true;
+//             dir_link = "refs/heads/";
+//             link_depth += 2;
+//             break;
+//         case WANTED_TYPE_TAG:
+//             link_tags_to_dir_refs_tags = true;
+//             dir_link = "refs/tags/";
+//             link_depth += 2;
+//             break;
+//         case WANTED_TYPE_REFERENCE:
+//             if (!strncmp(wanted_object->name, "refs/", 5)) {
+//                 char const *const ref_kind = wanted_object->name + 5;
+//                 if (!strncmp(ref_kind, "heads/", 6))
+//                     link_branches_to_dir_refs_heads = true;
+//                 else if (!strncmp(ref_kind, "tags/", 5))
+//                     link_tags_to_dir_refs_tags = true;
+//             }
+//             break;
+//         case WANTED_TYPE_COMMIT:
+//         case WANTED_TYPE_HEAD:
+//             break;
+//     }
+//     switch (wanted_object->type) {
+//     case WANTED_TYPE_BRANCH:
+//     case WANTED_TYPE_TAG:
+//     case WANTED_TYPE_REFERENCE:
+//         if (!wanted_object->commit_resolved) {
+// #ifdef ALL_REFERENCES_MUST_BE_RESOLVED
+//             pr_error(
+// #else
+//             pr_warn(
+// #endif
+//                 "Commit not resolved for wanted object '%s' yet\n",
+//                     wanted_object->name);
+// #ifdef ALL_REFERENCES_MUST_BE_RESOLVED
+//             return -1;
+// #else
+//             return 0;
+// #endif
+//         }
+//         break;
+//     default:
+//         break;
+//     }
+//     for (unsigned short i = 0; i < wanted_object->len_name; ++i) {
+//         switch (wanted_object->name[i]) {
+//         case '/':
+//             ++link_depth;
+//             break;
+//         case '\0':
+//             pr_error("Name '%s' ends pre-maturely\n", wanted_object->name);
+//             return -1;
+//         }
+//     }
+//     int archives_repo_links_dirfd = -1;
+//     if (archive) {
+//         if ((archives_repo_links_dirfd = opendir_create_if_non_exist_at(
+//             archives_links_dirfd, repo->url_no_scheme_sanitized,
+//             repo->len_url_no_scheme_sanitized)) < 0) {
+//             pr_error("Failed to open archive repos links dir\n");
+//             return -1;
+//         }
+//     }
+//     int checkouts_repo_links_dirfd = -1;
+//     int r = -1;
+//     if (checkout) {
+//         if ((checkouts_repo_links_dirfd = opendir_create_if_non_exist_at(
+//             checkouts_links_dirfd, repo->url_no_scheme_sanitized,
+//             repo->len_url_no_scheme_sanitized)) < 0) {
+//             pr_error("Failed to open Checkout repos links dir\n");
+//             goto close_archives_repo_links_dirfd;
+//         }
+//     }
+//     if (link_branches_to_dir_refs_heads) {
+//         if (archive && guarantee_symlink_at(
+//             archives_repo_links_dirfd, "branches", 8, "refs/heads")) {
+//             goto close_checkouts_repo_links_dirfd;
+//         }
+//         if (checkout && guarantee_symlink_at(
+//             checkouts_repo_links_dirfd, "branches", 8, "refs/heads")) {
+//             goto close_checkouts_repo_links_dirfd;
+//         }
+//     }
+//     if (link_tags_to_dir_refs_tags) {
+//         if (archive && guarantee_symlink_at(
+//             archives_repo_links_dirfd, "tags", 4, "refs/tags")) {
+//             goto close_checkouts_repo_links_dirfd;
+//         }
+//         if (checkout && guarantee_symlink_at(
+//             checkouts_repo_links_dirfd, "tags", 4, "refs/tags")) {
+//             goto close_checkouts_repo_links_dirfd;
+//         }
+//     }
+//     // The commit hash one
+//     char symlink_path[PATH_MAX] = "";
+//     char *symlink_path_current =
+//         stpcpy(symlink_path, wanted_object->hex_string);
+//     // unsigned short len_symlink_path = HASH_STRING_LEN;
+//     char symlink_target[PATH_MAX] = "";
+//     char *symlink_target_current = symlink_target;
+//     for (unsigned short i = 0; i < repo->url_no_scheme_sanitized_parts+1; ++i) {
+//         symlink_target_current = stpcpy(symlink_target_current, "../");
+//     }
+//     symlink_target_current = stpcpy(symlink_target_current,
+//                                     wanted_object->hex_string);
+//     if (checkout && guarantee_symlink_at(
+//         checkouts_repo_links_dirfd,
+//         symlink_path, HASH_STRING_LEN,
+//         symlink_target)) {
+//         goto close_checkouts_repo_links_dirfd;
+//     }
+//     if (archive) {
+//         if (archive_suffix[0] == '\0' && guarantee_symlink_at(
+//             archives_repo_links_dirfd,
+//             symlink_path, HASH_STRING_LEN,
+//             symlink_target)) {
+//             goto close_checkouts_repo_links_dirfd;
+//         } else {
+//             strcpy(symlink_path_current, archive_suffix);
+//             strcpy(symlink_target_current, archive_suffix);
+//             if (guarantee_symlink_at(
+//                 archives_repo_links_dirfd,
+//                 symlink_path, HASH_STRING_LEN + len_archive_suffix,
+//                 symlink_target)) {
+//                 goto close_checkouts_repo_links_dirfd;
+//             }
+//         }
+//     }
+
+//     // The named one
+//     if (wanted_object->type != WANTED_TYPE_COMMIT) {
+//         char *symlink_path_current = stpcpy(symlink_path, dir_link);
+//         symlink_path_current =
+//             stpcpy(symlink_path_current, wanted_object->name);
+//         unsigned short len_symlink_path = symlink_path_current - symlink_path;
+//         char *symlink_target_current = symlink_target;
+//         for (unsigned short i = 0; i < link_depth; ++i) {
+//             symlink_target_current = stpcpy(symlink_target_current, "../");
+//         }
+//         symlink_target_current = stpcpy(
+//             symlink_target_current,
+//             wanted_object->hex_string);
+//         if (checkout && guarantee_symlink_at(
+//             checkouts_repo_links_dirfd,
+//             symlink_path, len_symlink_path,
+//             symlink_target)) {
+//             goto close_checkouts_repo_links_dirfd;
+//         }
+//         if (archive) {
+//             if (archive_suffix[0] == '\0' && guarantee_symlink_at(
+//                 archives_repo_links_dirfd,
+//                 symlink_path, len_symlink_path,
+//                 symlink_target)) {
+//                 goto close_checkouts_repo_links_dirfd;
+//             } else {
+//                 strcpy(symlink_path_current, archive_suffix);
+//                 strcpy(symlink_target_current, archive_suffix);
+//                 if (guarantee_symlink_at(
+//                     archives_repo_links_dirfd,
+//                     symlink_path, wanted_object->len_name + len_archive_suffix,
+//                     symlink_target)) {
+//                     goto close_checkouts_repo_links_dirfd;
+//                 }
+//             }
+//         }
+//     }
+
+//     r = 0;
+
+// close_checkouts_repo_links_dirfd:
+//     if (checkout) {
+//         if (close(checkouts_repo_links_dirfd)) {
+//             pr_error_with_errno(
+//                 "Failed to close file descriptor for checkouts/repo/links dir");
+//         }
+//     }
+// close_archives_repo_links_dirfd:
+//     if (archive) {
+//         if (close(archives_repo_links_dirfd)) {
+//             pr_error_with_errno(
+//                 "Failed to close file descriptor for archives/repo/links dir");
+//         }
+//     }
+//     return r;
+// }
+
+
+// struct wanted_object *config_get_last_wanted_object_of_last_repo(
+//     struct config *const restrict config
+// ) {
+//     struct repo *const restrict repo = get_last(config->repos);
+//     return get_last(repo->wanted_objects);
+// }
+
+// struct wanted_object *config_get_last_wanted_object_of_type(
+//     struct config *const restrict config,
+//     enum yaml_wanted_type type
+// ) {
+//     switch (type) {
+//     case YAML_WANTED_UNKNOWN:
+//         pr_error("Wanted type unknown\n");
+//         return NULL;
+//     case YAML_WANTED_GLOBAL_EMPTY:
+//         return get_last(config->empty_wanted_objects);
+//     case YAML_WANTED_GLOBAL_ALWAYS:
+//         return get_last(config->always_wanted_objects);
+//         break;
+//     case YAML_WANTED_REPO:
+//         return config_get_last_wanted_object_of_last_repo(config);
+//     }
+//     return NULL;
+// }
+
+
+// void print_config_repo_wanted(
+//     struct repo const *const restrict repo) {
+//     for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
+//         struct wanted_object const *const restrict wanted_object
+//             = repo->wanted_objects + i;
+//         printf(
+//             "|        - %s:\n"
+//             "|            type: %d (%s)\n"
+//             "|            archive: %s\n"
+//             "|            checkout: %s\n",
+//             wanted_object->name,
+//             wanted_object->type,
+//             wanted_type_strings[wanted_object->type],
+//             wanted_object->archive ? "yes" : "no",
+//             wanted_object->checkout ? "yes" : "no"
+//         );
+//         switch (wanted_object->type) {
+//         case WANTED_TYPE_BRANCH:
+//         case WANTED_TYPE_TAG:
+//         case WANTED_TYPE_REFERENCE:
+//         case WANTED_TYPE_HEAD:
+//             if (wanted_object->commit_resolved) {
+//                 printf(
+//                     "|            commit: %s\n",
+//                     wanted_object->commit.hex_string);
+//             }
+//             __attribute__((fallthrough));
+//         case WANTED_TYPE_COMMIT:
+//             if (wanted_object->parsed_commit_id == (unsigned long) -1)
+//                 break;
+//             struct parsed_commit *parsed_commit =
+//                 repo->parsed_commits + wanted_object->parsed_commit_id;
+//             if (parsed_commit->submodules_count) {
+//                 printf(
+//                     "|            submodules:\n");
+//             }
+//             for (unsigned long i = 0;
+//                 i < parsed_commit->submodules_count;
+//                 ++i) {
+//                 struct parsed_commit_submodule * parsed_commit_submodule =
+//                     parsed_commit->submodules + i;
+//                 printf(
+//                     "|              - path: %s\n"
+//                     "|                url: %s\n"
+//                     "|                repo_id: %lu\n"
+//                     "|                commit: %s\n",
+//                     parsed_commit_submodule->path,
+//                     parsed_commit_submodule->url,
+//                     parsed_commit_submodule->target_repo_id,
+//                     parsed_commit_submodule->id_hex_string);
+//             }
+//             // break;
+//         default:
+//             break;
+//         }
+//     }
+
+// }
+
+// void print_config_repo(struct repo const *const restrict repo) {
+//     printf(
+//         "|  - %s%s:\n"
+//         "|      hash: %016lx\n"
+//         "|      dir: %s\n"
+//         "|      sanitized: %s\n",
+//         repo->url,
+//         repo->added_from ? " (added from submodule)" : "",
+//         repo->url_hash,
+//         repo->dir_path,
+//         repo->url_no_scheme_sanitized);
+//     if (repo->wanted_objects_count) {
+//         printf(
+//         "|      wanted (%lu, %s):\n",
+//             repo->wanted_objects_count,
+//             repo->wanted_dynamic ? "dynamic" : "static");
+//         print_config_repo_wanted(repo);
+//     }
+// }
+
+// void print_config(struct config const *const restrict config) {
+//     printf(
+//         "| proxy: %s\n"
+//         "| proxy_after: %hu\n"
+//         "| dir_repos: %s\n"
+//         "| dir_archives: %s\n"
+//         "| dir_checkouts: %s\n",
+//         config->proxy_url,
+//         config->proxy_after,
+//         config->dir_repos,
+//         config->dir_archives,
+//         config->dir_checkouts);
+//     if (config->repos_count) {
+//         printf("| repos (%lu): \n", config->repos_count);
+//         for (unsigned long i = 0; i < config->repos_count; ++i) {
+//             print_config_repo(config->repos + i);
+//         }
+//     }
+// }
+
+
+
+// int guarantee_symlink (
+//     char const *const restrict symlink_path,
+//     unsigned short const len_symlink_path,
+//     char const *const restrict symlink_target
+// ) {
+//     if (len_symlink_path >= PATH_MAX) {
+//         pr_error("Symlink path too long\n");
+//         return -1;
+//     }
+//     char path[PATH_MAX];
+//     ssize_t len = readlink(symlink_path, path, PATH_MAX);
+//     if (len < 0) {
+//         switch (errno) {
+//         case ENOENT:
+//             break;
+//         default:
+//             pr_error_with_errno("Failed to read link at '%s'", symlink_path);
+//             return -1;
+//         }
+//     } else {
+//         path[len] = '\0';
+//         if (strcmp(path, symlink_target)) {
+//             pr_warn("Symlink at '%s' points to '%s' instead of '%s', "
+//             "if you see this message for too many times, you've probably set "
+//             "too many repos with same path but different schemes.\n",
+//             symlink_path, path, symlink_target);
+//             if (unlink(symlink_path) < 0) {
+//                 pr_error_with_errno("Faild to unlink '%s'", symlink_path);
+//                 return -1;
+//             }
+//         } else {
+//             pr_debug("Symlink '%s' -> '%s' already existing\n",
+//                 symlink_path, symlink_target);
+//             return 0;
+//         }
+//     }
+//     if (symlink(symlink_target, symlink_path) < 0) {
+//         switch (errno) {
+//         case ENOENT:
+//             break;
+//         default:
+//             pr_error_with_errno(
+//                 "Failed to create symlink '%s' -> '%s'",
+//                 symlink_path, symlink_target);
+//             return -1;
+//         }
+//     } else {
+//         pr_debug("Created symlink '%s' -> '%s'\n",
+//             symlink_path, symlink_target);
+//         return 0;
+//     }
+//     char symlink_path_dup[PATH_MAX];
+//     memcpy(symlink_path_dup, symlink_path, len_symlink_path);
+//     symlink_path_dup[len_symlink_path] = '\0';
+//     unsigned short last_sep = 0;
+//     for (unsigned short i = len_symlink_path; i > 0; --i) {
+//         char *c = symlink_path_dup + i;
+//         if (*c == '/') {
+//             if (!last_sep) {
+//                 last_sep = i;
+//             }
+//             *c = '\0';
+//             if (mkdir(symlink_path_dup, 0755)) {
+//                 if (errno != ENOENT) {
+//                     pr_error_with_errno(
+//                         "Failed to create folder '%s' as parent of symlink "
+//                         "'%s' -> '%s'",
+//                         symlink_path_dup, symlink_path, symlink_target);
+//                     return -1;
+//                 }
+//             } else {
+//                 for (unsigned short j = i; j < last_sep; ++j) {
+//                     c = symlink_path_dup + j;
+//                     if (*c == '\0') {
+//                         *c = '/';
+//                         if (mkdir(symlink_path_dup, 0755)) {
+//                             pr_error_with_errno(
+//                                 "Failed to create folder '%s' as parent of "
+//                                 "symlink '%s' -> '%s'",
+//                                 symlink_path_dup, symlink_path, symlink_target);
+//                             return -1;
+//                         }
+//                     }
+//                 }
+//                 break;
+//             }
+//         }
+//     }
+//     if (symlink(symlink_target, symlink_path) < 0) {
+//         pr_error_with_errno(
+//             "Failed to create symlink '%s' -> '%s'",
+//             symlink_path, symlink_target);
+//         return -1;
+//     }
+//     pr_debug("Created symlink '%s' -> '%s'\n",
+//         symlink_path, symlink_target);
+//     return 0;
+// }
+
+// int repo_guarantee_symlink(
+//     struct repo *const restrict repo,
+//     int const links_dirfd
+// ) {
+//     if (repo->url_no_scheme_sanitized_parts * 3 + HASH_STRING_LEN + 1
+//              >= PATH_MAX) {
+//         pr_error("Link target would be too long");
+//         return -1;
+//     }
+//     char symlink_target[PATH_MAX] = "";
+//     char *symlink_target_current = symlink_target;
+//     for (unsigned short i = 0; i < repo->url_no_scheme_sanitized_parts; ++i) {
+//         symlink_target_current = stpcpy(symlink_target_current, "../");
+//     }
+//     symlink_target_current = stpcpy(symlink_target_current, repo->hash_name);
+//     if (guarantee_symlink_at(links_dirfd, repo->url_no_scheme_sanitized,
+//         repo->len_url_no_scheme_sanitized, symlink_target)) {
+//         pr_error("Failed to guarantee a symlink at '%s' pointing to '%s'\n",
+//             repo->url_no_scheme_sanitized, symlink_target);
+//         return -1;
+//     }
+//     return 0;
+// }
+
+// int repo_finish_bare(
+//     struct repo *const restrict repo,
+//     char const *const restrict dir_repos,
+//     unsigned short len_dir_repos
+// ) {
+//     if (repo == NULL || dir_repos == NULL || len_dir_repos == 0 ||
+//         repo->wanted_objects_count > 0) {
+//         pr_error("Internal: invalid arguments\n");
+//         return -1;
+//     }
+//     repo->len_dir_path = len_dir_repos + HASH_STRING_LEN + 1;
+//     if (snprintf(repo->dir_path, repo->len_dir_path + 1, "%s/"HASH_FORMAT,
+//         dir_repos, repo->url_hash) < 0) {
+//         pr_error_with_errno(
+//             "Failed to format dir path of repo '%s'\n",
+//             repo->url);
+//         return -1;
+//     }
+//     pr_debug("Repo '%s' will be stored at '%s'\n", repo->url, repo->dir_path);
+//     return 0;
+// }
+
+// int work_directory_add_keep(
+//     struct work_directory *const restrict work_directory,
+//     char const *const restrict keep,
+//     unsigned short const len_keep
+// ) {
+//     if (work_directory_add_keep_no_init(work_directory)) {
+//         pr_error("Failed to add keep to work directory\n");
+//         return -1;
+//     }
+//     if (len_keep >= sizeof *work_directory->keeps) {
+//         pr_error("Length of keep item '%s' too long\n", keep);
+//         return -1;
+//     }
+//     char *keep_last = (char *)(get_last(work_directory->keeps));
+//     memcpy(keep_last, keep, len_keep);
+//     keep_last[len_keep] = '\0';
+//     return 0;
+// }
+
+// // static inline
+// // void work_directories_free(
+// //     struct work_directory *const restrict workdir_repos,
+// //     struct work_directory *const restrict workdir_archives,
+// //     struct work_directory *const restrict workdir_checkouts
+// // ) {
+// //     work_directory_free(workdir_repos);
+// //     work_directory_free(workdir_archives);
+// //     work_directory_free(workdir_checkouts);
+// // }
+
+// static inline
+// void keep_list_swap_item(
+//     char (*keeps)[NAME_MAX + 1],
+//     unsigned long const i,
+//     unsigned long const j,
+//     unsigned short const memlen // including terminating \0
+// ) {
+//     if (i == j) return;
+//     char buffer[NAME_MAX + 1];
+//     // keeps[i] and keeps + i points to the same memory address
+//     // Type: keeps[i]  : char[256], collapsing to char *
+//     //       keeps + i : char (*)[256], won't collapse
+//     // Use memcpy instead of strcpy to save strlen call
+//     memcpy(buffer, keeps + i, memlen);
+//     memcpy(keeps + i, keeps + j, memlen);
+//     memcpy(keeps + j, buffer, memlen);
+// }
+
+// static inline
+// unsigned long keep_list_partition(
+//     char (*keeps)[NAME_MAX + 1],
+//     unsigned long const low,
+//     unsigned long const high,
+//     unsigned short const memlen
+// ) {
+//     char *pivot = keeps[high];
+//     unsigned long i = low - 1;
+//     for (unsigned long j = low; j < high; ++j) {
+//         pr_debug("Comparing '%s' vs '%s'\n", keeps[j], pivot);
+//         if (strcmp(keeps[j], pivot) < 0) {
+//             keep_list_swap_item(keeps, ++i, j, memlen);
+//         }
+//     }
+//     keep_list_swap_item(keeps, ++i, high, memlen);
+//     return i;
+// }
+
+// void keep_list_quick_sort(
+//     char (*keeps)[NAME_MAX + 1],
+//     unsigned long const low,
+//     unsigned long const high,
+//     unsigned short const memlen
+// ) {
+//     pr_debug("Soring %lu to %lu\n", low, high);
+//     if (low < high) {
+//         pr_debug("Into %lu to %lu\n", low, high);
+//         unsigned long const pivot = keep_list_partition(
+//                                 keeps, low, high, memlen);
+//          // if pivot is 0, that will make the new high (ulong) -1
+//         if (pivot) keep_list_quick_sort(keeps, low, pivot - 1, memlen);
+//         keep_list_quick_sort(keeps, pivot + 1, high, memlen);
+//     }
+//     pr_debug("Ended sorting %lu to %lu\n", low, high);
+// }
+
+// // 1 dir empty (now), 0 dir non empty, -1 error
+// int remove_dead_symlinks_recursively_at(
+//     int const dir_fd,
+//     unsigned short const pass
+// ) {
+//     if (pass == 0) return 0;
+//     int dirfd_dup = dup(dir_fd);
+//     if (dirfd_dup < 0) {
+//         pr_error_with_errno("Failed to duplicate fd");
+//         return -1;
+//     }
+//     DIR *dir_p = fdopendir(dirfd_dup);
+//     if (dir_p == NULL) {
+//         if (close(dirfd_dup)) {
+//             pr_error_with_errno("Failed to close uplicated fd");
+//         }
+//         return -1;
+//     }
+//     struct dirent *entry;
+//     errno = 0;
+//     int r = -1;
+//     for (unsigned short i = 0; i < pass; ++i) {
+//         while ((entry = readdir(dir_p)) != NULL) {
+//             switch (entry->d_name[0]) {
+//             case '\0':
+//                 continue;
+//             case '.':
+//                 switch (entry->d_name[1]) {
+//                 case '\0':
+//                     continue;
+//                 case '.':
+//                     if (entry->d_name[2] == '\0')
+//                         continue;
+//                     break;
+//                 }
+//                 break;
+//             }
+//             switch (entry->d_type) {
+//             case DT_DIR: {
+//                 int const link_fd = openat(
+//                     dir_fd, entry->d_name, O_RDONLY | O_DIRECTORY);
+//                 if (link_fd < 0) {
+//                     pr_error_with_errno("Failed to open subdir '%s'", 
+//                                         entry->d_name);
+//                     r = -1;
+//                     goto close_dir;
+//                 }
+//                 r = remove_dead_symlinks_recursively_at(link_fd, pass);
+//                 if (close(link_fd)) {
+//                     pr_error_with_errno("Failed to close subdir '%s'",
+//                         entry->d_name);
+//                     r = -1;
+//                 }
+//                 if (r < 0) {
+//                     pr_error(
+//                         "Failed to remove dead symlinks recursively at '%s'\n",
+//                                 entry->d_name);
+//                     r = -1;
+//                     goto close_dir;
+//                 }
+//                 if (r > 0) {
+//                     if (unlinkat(dir_fd, entry->d_name, AT_REMOVEDIR)) {
+//                         pr_error_with_errno(
+//                             "Failed to remove empty folder '%s'",
+//                                 entry->d_name);
+//                         r = -1;
+//                         goto close_dir;
+//                     }
+//                 }
+//                 break;
+//             }
+//             case DT_LNK: {
+//                 char path[PATH_MAX];
+//                 ssize_t len_path = readlinkat(
+//                         dir_fd, entry->d_name, path, PATH_MAX);
+//                 if (len_path < 0) {
+//                     pr_error_with_errno(
+//                         "Failed to readlink '%s'", entry->d_name);
+//                     r = -1;
+//                     goto close_dir;
+//                 }
+//                 path[len_path] = '\0';
+//                 struct stat stat_buffer;
+//                 if (fstatat(dir_fd, path, &stat_buffer, 
+//                     AT_SYMLINK_NOFOLLOW) == 0) break;
+//                 errno = 0;
+//                 if (unlinkat(dir_fd, entry->d_name, 0)) {
+//                     pr_error_with_errno(
+//                         "Failed to remove dead link '%s'", path);
+//                     r = -1;
+//                     goto close_dir;
+//                 }
+//                 pr_debug("Removed dead link '%s'\n", path);
+//                 break;
+//             }
+//             default: continue;
+//             }
+//         }
+//         if (errno) {
+//             pr_error_with_errno("Failed to read dir");
+//             r = -1;
+//             goto close_dir;
+//         }
+//         rewinddir(dir_p);
+//     }
+//     errno = 0;
+//     unsigned short entries_count = 0;
+//     while ((entry = readdir(dir_p)) != NULL) {
+//         if (++entries_count > 2) break;
+//     }
+//     if (entries_count < 2) {
+//         pr_error("Directory entry count smaller than 2, which is impossible\n");
+//         r = -1;
+//         goto close_dir;
+//     }
+//     if (entries_count == 2) r = 1;
+//     else r = 0;
+// close_dir:
+//     if (closedir(dir_p)) {
+//         pr_error_with_errno("Failed to close dir");
+//     }
+//     return r;
+// }
+
+// int work_directory_clean(
+//     struct work_directory *const restrict workdir,
+//     unsigned short clean_links_pass,
+//     unsigned short const keep_memlen // including the terminating \0
+// ) {
+//     pr_info("Cleaning '%s'\n", workdir->path);
+//     int fd_dup = dup(workdir->dirfd);
+//     if (fd_dup < 0) {
+//         pr_error_with_errno("Failed to duplicate fd for '%s'", workdir->path);
+//         return -1;
+//     }
+//     DIR *dir_p = fdopendir(fd_dup);
+//     if (dir_p == NULL) {
+//         pr_error("Failed to opendir '%s'\n", workdir->path);
+//         if (close(fd_dup)) {
+//             pr_error_with_errno("Failed to close duplicated fd for '%s'",
+//                                 workdir->path);
+//         }
+//         return -1;
+//     }
+//     // Quick sort the keeps list
+// #ifdef DEBUGGING
+//     for (unsigned long i = 0; i < workdir->keeps_count; ++i) {
+//         pr_debug("[Before] Keeping '%s'\n", workdir->keeps[i]);
+//     }
+// #endif
+//     keep_list_quick_sort(workdir->keeps, 0, workdir->keeps_count - 1,
+//         keep_memlen > NAME_MAX + 1 ? NAME_MAX + 1 : keep_memlen);
+// #ifdef DEBUGGING
+//     for (unsigned long i = 0; i < workdir->keeps_count; ++i) {
+//         pr_debug("[After] Keeping '%s'\n", workdir->keeps[i]);
+//     }
+// #endif
+//     // Iterate over the folder to remove things not in kept list
+//     // unsigned long keeps_count = workdir->keeps_count;
+//     struct dirent *entry;
+//     errno = 0;
+//     int r = -1;
+//     // Condition at outer level to reduce comparison
+//     if (workdir->keeps_count) {
+//         while ((entry = readdir(dir_p)) != NULL) {
+//             switch (entry->d_name[0]) {
+//             case '\0':
+//                 continue;
+//             case '.':
+//                 switch (entry->d_name[1]) {
+//                 case '\0':
+//                     continue;
+//                 case '.':
+//                     if (entry->d_name[2] == '\0')
+//                         continue;
+//                     break;
+//                 }
+//                 break;
+//             }
+//             switch (entry->d_type) {
+//             case DT_REG:
+//             case DT_DIR:
+//             case DT_LNK:
+//                 break;
+//             default: continue;
+//             }
+//             bool keep = false;
+//             unsigned long low = 0;
+//             unsigned long high = workdir->keeps_count - 1;
+//             while (low <= high) {
+//                 unsigned long mid = (low + high) / 2;
+//                 pr_debug("Low @ %lu: %s, High @ %lu: %s, Mid @ %lu: %s"
+//                 "\n", low, workdir->keeps[low], high, workdir->keeps[high], mid,
+//                 workdir->keeps[mid]);
+//                 r = strcmp(entry->d_name, workdir->keeps[mid]);
+//                 if (r > 0) {
+//                     low = mid + 1;
+//                 } else if (r < 0) {
+//                     if (mid) high = mid - 1;
+//                     else break;
+//                 } else {
+//                     keep = true;
+//                     break;
+//                 }
+//             }
+//             if (!keep && ensure_path_non_exist_at(
+//                     workdir->dirfd, entry->d_name)) {
+//                 pr_error("Failed to remove '%s' which is not needed under work "
+//                     "folder'%s'\n", entry->d_name, workdir->path);
+//                 goto close_dir;
+//             }
+//         }
+//     } else {
+//         while ((entry = readdir(dir_p)) != NULL) {
+//             switch (entry->d_name[0]) {
+//             case '\0':
+//                 continue;
+//             case '.':
+//                 switch (entry->d_name[1]) {
+//                 case '\0':
+//                     continue;
+//                 case '.':
+//                     if (entry->d_name[2] == '\0')
+//                         continue;
+//                     break;
+//                 }
+//                 break;
+//             }
+//             switch (entry->d_type) {
+//             case DT_REG:
+//             case DT_DIR:
+//             case DT_LNK:
+//                 break;
+//             default: continue;
+//             }
+//             if (ensure_path_non_exist_at(workdir->dirfd, entry->d_name)) {
+//                 pr_error("Failed to remove '%s' which is not needed under work "
+//                     "folder'%s'\n", entry->d_name, workdir->path);
+//                 goto close_dir;
+//             }
+//         }
+//     }
+//     if (errno) {
+//         pr_error_with_errno("Failed to read dir\n");
+//         goto close_dir;
+//     }
+//     r = 0;
+// close_dir:
+//     if (closedir(dir_p)) {
+//         pr_error_with_errno("Failed to close dir");
+//     }
+//     if (clean_links_pass && 
+//             remove_dead_symlinks_recursively_at(
+//                 workdir->links_dirfd, clean_links_pass) < 0)  {
+//         pr_error("Failed to remove dead links under '%s'\n", workdir->path);
+//     }
+//     return r;
+// }
+
+// // 0 existing and opened, 1 does not exist but created, -1 error
+// int repo_open_or_init_bare(
+//     struct repo *const restrict repo
+// ) {
+//     if (repo == NULL || repo->url[0] == '\0' ||
+//         repo->dir_path[0] == '\0') {
+//         pr_error("Internal: invalid argument\n");
+//         return -1;
+//     }
+//     if (repo->repository != NULL) {
+//         pr_error("Repository already opened for repo '%s'\n", repo->url);
+//         return -1;
+//     }
+//     int r = git_repository_open_bare(&repo->repository, repo->dir_path);
+//     switch (r) {
+//     case GIT_OK:
+//         pr_debug(
+//             "Opened existing bare repository '%s' for repo '%s'\n",
+//             repo->dir_path, repo->url);
+//         return 0;
+//     case GIT_ENOTFOUND:
+//         pr_warn(
+//             "Dir '%s' for repo '%s' does not exist yet, trying to create it\n",
+//             repo->dir_path, repo->url);
+//         r = git_repository_init(&repo->repository, repo->dir_path, 1);
+//         if (r < 0) {
+//             pr_error(
+//                 "Failed to initialize a bare repostitory at '%s' "
+//                 "for repo '%s', "
+//                 "libgit return %d\n",
+//                 repo->dir_path, repo->url, r);
+//             return -1;
+//         } else {
+//             git_remote *remote;
+//             r = git_remote_create_with_fetchspec(
+//                 &remote, repo->repository, MIRROR_REMOTE,
+//                 repo->url, MIRROR_FETCHSPEC);
+//             if (r < 0) {
+//                 pr_error(
+//                     "Failed to create remote '"MIRROR_REMOTE"' "
+//                     "with fetch spec '"MIRROR_FETCHSPEC"' for url '%s', "
+//                     "libgit returns %d\n",
+//                     repo->url, r);
+//                 git_repository_free(repo->repository);
+//                 return -1;
+//             }
+//             git_config *config;
+//             r = git_repository_config(&config, repo->repository);
+//             if (r < 0) {
+//                 pr_error(
+//                     "Failed to get config for repo for url '%s', "
+//                     "libgit return %d\n", repo->url, r);
+//                 git_remote_free(remote);
+//                 git_repository_free(repo->repository);
+//                 return -1;
+//             }
+//             r = git_config_set_bool(config, MIRROR_CONFIG, true);
+//             if (r < 0) {
+//                 pr_error(
+//                     "Failed to set config '"MIRROR_CONFIG"' to true for "
+//                     "repo for url '%s, libgit return %d\n", repo->url, r);
+//                 git_config_free(config);
+//                 git_remote_free(remote);
+//                 git_repository_free(repo->repository);
+//                 return -1;
+//             }
+//             git_config_free(config);
+//             git_remote_free(remote);
+//             return 1;
+//         }
+//     default:
+//         pr_error(
+//             "Failed to open bare repository at '%s' for repo '%s' "
+//             "and cannot fix libgit return %d\n", repo->dir_path, repo->url, r);
+//         return -1;
+//     }
+
+//     return 0;
+// }
+
+// char const *mirror_refspecs_strings[] = {
+//     MIRROR_FETCHSPEC,
+//     NULL
+// };
+
+// static git_strarray const mirror_refspecs = {
+//     .count = 1, 
+//     .strings = (char **)mirror_refspecs_strings
+// };
+
+// int repo_update(
+//     struct repo *const restrict repo,
+//     git_fetch_options const *const restrict fetch_options,
+//     unsigned short const proxy_after
+// ) {
+//     pr_info("Updating: '%s' ...\n", repo->url);
+//     git_remote *remote;
+//     int r = git_remote_create_anonymous(&remote, repo->repository, repo->url);
+//     if (r) {
+//         pr_error("Failed to create anonymous remote for '%s', "
+//             "libgit return %d\n", repo->url, r);
+//         return -1;
+//     }
+//     pr_debug("Beginning fetching from '%s'\n", repo->url);
+//     git_fetch_options fetch_options_dup = *fetch_options;
+//     if (fetch_options->callbacks.sideband_progress ||
+//         fetch_options->callbacks.transfer_progress) {
+//         fetch_options_dup.callbacks.payload = repo;
+//     }
+//     fetch_options_dup.proxy_opts.type = GIT_PROXY_NONE;
+//     unsigned short max_try = proxy_after + 3;
+//     git_error const *error = NULL;
+//     for (unsigned short try = 0; try < max_try; ++try) {
+//         if (try == proxy_after) {
+//             if (try)
+//                 pr_warn(
+//                     "Failed to fetch from '%s' for %hu times, use proxy\n",
+//                     repo->url, proxy_after);
+//             fetch_options_dup.proxy_opts.type = GIT_PROXY_SPECIFIED;
+//         }
+//         r = git_remote_connect(remote, GIT_DIRECTION_FETCH, 
+//             &fetch_options_dup.callbacks, &fetch_options_dup.proxy_opts, NULL);
+//         if (r) {
+//             error = git_error_last();
+//             pr_error("Failed to connect to '%s', libgit return %d: %d (%s)\n",
+//                 repo->url, r, error->klass, error->message);
+//             continue;
+//         }
+//         r = git_remote_download(remote, &mirror_refspecs, &fetch_options_dup);
+//         if (r) {
+//             error = git_error_last();
+//             pr_error("Failed to download from remote '%s', libgit retutn %d: "
+//             "%d (%s)\n", repo->url, r, error->klass, error->message);
+//             r = git_remote_disconnect(remote);
+//             if (r) {
+//                 error = git_error_last();
+//                 pr_error("Failed to disconnect from remote '%s' after failed "
+//                 "download, libgit return %d: %d (%s)\n", 
+//                     repo->url, r, error->klass, error->message);
+//             } else {
+//                 r = -1;
+//             }
+//             continue;
+//         }
+//         r = git_remote_disconnect(remote);
+//         if (r) {
+//             error = git_error_last();
+//             pr_error("Failed to disconnect from remote '%s', "
+//                     "libgit return %d: %d (%s)\n", 
+//                     repo->url, r, error->klass, error->message);
+//             continue;
+//         }
+//         r = git_remote_update_tips(remote, &fetch_options_dup.callbacks, 0, 
+//                             GIT_REMOTE_DOWNLOAD_TAGS_AUTO, NULL);
+//         if (r) {
+//             error = git_error_last();
+//             pr_error("Failed to update tips for remote '%s', "
+//                 "libgit return %d: %d (%s)\n", 
+//                     repo->url, r, error->klass, error->message);
+//             continue;
+//         }
+//         r = git_remote_prune(remote, &fetch_options_dup.callbacks);
+//         if (r) {
+//             pr_error("Failed to prune remote '%s', libgit return %d: %d (%s)\n",
+//                     repo->url, r, error->klass, error->message);
+//             continue;
+//         }
+//         break;
+//     }
+//     if (r) {
+//         pr_error("Failed to update repo '%s' after %hu tries, "
+//                 "considered failure\n", repo->url, max_try);
+//         r = -1;
+//         goto free_remote;
+//     }
+//     git_remote_head const **heads;
+//     size_t heads_count;
+//     if (git_remote_ls(&heads, &heads_count, remote)) {
+//         pr_error("Failed to ls remote\n");
+//         r = -1;
+//         goto free_remote;
+//     } else {
+//         for (size_t i = 0; i < heads_count; ++i) {
+//             git_remote_head const *const head = heads[i];
+//             if (!strcmp(head->name, "HEAD")) {
+//                 if (head->symref_target == NULL) {
+//                     pr_warn("Remote HEAD points to no branch\n");
+//                     break;
+//                 }
+//                 pr_debug("Remote HEAD points to '%s' now\n",
+//                         head->symref_target);
+//                 if ((r = git_repository_set_head(
+//                         repo->repository, head->symref_target))) {
+//                     pr_error("Failed to update repo '%s' HEAD to '%s'\n",
+//                         repo->url, head->symref_target);
+//                     r = -1;
+//                     goto free_remote;
+//                 }
+//                 pr_debug("Set local HEAD of repo '%s' to '%s'\n",
+//                     repo->url, head->symref_target);
+//                 break;
+//             }
+//         }
+//     }
+
+//     pr_info("Updated repo '%s'\n", repo->url);
+//     repo->updated = true;
+//     r = 0;
+// free_remote:
+//     git_remote_free(remote);
+//     return r;
+// }
+
+// void *repo_update_thread(void *arg) {
+//     struct repo_update_thread_arg *private_arg =
+//         (struct repo_update_thread_arg *)arg;
+//     pr_debug("Thread called for repo '%s'\n", private_arg->repo->url);
+//     return (void *)(long)repo_update(private_arg->repo,
+//         &private_arg->fetch_options, private_arg->proxy_after);
+// }
+
+// // Will also create symlink
+// int repo_prepare_open_or_create_if_needed(
+//     struct repo *const restrict repo,
+//     int const links_dirfd,
+//     git_fetch_options *const restrict fetch_options,
+//     unsigned short const proxy_after,
+//     bool const delay_update
+// ) {
+//     if (repo->repository != NULL) return 0;
+//     if (repo_guarantee_symlink(repo, links_dirfd)) {
+//         pr_error("Failed to create symlink\n");
+//         return -1;
+//     }
+//     switch (repo_open_or_init_bare(repo)) {
+//     case -1:
+//         pr_error("Failed to open or init bare repo for '%s'\n", repo->url);
+//         return -1;
+//     case 0:
+//         break;
+//     case 1:
+//         pr_warn(
+//             "Repo '%s' just created locally, need to update\n", repo->url);
+//         if (delay_update) repo->wanted_dynamic = true;
+//         else if (repo_update(repo, fetch_options, proxy_after)) {
+//             pr_error(
+//                 "Failed to update freshly created repo '%s'\n", repo->url);
+//             return -1;
+//         }
+//         break;
+//     }
+//     return 0;
+// }
+
+// void parsed_commit_free(
+//     struct parsed_commit *const restrict parsed_commit
+// ) {
+//     if (parsed_commit->submodules) {
+//         free(parsed_commit->submodules);
+//     }
+//     if (parsed_commit->commit) {
+//         git_commit_free(parsed_commit->commit);
+//     }
+//     *parsed_commit = PARSED_COMMIT_INIT;
+// }
+
+// void repo_free(
+//     struct repo *const restrict repo
+// ) {
+//     if (repo->parsed_commits) {
+//         for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
+//             parsed_commit_free(repo->parsed_commits + i);
+//         }
+//         free (repo->parsed_commits);
+//     }
+//     if (repo->wanted_objects) {
+//         free (repo->wanted_objects);
+//     }
+//     if (repo->repository) {
+//         git_repository_free(repo->repository);
+//     }
+//     *repo = REPO_INIT;
+// }
+
+// void config_free(
+//     struct config *const restrict config
+// ) {
+//     if (config->repos) {
+//         for (unsigned long i = 0; i < config->repos_count; ++i) {
+//             repo_free(config->repos + i);
+//         }
+//         free (config->repos);
+//     }
+//     if (config->always_wanted_objects) {
+//         free(config->always_wanted_objects);
+//     }
+//     if (config->empty_wanted_objects) {
+//         free(config->empty_wanted_objects);
+//     }
+//     *config = CONFIG_INIT;
+// }
+
+// int parsed_commit_add_submodule_and_init_with_path_and_url(
+//     struct parsed_commit *const restrict parsed_commit,
+//     char const *const restrict path,
+//     unsigned short len_path,
+//     char const *const restrict url,
+//     unsigned short len_url
+// ) {
+//     if (parsed_commit_add_submodule_no_init(parsed_commit)) {
+//         pr_error("Failed to add submodule to commit\n");
+//         return -1;
+//     }
+//     struct parsed_commit_submodule *const restrict submodule =
+//         parsed_commit->submodules + parsed_commit->submodules_count -1;
+//     *submodule = PARSED_COMMIT_SUBMODULE_INIT;
+//     memcpy(submodule->path, path, len_path + 1);
+//     memcpy(submodule->url, url, len_url + 1);
+//     submodule->len_path = len_path;
+//     submodule->len_url = len_url;
+//     submodule->url_hash = hash_calculate(submodule->url, submodule->len_url);
+//     return 0;
+// }
+
+// // May re-allocate the config->repos array, must re-assign repo after calling
+
+// int parsed_commit_add_submodule_from_commit_tree(
+//     struct parsed_commit *const restrict parsed_commit,
+//     git_tree const *const restrict tree,
+//     char const *const restrict path,
+//     unsigned short const len_path,
+//     char const *const restrict url,
+//     unsigned short const len_url
+// ) {
+//     for (unsigned long i = 0; i < parsed_commit->submodules_count; ++i) {
+//         if (!strcmp(parsed_commit->submodules[i].path, path)) {
+//             pr_warn(
+//                 "Already defined a submodule at path '%s' for commit %s\n",
+//                 path, parsed_commit->id_hex_string);
+//             return -1;
+//         }
+//     }
+//     if (parsed_commit_add_submodule_and_init_with_path_and_url(
+//         parsed_commit, path, len_path, url, len_url)) {
+//         pr_error("Failed to init submodule for commit %s with path "
+//                 "'%s' and url '%s'\n",
+//                 parsed_commit->id_hex_string, path, url);
+//         return -1;
+//     }
+//     struct parsed_commit_submodule *const restrict submodule =
+//         get_last(parsed_commit->submodules);
+//     git_tree_entry *entry;
+//     if (git_tree_entry_bypath(&entry, tree, path)) {
+//         pr_error("Path '%s' of submodule does not exist in tree\n", path);
+//         return -1;
+//     }
+//     int r = -1;
+//     if (git_tree_entry_type(entry) != GIT_OBJECT_COMMIT) {
+//         pr_error("Object at path '%s' in tree is not a commit\n", path);
+//         goto free_entry;
+//     }
+//     submodule->id = *git_tree_entry_id(entry);
+//     if (git_oid_tostr(
+//             submodule->id_hex_string,
+//             sizeof submodule->id_hex_string,
+//             &submodule->id
+//         )[0] == '\0') {
+//         pr_error("Failed to format commit id into hex string\n");
+//         goto free_entry;
+//     }
+//     pr_info(
+//         "Submodule needed: '%s' <= '%s': %s\n",
+//         path, url, submodule->id_hex_string);
+//     r = 0;
+// free_entry:
+//     git_tree_entry_free(entry);
+//     return r;
+// }
+
+// // May re-allocate repo->parsed_commits
+// int repo_add_parsed_commit(
+//     struct repo *const restrict repo,
+//     git_oid const *const restrict oid
+// ) {
+//     if (repo_add_parsed_commit_no_init(repo)) {
+//         pr_error("Failed to add parsed commit without init\n");
+//         return -1;
+//     }
+//     struct parsed_commit *const restrict parsed_commit =
+//         get_last(repo->parsed_commits);
+//     *parsed_commit = PARSED_COMMIT_INIT;
+//     parsed_commit->id = *oid;
+//     if (git_oid_tostr(
+//             parsed_commit->id_hex_string,
+//             sizeof parsed_commit->id_hex_string,
+//             &parsed_commit->id
+//         )[0] == '\0') {
+//         pr_error("Failed to format commit id into hex string\n");
+//         return -1;
+//     }
+//     return 0;
+// }
+
+// // May re-allocate config->repos
+// int repo_parse_commit_submodule_in_tree(
+//     struct config *const restrict config,
+//     unsigned long const repo_id,
+//     unsigned long const commit_id,
+//     git_tree const *const restrict tree,
+//     char const *const restrict path,
+//     unsigned short const len_path,
+//     char const *const restrict url,
+//     unsigned short const len_url
+// ) {
+//     struct repo const *repo = config->repos + repo_id;
+//     struct parsed_commit *parsed_commit =
+//         repo->parsed_commits + commit_id;
+//     if (parsed_commit_add_submodule_from_commit_tree(
+//         parsed_commit, tree, path, len_path, url, len_url)) {
+//         pr_error("Failed to add submodule from commit tree\n");
+//         return -1;
+//     }
+//     struct parsed_commit_submodule *const restrict submodule =
+//         get_last(parsed_commit->submodules);
+
+//     for (unsigned long i = 0; i < config->repos_count; ++i) {
+//         struct repo *const repo_cmp = config->repos + i;
+//         if (repo_cmp->url_hash == submodule->url_hash) {
+//             submodule->target_repo_id = i;
+//             for (unsigned long j = 0; j < repo_cmp->parsed_commits_count; ++j) {
+//                 if (git_oid_cmp(
+//                     &submodule->id,
+//                     &repo_cmp->parsed_commits[j].id)) continue;
+//                 pr_debug(
+//                     "Already added commit %s to repo '%s', skipped\n",
+//                     submodule->id_hex_string, repo_cmp->url);
+//                 submodule->target_commit_id = j;
+//                 return 0;
+//             }
+//             break;
+//         }
+//     }
+//     if (submodule->target_repo_id == (unsigned long) -1) {
+//         pr_warn("Repo '%s' was not seen before, need to add it\n", url);
+//         if (config_add_repo_and_init_with_url(config, url, len_url,
+//             REPO_ADDED_FROM_SUBMODULE)) {
+//             pr_error("Failed to add repo '%s'\n", url);
+//             return -1;
+//         }
+//         repo = config->repos + repo_id;
+//         submodule->target_repo_id = config->repos_count - 1;
+//         if (repo_finish_bare(
+//             get_last(config->repos), config->dir_repos, config->len_dir_repos)){
+//             pr_error("Failed to finish bare repo\n");
+//             return -1;
+//         }
+//     }
+//     if (submodule->target_repo_id == (unsigned long) -1) {
+//         pr_error("Submodule '%s' with url '%s' for commmit %s of repo '%s' "
+//         "still missing target repo id, refuse to continue\n",
+//             path, url, submodule->id_hex_string, repo->url);
+//         return -1;
+//     }
+//     if (submodule->target_commit_id != (unsigned long) -1) return 0;
+//     struct repo *repo_target =
+//         config->repos + submodule->target_repo_id;
+//     // The repo is either completely new, or we found it but not found commit
+//     // There is no need to check for commit duplication here
+//     int r = repo_add_parsed_commit(repo_target, &submodule->id);
+//     // The above function may re-allocate repo_target, the re-assign here
+//     // is in case repo == repo_target
+//     parsed_commit = repo->parsed_commits + commit_id;
+//     if (r) {
+//         pr_error("Failed to add parsed commit to repo\n");
+//         return -1;
+//     }
+//     submodule->target_commit_id = repo_target->parsed_commits_count - 1;
+//     if (submodule->target_repo_id >= repo_id) {
+//         pr_debug("Added commit %s as wanted to repo '%s', will handle "
+//             "that repo later\n", submodule->id_hex_string, repo_target->url);
+//         return 0;
+//     }
+//     pr_warn("Added commit %s as wanted to parsaed repo '%s', need to go back "
+//             "to handle that specific commit\n",
+//             submodule->id_hex_string, repo_target->url);
+//     r = repo_ensure_parsed_commit(config, submodule->target_repo_id,
+//                                     submodule->target_commit_id);
+//     repo = config->repos + repo_id;
+//     parsed_commit = repo->parsed_commits + commit_id;
+//     if (r) {
+//         pr_error("Failed to ensure repo '%s' commit %s 's submodule at '%s' "
+//                 "from '%s' commit %s in target repo\n",
+//                 repo->url, parsed_commit->id_hex_string, path, url,
+//                 submodule->id_hex_string);
+//         return 1;
+//     };
+//     return 0;
+// }
+
+
+// // May re-allocate the config->repos array, must re-assign repo after calling
+// int repo_parse_commit_blob_gitmodules(
+//     struct config *const restrict config,
+//     unsigned long const repo_id,
+//     unsigned long const commit_id,
+//     git_tree const *const tree,
+//     git_blob *const restrict blob_gitmodules
+// ) {
+//     char const *blob_gitmodules_ro_buffer =
+//         git_blob_rawcontent(blob_gitmodules);
+//     if (blob_gitmodules_ro_buffer == NULL) {
+//         pr_error("Failed to get a ro buffer for gitmodules\n");
+//         return -1;
+//     }
+//     git_object_size_t blob_gitmodules_size =
+//         git_blob_rawsize(blob_gitmodules);
+//     if (blob_gitmodules_size == 0) {
+//         pr_error("Tree entry .gitmodules blob size is 0\n");
+//         return -1;
+//     }
+//     char    submodule_name[NAME_MAX] = "",
+//             submodule_path[PATH_MAX] = "",
+//             submodule_url[PATH_MAX] = "";
+//     unsigned short  len_submodule_name = 0,
+//                     len_submodule_path = 0,
+//                     len_submodule_url = 0;
+//     for (git_object_size_t id_start = 0; id_start < blob_gitmodules_size; ) {
+//         switch (blob_gitmodules_ro_buffer[id_start]) {
+//         case '\0':
+//         case '\n':
+//         case '\r':
+//         case '\b':
+//             ++id_start;
+//             continue;
+//         }
+//         unsigned short len_line = 0;
+//         git_object_size_t id_end = id_start + 1;
+//         for (; id_end < blob_gitmodules_size && len_line == 0;) {
+//             switch (blob_gitmodules_ro_buffer[id_end]) {
+//             case '\0':
+//             case '\n':
+//                 len_line = id_end - id_start;
+//                 break;
+//             default:
+//                 ++id_end;
+//                 break;
+//             }
+//         }
+//         if (len_line > 7) { // The shortest, "\turl = "
+//             char const *line = blob_gitmodules_ro_buffer + id_start;
+//             char const *line_end = blob_gitmodules_ro_buffer + id_end;
+//             switch (blob_gitmodules_ro_buffer[id_start]) {
+//             case '[':
+//                 if (!strncmp(line + 1, "submodule \"", 11)) {
+//                     if (submodule_name[0]) {
+//                         pr_error(
+//                             "Incomplete submodule definition for '%s'\n",
+//                             submodule_name);
+//                         return -1;
+//                     }
+//                     char const *submodule_name_start = line + 12;
+//                     char const *right_quote = submodule_name_start;
+//                     for (;
+//                         *right_quote != '"' && right_quote < line_end;
+//                         ++right_quote);
+//                     len_submodule_name = right_quote - submodule_name_start;
+//                     strncpy(
+//                         submodule_name,
+//                         submodule_name_start,
+//                         len_submodule_name);
+//                     submodule_name[len_submodule_name] = '\0';
+//                 }
+//                 break;
+//             case '\t':
+//                 char const *value = NULL;
+//                 char *submodule_value = NULL;
+//                 unsigned short *len_submodule_value = NULL;
+//                 if (!strncmp(line + 1, "path = ", 7)) {
+//                     value = line + 8;
+//                     submodule_value = submodule_path;
+//                     len_submodule_value = &len_submodule_path;
+//                 } else if (!strncmp(line + 1, "url = ", 6)) {
+//                     value = line + 7;
+//                     submodule_value = submodule_url;
+//                     len_submodule_value = &len_submodule_url;
+//                 }
+//                 if (value) {
+//                     if (submodule_name[0] == '\0') {
+//                         pr_error(
+//                             "Submodule definition begins before "
+//                             "the submodule name\n");
+//                         return -1;
+//                     }
+//                     if (submodule_value[0] != '\0') {
+//                         pr_error("Duplicated value definition for "
+//                             "submodule '%s'\n", submodule_name);
+//                         return -1;
+//                     }
+//                     *len_submodule_value = line_end - value;
+//                     strncpy(submodule_value, value, *len_submodule_value);
+//                     submodule_value[*len_submodule_value] = '\0';
+//                     if (submodule_path[0] != '\0' &&
+//                         submodule_url[0] != '\0') {
+//                         pr_debug(
+//                             "Submodule '%s', path '%s', url '%s'\n",
+//                             submodule_name, submodule_path, submodule_url);
+//                         if (repo_parse_commit_submodule_in_tree(
+//                             config, repo_id, commit_id, tree,
+//                                     submodule_path, len_submodule_path,
+//                                     submodule_url, len_submodule_url)) {
+//                             pr_error(
+//                                 "Failed to recursively clone or update "
+//                                 "submodule '%s' (url '%s')\n",
+//                                 submodule_name, submodule_url);
+//                             return -1;
+//                         }
+//                         submodule_name[0] = '\0';
+//                         submodule_path[0] = '\0';
+//                         submodule_url[0] = '\0';
+//                     }
+//                 }
+//                 break;
+//             default:
+//                 break;
+//             }
+//         }
+//         id_start = id_end + 1;
+//     }
+//     return 0;
+// }
+
+// // May re-allocate the config->repos array, must re-assign repo after calling
+// int repo_parse_commit_tree_entry_gitmodules(
+//     struct config *const restrict config,
+//     unsigned long const repo_id,
+//     unsigned long const commit_id,
+//     git_tree const *const tree,
+//     git_tree_entry const *const entry_gitmodules
+// ) {
+//     struct repo const *restrict repo = config->repos + repo_id;
+//     struct parsed_commit *restrict parsed_commit =
+//         repo->parsed_commits + commit_id;
+//     if (git_tree_entry_type(entry_gitmodules) != GIT_OBJECT_BLOB) {
+//         pr_error(
+//             "Tree entry .gitmodules in commit %s for repo '%s' "
+//             "is not a blob\n",
+//             parsed_commit->id_hex_string, repo->url);
+//         return -1;
+//     }
+//     git_object *object_gitmodules;
+//     int r = git_tree_entry_to_object(
+//         &object_gitmodules, repo->repository, entry_gitmodules);
+//     if (r) {
+//         pr_error("Failed to convert tree entry for gitmodules to object\n");
+//         return -1;
+//     }
+//     git_blob *blob_gitmodules = (git_blob *)object_gitmodules;
+//     r = repo_parse_commit_blob_gitmodules(
+//         config, repo_id, commit_id, tree, blob_gitmodules);
+//     repo = config->repos + repo_id;
+//     parsed_commit = repo->parsed_commits + commit_id;
+//     if (r) {
+//         pr_error("Failed to parse gitmodules blob\n");
+//         r = -1;
+//         goto free_object;
+//     }
+//     r = 0;
+// free_object:
+//     free(object_gitmodules);
+//     return r;
+// }
+
+// // May re-allocate repo->parsed_commits
+// int repo_parse_wanted_commit(
+//     struct repo *const restrict repo,
+//     struct wanted_commit *const restrict wanted_commit
+// ) {
+//     for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
+//         if (!git_oid_cmp(&repo->parsed_commits[i].id, &wanted_commit->oid)) {
+//             wanted_commit->parsed_commit_id = i;
+//             goto sync_export_setting;
+//         }
+//     }
+//     if (repo_add_parsed_commit(repo, &wanted_commit->oid)) {
+//         pr_error("Failed to add parsed commit\n");
+//         return -1;
+//     }
+//     wanted_commit->parsed_commit_id = repo->parsed_commits_count - 1;
+// sync_export_setting:
+//     struct parsed_commit *parsed_commit =
+//         repo->parsed_commits + wanted_commit->parsed_commit_id;
+//     if (wanted_commit->archive) parsed_commit->archive = true;
+//     if (wanted_commit->checkout) parsed_commit->checkout = true;
+//     return 0;
+// }
+
+// // May re-allocate repo->parsed_commits
+// int repo_parse_wanted_reference_common(
+//     struct repo *const restrict repo,
+//     struct wanted_reference *const restrict wanted_reference,
+//     git_reference *reference,
+//     git_fetch_options *const restrict fetch_options,
+//     unsigned short const proxy_after
+// ) {
+//     git_object *object;
+//     int r;
+//     if ((r = git_reference_peel(&object, reference, GIT_OBJECT_COMMIT))) {
+//         if (repo->updated) {
+//             pr_error(
+//                 "Failed to peel reference '%s' into a commit object, "
+//                 "libgit return %d\n",
+//                 wanted_reference->name, r);
+// #ifdef ALL_REFERENCES_MUST_BE_RESOLVED
+//             return -1;
+// #else
+//             return 0;
+// #endif
+//         }
+//         pr_warn("Failed to peel reference '%s' into a commit object, "
+//                 "libgit return %d, but repo not updated yet, update to retry\n",
+//                 wanted_reference->name, r);
+//         if (repo_update(repo, fetch_options, proxy_after)) {
+//             pr_error("Failed to update\n");
+//             return -1;
+//         }
+//         if ((r = git_reference_peel(&object, reference, GIT_OBJECT_COMMIT))) {
+//             pr_error("Failed to peel reference '%s' into commit object even "
+//             "after updating, libgit return %d\n", wanted_reference->name, r);
+//             return -1;
+//         }
+//     }
+//     git_commit *commit = (git_commit *)object;
+//     wanted_reference->commit_resolved = true;
+//     wanted_reference->commit.oid = *git_commit_id(commit);
+//     if (git_oid_tostr(
+//             wanted_reference->commit.hex_string,
+//             sizeof wanted_reference->commit.hex_string,
+//             &wanted_reference->commit.oid
+//         )[0] == '\0') {
+//         pr_error("Failed to format git oid hex string\n");
+//         git_object_free(object);
+//         return -1;
+//     }
+//     git_object_free(object);
+//     pr_info("Reference resolved: '%s': '%s' => %s\n",
+//         repo->url, wanted_reference->name,
+//         wanted_reference->commit.hex_string);
+//     return repo_parse_wanted_commit(repo,
+//                                 (struct wanted_commit *)wanted_reference);
+// }
+
+// void repo_parse_wanted_head_explain_libgit_return(int const r) {
+//     switch (r) {
+//     case GIT_EUNBORNBRANCH:
+//         pr_error("Failed to find HEAD, HEAD points to a non-"
+//             "existing branch\n");
+//         break;
+//     case GIT_ENOTFOUND:
+//         pr_error("Failed to find HEAD, HEAD is missing\n");
+//         break;
+//     default:
+//         pr_error("Failed to find HEAD, unhandled libgit return %d\n", r);
+//         break;
+//     }
+// }
+
+// // May re-allocate repo->parsed_commits
+// int repo_parse_wanted_head(
+//     struct repo *const restrict repo,
+//     struct wanted_reference *const restrict wanted_head,
+//     git_fetch_options *const restrict fetch_options,
+//     unsigned short const proxy_after
+// ) {
+//     git_reference *head;
+//     int r = git_repository_head(&head, repo->repository);
+//     if (r) {
+//         repo_parse_wanted_head_explain_libgit_return(r);
+//         if (repo->updated) {
+//             pr_error("Failed to find HEAD\n");
+//             return -1;
+//         }
+//         pr_warn("Failed to find HEAD, but repo not updated yet, "
+//                 "update to retry");
+//         if (repo_update(repo, fetch_options, proxy_after)) {
+//             pr_error("Failed to update\n");
+//             return -1;
+//         }
+//         if ((r = git_repository_head(&head, repo->repository))) {
+//             repo_parse_wanted_head_explain_libgit_return(r);
+//             pr_error("Still failed to find HEAD after updating\n");
+//             return -1;
+//         }
+//     }
+//     r = repo_parse_wanted_reference_common(
+//         repo, wanted_head, head, fetch_options, proxy_after);
+//     git_reference_free(head);
+//     return r;
+// }
+
+// void repo_parse_wanted_branch_explain_libgit_return(
+//     int const r,
+//     char const *const restrict branch,
+//     char const *const restrict repo
+// ) {
+//     switch (r) {
+//     case GIT_ENOTFOUND:
+//         pr_error("Branch '%s' was not found in repo '%s'\n",
+//             branch, repo);
+//         break;
+//     case GIT_EINVALIDSPEC:
+//         pr_error("'%s' is an illegal branch spec\n", branch);
+//         break;
+//     default:
+//         pr_error("Failed to find branch '%s', "
+//             "unhandled libgit return %d\n",
+//             branch, r);
+//         break;
+//     }
+// }
+
+// // May re-allocate the config->repos array, must re-assign repo after calling
+// int repo_parse_wanted_branch(
+//     struct repo *const restrict repo,
+//     struct wanted_reference *const restrict wanted_branch,
+//     git_fetch_options *const restrict fetch_options,
+//     unsigned short const proxy_after
+// ) {
+//     git_reference *reference;
+//     int r = git_branch_lookup(
+//         &reference, repo->repository, wanted_branch->name, GIT_BRANCH_LOCAL);
+//     if (r) {
+//         repo_parse_wanted_branch_explain_libgit_return(
+//             r, wanted_branch->name, repo->url);
+//         if (repo->updated) {
+//             pr_error("Failed to find branch\n");
+//             return -1;
+//         }
+//         pr_warn(
+//             "Failed to find branch, but repo not updated, update to retry\n");
+//         if (repo_update(repo, fetch_options, proxy_after)) {
+//             pr_error("Failed to update repo\n");
+//             return -1;
+//         }
+//         if ((r = git_branch_lookup(
+//             &reference, repo->repository, wanted_branch->name, GIT_BRANCH_LOCAL
+//         ))) {
+//             repo_parse_wanted_branch_explain_libgit_return(
+//                 r, wanted_branch->name, repo->url);
+//             pr_error("Still failed to lookup branch even after update\n");
+//             return -1;
+//         }
+//     }
+//     r = repo_parse_wanted_reference_common(
+//         repo, wanted_branch, reference, fetch_options, proxy_after);
+//     git_reference_free(reference);
+//     return r;
+// }
+
+// void repo_parse_wanted_reference_explain_libgit_return(
+//     int const r,
+//     char const *const restrict reference,
+//     char const *const restrict repo
+// ) {
+//     switch (r) {
+//     case GIT_ENOTFOUND:
+//         pr_error("Not found reference '%s' in repo '%s'\n", reference, repo);
+//         break;
+//     case GIT_EINVALIDSPEC:
+//         pr_error("'%s' is not a valid reference spec\n", reference);
+//         break;
+//     default:
+//         pr_error("Failed to lookup reference, unhandled libgit return %d\n", r);
+//         break;
+//     }
+// }
+
+// int repo_parse_wanted_reference_with_given_ref_name(
+//     struct repo *const restrict repo,
+//     struct wanted_reference *const restrict wanted_reference,
+//     git_fetch_options *const restrict fetch_options,
+//     unsigned short const proxy_after,
+//     char const *const ref_name
+// ) {
+//     git_reference *reference;
+//     int r = git_reference_lookup(&reference, repo->repository, ref_name);
+//     if (r) {
+//         repo_parse_wanted_reference_explain_libgit_return(
+//             r, ref_name, repo->url);
+//         if (repo->updated) {
+//             pr_error("Failed to lookup reference\n");
+//             return -1;
+//         }
+//         pr_warn("Failed to lookup reference, but repo not updated yet, "
+//             "update to retry\n");
+//         if (repo_update(repo, fetch_options, proxy_after)) {
+//             pr_error("Failed to update\n");
+//             return -1;
+//         }
+//         if ((r = git_reference_lookup(
+//             &reference, repo->repository, ref_name))) {
+//             repo_parse_wanted_reference_explain_libgit_return(
+//                 r, ref_name, repo->url);
+//             pr_error("Failed to lookup reference even after update\n");
+//             return -1;
+//         }
+//     }
+//     r = repo_parse_wanted_reference_common(
+//         repo, wanted_reference, reference, fetch_options, proxy_after);
+//     git_reference_free(reference);
+//     return r;
+// }
+
+
+// int repo_parse_wanted_tag(
+//     struct repo *const restrict repo,
+//     struct wanted_reference *const restrict wanted_tag,
+//     git_fetch_options *const restrict fetch_options,
+//     unsigned short const proxy_after
+// ) {
+//     char ref_name[NAME_MAX];
+//     char const *const tag_name = wanted_tag->commit.base.name;
+//     if (snprintf(ref_name, sizeof ref_name, "refs/tags/%s", tag_name) < 0) {
+//         pr_error_with_errno(
+//             "Failed to generate full ref name of tag '%s' for repo '%s'",
+//             tag_name, repo->url);
+//         return -1;
+//     }
+//     return repo_parse_wanted_reference_with_given_ref_name(
+//         repo, wanted_tag, fetch_options, proxy_after, ref_name);
+// }
+
+// int repo_parse_wanted_reference(
+//     struct repo *const restrict repo,
+//     struct wanted_reference *const restrict wanted_reference,
+//     git_fetch_options *const restrict fetch_options,
+//     unsigned short const proxy_after
+// ) {
+//     return repo_parse_wanted_reference_with_given_ref_name(
+//         repo, wanted_reference, fetch_options, proxy_after,
+//         wanted_reference->name);
+// }
+
+// int repo_add_wanted_reference(
+//     struct repo *const restrict repo,
+//     char const *const restrict reference_name,
+//     bool const archive,
+//     bool const checkout
+// ) {
+//     if (strncmp(reference_name, "refs/", 5)) {
+//         pr_error("Reference does not start with 'refs/'\n");
+//         return -1;
+//     }
+//     if (repo_add_wanted_object_and_init_with_name_no_complete(
+//         repo, reference_name, strlen(reference_name))) {
+//         pr_error("Failed to add reference '%s' to repo '%s'\n",
+//             reference_name, repo->url);
+//         return -1;
+//     }
+//     struct wanted_object *const restrict wanted_reference =
+//         get_last(repo->wanted_objects);
+//     wanted_reference->archive = archive;
+//     wanted_reference->checkout = checkout;
+//     wanted_reference->type = WANTED_TYPE_REFERENCE;
+//     pr_debug("Added wanted reference '%s' to repo '%s'\n",
+//         wanted_reference->commit.base.name, repo->url);
+//     return 0;
+// }
+
+// int repo_parse_wanted_all_branches(
+//     struct repo *const restrict repo,
+//     struct wanted_base *const restrict wanted_all_branches
+// ) {
+//     git_branch_iterator *branch_iterator;
+//     int r = git_branch_iterator_new(
+//         &branch_iterator, repo->repository, GIT_BRANCH_LOCAL);
+//     if (r) {
+//         pr_error("Failed to create branch iterator for repo '%s', "
+//         "libgit return %d\n", repo->url, r);
+//         return -1;
+//     }
+//     git_reference *reference = NULL;
+//     git_branch_t branch_t;
+//     pr_info(
+//         "Looping through all branches to create "
+//         "individual wanted references\n");
+//     pr_info("All branches:");
+//     while ((r = git_branch_next(
+//         &reference, &branch_t, branch_iterator)) == GIT_OK) {
+//         char const *const reference_name = git_reference_name(reference);
+//         printf(" '%s'", reference_name);
+//         if (branch_t != GIT_BRANCH_LOCAL) {
+//             pr_error("\nFound branch is not a local branch\n");
+//             r = -1;
+//             goto free_reference;
+//         }
+//         if (strncmp(reference_name, "refs/", 5)) {
+//             pr_error("\nReference does not start with 'refs/'\n");
+//             r = -1;
+//             goto free_reference;
+//         }
+//         if (repo_add_wanted_reference(repo, reference_name,
+//             wanted_all_branches->archive, wanted_all_branches->checkout)) {
+//             pr_error("\nFailed to add branch reference '%s' as wannted to "
+//             "repo '%s'\n", reference_name, repo->url);
+//             r = -1;
+//             goto free_reference;
+//         }
+//         git_reference_free(reference);
+//     }
+//     printf("\n");
+//     reference = NULL;
+//     switch (r) {
+//     case GIT_OK:
+//         pr_error("Got GIT_OK at the end, this shouldn't happen\n");
+//         r = -1;
+//         goto free_iterator;
+//     case GIT_ITEROVER:
+//         break;
+//     default:
+//         pr_error(
+//             "Failed to iterate through all banches, libgit return %d\n", r);
+//         r = -1;
+//         goto free_iterator;
+//     }
+//     r = 0;
+// free_reference:
+//     if (reference) git_reference_free(reference);
+// free_iterator:
+//     git_branch_iterator_free(branch_iterator);
+//     return r;
+// }
+
+// struct repo_parse_wanted_all_tags_foreach_payload {
+//     struct repo *const restrict repo;
+//     bool const archive;
+//     bool const checkout;
+// };
+
+// int repo_parse_wanted_all_tags_foreach_callback(
+//     char const *name, git_oid *oid, void *payload
+// ) {
+//     (void) oid;
+//     struct repo_parse_wanted_all_tags_foreach_payload
+//         *const restrict private_payload =
+//         (struct repo_parse_wanted_all_tags_foreach_payload *
+//             const restrict) payload;
+//     if (repo_add_wanted_reference(private_payload->repo, name,
+//         private_payload->archive, private_payload->checkout)) {
+//         pr_error("Failed to add tag reference '%s' as wannted to "
+//         "repo '%s'\n", name, private_payload->repo->url);
+//         return -1;
+//     }
+//     return 0;
+// }
+
+// int repo_parse_wanted_all_tags(
+//     struct repo *const restrict repo,
+//     struct wanted_base *const restrict wanted_all_tags
+// ) {
+//     unsigned long i = repo->wanted_objects_count;
+//     struct repo_parse_wanted_all_tags_foreach_payload
+//         const private_payload = {
+//             .repo = repo,
+//             .archive = wanted_all_tags->archive,
+//             .checkout = wanted_all_tags->checkout,
+//         };
+//     pr_debug(
+//         "Looping through all tags to create individual wanted references\n");
+//     int r = git_tag_foreach(
+//         repo->repository, repo_parse_wanted_all_tags_foreach_callback,
+//         (void *)&private_payload);
+//     if (r) {
+//         pr_error("Failed git_tag_foreach callback, libgit return %d\n", r);
+//         return -1;
+//     }
+//     pr_info("All tags:");
+//     for (; i < repo->wanted_objects_count; ++i) {
+//         printf(" '%s'", repo->wanted_objects[i].name);
+//     }
+//     printf("\n");
+//     return 0;
+// }
+
+// // May re-allocate config->repos, and repo->parsed_commits
+// int repo_lookup_commit_and_update_if_failed(
+//     git_commit **const restrict commit,
+//     struct config *const restrict config,
+//     unsigned long const repo_id,
+//     unsigned long const commit_id
+// ) {
+//     struct repo *restrict repo = config->repos + repo_id;
+//     struct parsed_commit *restrict parsed_commit =
+//         repo->parsed_commits + commit_id;
+//     int r = git_commit_lookup(commit, repo->repository, &parsed_commit->id);
+//     if (r) {
+//         if (repo->updated) {
+//             pr_error(
+//                 "Failed to lookup commit %s in repo '%s' "
+//                 "even it's up-to-date, "
+//                 "libgit return %d, consider failure\n",
+//                 parsed_commit->id_hex_string, repo->url, r);
+//             return -1;
+//         }
+//         pr_warn(
+//             "Commit %s does not exist in repo '%s' (libgit return %d), "
+//             "but the repo is not updated yet, "
+//             "trying to update the repo before looking up the commit again\n",
+//             parsed_commit->id_hex_string, repo->url, r);
+//         if (repo_update(repo, &config->fetch_options, config->proxy_after)) {
+//             pr_error("Failed to update repo\n");
+//             return -1;
+//         }
+//         pr_warn(
+//             "Repo '%s' updated, go back to ensure old parsed commits are "
+//             "still robust\n", repo->url);
+//         r = repo_ensure_first_parsed_commits(config, repo_id, commit_id);
+//         repo = config->repos + repo_id;
+//         parsed_commit = repo->parsed_commits + commit_id;
+//         if (r) {
+//             pr_error("Updated repo '%s' breaks robustness of old parsed commit "
+//             "%s", repo->url, parsed_commit->id_hex_string);
+//             return -1;
+//         }
+//         if ((r = git_commit_lookup(
+//             commit, repo->repository, &parsed_commit->id))) {
+//             pr_error(
+//                 "Failed to lookup commit %s in repo '%s' "
+//                 "even after updating the repo, libgit return %d, "
+//                 "consider failure\n",
+//                 parsed_commit->id_hex_string, repo->url, r);
+//             return -1;
+//         }
+//     }
+//     return 0;
+// }
+
+// // May re-allocate config->repos, and repo->parsed_commits
+// int repo_ensure_parsed_commit_submodules (
+//     struct config *const restrict config,
+//     unsigned long const repo_id,
+//     unsigned long const commit_id,
+//     git_commit *commit
+// ) {
+//     struct repo *restrict repo = config->repos + repo_id;
+//     struct parsed_commit *restrict parsed_commit =
+//         repo->parsed_commits + commit_id;
+//     if (parsed_commit->submodules_parsed) return 0;
+//     git_tree *tree;
+//     int r = git_commit_tree(&tree, commit);
+//     if (r) {
+//         pr_error(
+//             "Failed to get the commit tree pointed by commit %s "
+//             "in repo '%s', libgit return %d\n",
+//             parsed_commit->id_hex_string, repo->url, r);
+//         return -1;
+//     }
+//     git_tree_entry const *const entry_gitmodules =
+//         git_tree_entry_byname(tree, ".gitmodules");
+//     if (entry_gitmodules != NULL) {
+//         pr_debug(
+//             "Found .gitmodules in commit tree of %s for repo '%s', "
+//             "parsing submodules\n", parsed_commit->id_hex_string, repo->url);
+//         r = repo_parse_commit_tree_entry_gitmodules(
+//             config, repo_id, commit_id, tree, entry_gitmodules);
+//         repo = config->repos + repo_id;
+//         parsed_commit = repo->parsed_commits + commit_id;
+//         if (r) {
+//             pr_error(
+//                 "Failed to parse submodules in commit tree of %s "
+//                 "for repo '%s'\n",
+//                 parsed_commit->id_hex_string, repo->url);
+//             return -1;
+//         }
+//     }
+//     parsed_commit->submodules_parsed = true;
+//     return 0;
+// }
+
+// // May re-allocate config->repos, and repo->parsed_commits
+// int repo_ensure_parsed_commit(
+//     struct config *const restrict config,
+//     unsigned long const repo_id,
+//     unsigned long const commit_id
+// ) {
+//     git_commit *commit;
+//     int r = repo_lookup_commit_and_update_if_failed(
+//                 &commit, config, repo_id, commit_id);
+
+//     struct repo *restrict repo = config->repos + repo_id;
+//     struct parsed_commit *restrict parsed_commit =
+//         repo->parsed_commits + commit_id;
+//     if (r) {
+//         pr_error("Failed to lookup commit %s in repo '%s'\n",
+//             parsed_commit->id_hex_string, repo->url);
+//         return -1;
+//     }
+//     if (!parsed_commit->submodules_parsed) {
+//         r = (repo_ensure_parsed_commit_submodules(
+//             config, repo_id, commit_id, commit));
+//         repo = config->repos + repo_id;
+//         parsed_commit = repo->parsed_commits + commit_id;
+//         if (r) {
+//             pr_error("Failed to parse repo '%s' commit %s submodules\n",
+//                 repo->url, parsed_commit->id_hex_string);
+//             r = -1;
+//             goto free_commit;
+//         }
+//     }
+//     pr_info("Commit robust: '%s': %s\n",
+//         repo->url, parsed_commit->id_hex_string);
+//     r = 0;
+// free_commit:
+//     git_commit_free(commit);
+//     return r;
+// }
+
+// // May re-allocate config->repos, and repo->parsed_commits
+// int repo_ensure_first_parsed_commits(
+//     struct config *const restrict config,
+//     unsigned long const repo_id,
+//     unsigned long const stop_before_commit_id
+// ) {
+//     struct repo *restrict repo = config->repos + repo_id;
+//     for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
+//         if (i == stop_before_commit_id) break;
+//         if (repo_ensure_parsed_commit(config, repo_id, i)) {
+//             repo = config->repos + repo_id;
+//             pr_error(
+//                 "Failed to ensure robustness of commit %s of repo '%s'\n",
+//                 repo->parsed_commits[i].id_hex_string, repo->url);
+//             return -1;
+//         }
+//         repo = config->repos + repo_id;
+//     }
+//     return 0;
+// }
+
+// // May re-allocate config->repos, and repo->parsed_commits
+// int repo_ensure_all_parsed_commits(
+//     struct config *const restrict config,
+//     unsigned long const repo_id
+// ) {
+//     struct repo *restrict repo = config->repos + repo_id;
+//     pr_debug("Ensursing all parsed commit for repo '%s', count %lu\n",
+//         repo->url, repo->parsed_commits_count);
+//     for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
+//         if (repo_ensure_parsed_commit(config, repo_id, i)) {
+//             repo = config->repos + repo_id;
+//             pr_error(
+//                 "Failed to ensure robustness of commit %s of repo '%s'\n",
+//                 repo->parsed_commits[i].id_hex_string, repo->url);
+//             return -1;
+//         }
+//         repo = config->repos + repo_id;
+//     }
+//     return 0;
+// }
+
+// int mirror_repo(
+//     struct config *const restrict config,
+//     unsigned long const repo_id,
+//     int const links_dirfd
+// ) {
+//     int r = repo_prepare_open_or_create_if_needed(
+//         config->repos + repo_id, links_dirfd,
+//         &config->fetch_options, config->proxy_after, false);
+//     struct repo *restrict repo = config->repos + repo_id;
+//     if (r) {
+//         pr_error("Failed to ensure repo '%s' is opened\n", repo->url);
+//         return -1;
+//     }
+//     pr_info("Mirroring repo '%s'\n", repo->url);
+//     if (repo->wanted_dynamic && !repo->updated) {
+//         pr_warn(
+//             "Dynamic wanted objects set for repo '%s', need to update\n",
+//             repo->url);
+//         if (repo_update(
+//             repo, &config->fetch_options, config->proxy_after)) {
+//             pr_error(
+//                 "Failed to update repo '%s' to prepare for "
+//                 "dynamic wanted objects\n",
+//                 repo->url);
+//             return -1;
+//         }
+//     }
+//     git_fetch_options *const fetch_options = &config->fetch_options;
+//     unsigned short const proxy_after = config->proxy_after;
+
+//     bool updated = repo->updated;
+//     for (;;) {
+//         for (unsigned i = 0; i < repo->wanted_objects_count;) {
+//             struct wanted_object *wanted_object = repo->wanted_objects + i;
+//             switch (wanted_object->type) {
+//             case WANTED_TYPE_COMMIT:
+//                 if (repo_parse_wanted_commit(repo,
+//                     (struct wanted_commit *)wanted_object)) {
+//                     pr_error(
+//                         "Failed to parse wanted commit %s for repo '%s'\n",
+//                         wanted_object->hex_string, repo->url);
+//                     return -1;
+//                 }
+//                 break;
+//             case WANTED_TYPE_ALL_TAGS:
+//                 if (repo_parse_wanted_all_tags(repo,
+//                     (struct wanted_base *)wanted_object)) {
+//                     pr_error(
+//                         "Failed to parse wanted all branches for repo '%s'\n",
+//                         repo->url);
+//                     return -1;
+//                 }
+//                 break;
+//             case WANTED_TYPE_ALL_BRANCHES:
+//                 if (repo_parse_wanted_all_branches(repo,
+//                     (struct wanted_base *)wanted_object)) {
+//                     pr_error("Failed to parse wanted all tags for repo '%s'\n",
+//                         repo->url);
+//                     return -1;
+//                 }
+//                 break;
+//             case WANTED_TYPE_BRANCH:
+//                 if (repo_parse_wanted_branch(repo,
+//                     (struct wanted_reference *)wanted_object,
+//                     fetch_options, proxy_after)) {
+//                     pr_error(
+//                         "Failed to parsed wanted branch '%s'  for repo '%s'\n",
+//                         wanted_object->name, repo->url);
+//                     return -1;
+//                 }
+//                 break;
+//             case WANTED_TYPE_TAG:
+//                 if (repo_parse_wanted_tag(repo,
+//                     (struct wanted_reference *)wanted_object,
+//                     fetch_options, proxy_after)) {
+//                     pr_error(
+//                         "Failed to parsed wanted tag '%s'  for repo '%s'\n",
+//                         wanted_object->name, repo->url);
+//                     return -1;
+//                 }
+//                 break;
+//             case WANTED_TYPE_REFERENCE:
+//                 if (repo_parse_wanted_reference(repo,
+//                     (struct wanted_reference *)wanted_object,
+//                     fetch_options, proxy_after)) {
+//                     pr_error(
+//                         "Failed to parsed wanted reference '%s'  for "
+//                         "repo '%s'\n",
+//                         wanted_object->name, repo->url);
+//                     return -1;
+//                 }
+//                 break;
+//             case WANTED_TYPE_HEAD:
+//                 if (repo_parse_wanted_head(repo,
+//                     (struct wanted_reference *)wanted_object,
+//                     fetch_options, proxy_after)) {
+//                     pr_error("Failed to parsed wanted HEAD for repo '%s'\n",
+//                     repo->url);
+//                     return -1;
+//                 }
+//                 break;
+//             case WANTED_TYPE_UNKNOWN:
+//             default:
+//                 pr_error(
+//                     "Impossible wanted type unknown for wanted object '%s' "
+//                     "for repo '%s'\n",
+//                     wanted_object->name, repo->url);
+//                 return -1;
+//             }
+//             if (repo->updated && !updated) {
+//                 pr_warn(
+//                     "Silent update happended during run, need to reset loop\n");
+//                 // Drop all wanted objects added later
+//                 updated = true;
+//                 repo->wanted_objects_count =
+//                     repo->wanted_objects_count_original;
+//                 i = 0;
+//                 pr_warn("Repo updated, go back to first wanted object\n");
+//                 continue;
+//             }
+//             ++i;
+//         }
+//         if (repo_ensure_all_parsed_commits(config, repo_id)) {
+//             pr_error("Failed to ensure robustness of all parsed commits\n");
+//             return -1;
+//         }
+//         repo = config->repos + repo_id;
+//         if (updated == repo->updated) {
+//             break;
+//         } else {
+//             pr_warn("Silent update happened during run, need to reset loop\n");
+//             updated = repo->updated;
+//         }
+//     }
+//     pr_info("Repo mirrored and robust: '%s'\n", repo->url);
+//     return 0;
+// }
+
+// int update_status_add_server_and_init_with_hash_optional(
+//     struct update_status *const restrict update_status,
+//     hash_type const server_hash
+// ) {
+//     for (unsigned long i = 0; i < update_status->servers_count; ++i) {
+//         if (server_hash == update_status->servers[i].server_hash)
+//             return 0;
+//     }
+//     if (update_status_add_server_no_init(update_status)) {
+//         pr_error("Failed to add server\n");
+//         return -1;
+//     }
+//     struct update_server_repo_activity *const server =
+//         get_last(update_status->servers);
+//     server->server_hash = server_hash;
+//     server->repos_updating_count = 0;
+//     return 0;
+// }
+
+
+// int open_and_update_all_dynamic_repos_threaded_optional(
+//     struct config *const restrict config,
+//     int const links_dirfd
+// ) {
+//     git_fetch_options *const fetch_options = &config->fetch_options;
+//     unsigned short const proxy_after = config->proxy_after;
+//     struct update_status update_status = {0};
+//     int r = -1;
+//     for (unsigned long i = 0; i < config->repos_count; ++i) {
+//         struct repo *const restrict repo = config->repos + i;
+//         if (repo_prepare_open_or_create_if_needed(
+//             repo, links_dirfd, fetch_options, proxy_after, true)) {
+//             pr_error("Failed to prepare repo\n");
+//             goto free_servers_and_ids_maybe;
+//         }
+//         if (!repo->wanted_dynamic) continue;
+//         if (update_status_add_server_and_init_with_hash_optional(
+//             &update_status, repo->server_hash)) {
+//             pr_error("Failed to add server\n");
+//             goto free_servers_and_ids_maybe;
+//         }
+//         if (update_status_add_repo_id_no_init(&update_status)) {
+//             pr_error("Failed to add repo id\n");
+//             goto free_servers_and_ids_maybe;
+//         }
+//         *(get_last(update_status.repo_ids)) = i;
+//     }
+//     // If there's only 1 thread needed, going this routine just wastes time
+//     if (update_status.repo_ids_count <= 1) {
+//         r = 0;
+//         goto free_servers_and_ids_maybe;
+//     }
+//     // We only allow 10 concurrent connections to a server
+//     // Here we allocate the most possibly used memory to avoid future
+//     // realloc calls
+//     unsigned long const max_possible_connections =
+//         update_status.servers_count * config->connections_per_server;
+//     if (max_possible_connections <= 1) {
+//         r = 0;
+//         goto free_servers_and_ids_maybe;
+//     }
+//     update_status.thread_handles_allocated =
+//         max_possible_connections > update_status.repo_ids_count ?
+//             update_status.repo_ids_count :
+//             max_possible_connections;
+//     update_status.thread_handles = calloc(
+//         update_status.thread_handles_allocated,
+//         sizeof *update_status.thread_handles);
+//     if (update_status.thread_handles == NULL) {
+//         pr_error_with_errno("Failed to allocate memory for thread ids");
+//         goto free_thread_handles;
+//     }
+//     for (unsigned i = 0; i < update_status.thread_handles_allocated; ++i) {
+//         struct repo_update_thread_arg *arg =
+//             &update_status.thread_handles[i].arg;
+//         arg->fetch_options = *fetch_options;
+//         arg->proxy_after = proxy_after;
+//     }
+//     pr_info("Updating repos with %hu connections per server...\n",
+//             config->connections_per_server);
+//     while (update_status.repo_ids_count || update_status.threads_active_count) {
+//         update_status.changed = false;
+//         for (unsigned long i = 0; i < update_status.repo_ids_count; ++i) {
+//             struct repo *const restrict repo =
+//                 config->repos + update_status.repo_ids[i];
+//             unsigned long server_id = (unsigned long) -1;
+//             for (unsigned long j = 0; j < update_status.servers_count; ++j) {
+//                 if (repo->server_hash == update_status.servers[j].server_hash) {
+//                     server_id = j;
+//                     break;
+//                 }
+//             }
+//             if (server_id == (unsigned long) -1) {
+//                 pr_error("Failed to find server hash\n");
+//                 goto wait_threads;
+//             }
+//             // Already at max concurrent connection
+//             if (update_status.servers[server_id].repos_updating_count >=
+//                 config->connections_per_server) {
+//                 continue;
+//             }
+//             ++update_status.servers[server_id].repos_updating_count;
+//             if (++update_status.threads_active_count >
+//                     update_status.thread_handles_allocated) {
+//                 pr_error(
+//                     "Allocated memory for threads not enough %lu / %lu\n",
+//                     update_status.threads_active_count,
+//                     update_status.thread_handles_allocated);
+//                 goto wait_threads;
+//             }
+//             struct update_thread_handle *handle = NULL;
+//             for (unsigned long j = 0;
+//                 j < update_status.thread_handles_allocated;
+//                 ++j) {
+//                 if (!update_status.thread_handles[j].active) {
+//                     handle = update_status.thread_handles + j;
+//                     break;
+//                 }
+//             }
+//             if (handle == NULL) {
+//                 pr_error("Failed to find empty handle\n");
+//                 goto wait_threads;
+//             }
+//             handle->arg.repo = repo;
+//             r = pthread_create(&handle->thread,
+//                             NULL, repo_update_thread, &handle->arg);
+//             if (r) {
+//                 pr_error("Failed to create thread, pthread return %d\n", r);
+//                 --update_status.threads_active_count;
+//                 r = -1;
+//                 goto wait_threads;
+//             }
+//             handle->server_id = server_id;
+//             handle->active = true;
+//             handle->checked = 0;
+//             update_status.repo_ids[i] =
+//                 update_status.repo_ids[--update_status.repo_ids_count];
+//             update_status.changed = true;
+//         }
+//         // Here there must be at least one active, no need to check
+//         for (unsigned long i = 0;
+//             i < update_status.thread_handles_allocated;
+//             ++i) {
+//             struct update_thread_handle *handle =
+//                 update_status.thread_handles + i;;
+//             if (!handle->active) continue;
+//             long thread_ret;
+//             r = pthread_tryjoin_np(handle->thread, (void **)&thread_ret);
+//             switch (r) {
+//             case 0:
+//                 handle->active = false;
+//                 --update_status.threads_active_count;
+//                 --update_status.servers[handle->server_id].repos_updating_count;
+//                 if (thread_ret) {
+//                     pr_error(
+//                         "Repo update thread bad return %ld\n", thread_ret);
+//                     r = -1;
+//                     goto wait_threads;
+//                 }
+//                 update_status.changed = true;
+//                 break;
+//             case EBUSY:
+//                 if (++handle->checked % 100 == 0)  {
+//                     pr_warn("Repo '%s' takes too long to update, "
+//                         "%lu cycles after started it\n",
+//                         handle->arg.repo->url,
+//                         handle->checked);
+//                 }
+//                 break;
+//             default:
+//                 pr_error("Failed to join thread, pthread return %d\n", r);
+//                 r = -1;
+//                 goto wait_threads;
+//             }
+//         }
+//         if (update_status.changed) {
+//             if (update_status.threads_active_count) {
+//                 if (update_status.repo_ids_count) {
+//                     pr_info("Updating %lu repos, "
+//                         "%lu more repos "
+//                         "needs to be updated...\n",
+//                         update_status.threads_active_count,
+//                         update_status.repo_ids_count);
+//                 } else {
+//                     pr_info("Updating %lu repos...\n",
+//                         update_status.threads_active_count);
+//                 }
+//             }
+//         } else {
+//             sleep(1);
+//         }
+//     }
+//     r = 0;
+// wait_threads:
+//     if (r) pr_warn("Waiting for all update threads to end...\n");
+//     for (unsigned long i = 0;
+//         i < update_status.thread_handles_allocated; ++i) {
+//         struct update_thread_handle *handle = update_status.thread_handles + i;
+//         if (handle->active) {
+//             long thread_ret;
+//             int r2 = pthread_join(handle->thread, (void **)&thread_ret);
+//             if (r2) {
+//                 pr_error("Faiiled to join updating thread %ld for repo '%s', "
+//                     "pthread return %d\n",
+//                     handle->thread, handle->arg.repo->url, r2);
+//                 r = -1;
+//             }
+//             handle->active = false;
+//             if (thread_ret) {
+//                 pr_error(
+//                     "Thread %ld for updating repo '%s' returned with %ld\n",
+//                     handle->thread, handle->arg.repo->url, thread_ret);
+//                 r = -1;
+//             }
+//         }
+//     }
+//     pr_info("All update threads ended\n");
+// free_thread_handles:
+//     free(update_status.thread_handles);
+// // free_servers_and_ids:
+//     free(update_status.servers);
+//     free(update_status.repo_ids);
+//     return r;
+// free_servers_and_ids_maybe:
+//     if (update_status.servers) free(update_status.servers);
+//     if (update_status.repo_ids) free(update_status.repo_ids);
+//     return r;
+// }
+
+// int mirror_all_repos(
+//     struct config *const restrict config,
+//     struct work_directory *const restrict workdir_repos,
+//     bool const clean
+// ) {
+//     if (open_and_update_all_dynamic_repos_threaded_optional(
+//         config, workdir_repos->links_dirfd)) {
+//         pr_error("Failed to pre-update repos\n");
+//         return -1;
+//     }
+//     for (unsigned long i = 0; i < config->repos_count; ++i) {
+//         if (clean) {
+//             struct repo const *const restrict repo = config->repos + i;
+//             if (work_directory_add_keep(
+//                 workdir_repos, repo->hash_name, HASH_STRING_LEN)) {
+//                 pr_error("Failed to add '%s' to keep items\n", repo->hash_name);
+//                 return -1;
+//             }
+//         }
+//         if (mirror_repo(config, i, workdir_repos->links_dirfd)) {
+//             pr_error("Failed to mirror all repos\n");
+//             return -1;
+//         }
+//     }
+//     pr_debug("Finished mirroring all repos\n");
+//     return 0;
+// }
+
+// int tar_write_and_pad_to_512_block(
+//     int const tar_fd,
+//     void const *const restrict data,
+//     size_t const size
+// ) {
+// #ifdef TAR_WRITE_CHECK_OFFSET
+//     if (lseek(tar_fd, 0, SEEK_CUR) % 512) {
+//         pr_error("Tar not at 512 offset\n");
+//         return -1;
+//     }
+// #endif
+//     size_t size_written = 0;
+//     while (size_written < size) {
+//         ssize_t size_written_this = write(
+//             tar_fd, data + size_written, size - size_written);
+//         if (size_written_this < 0) {
+//              switch (errno) {
+//             case EAGAIN:
+// #if (EAGAIN != EWOULDBLOCK)
+//             case EWOULDBLOCK:
+// #endif
+//             case EINTR:
+//                 break;
+//             default:
+//                 pr_error_with_errno(
+//                     "Failed to write %lu bytes to tar", size - size_written);
+//                 return -1;
+//             }
+//         } else {
+//             size_written += size_written_this;
+//         }
+//     }
+//     size_t lone_bytes = size % 512;
+//     if (lone_bytes) {
+//         size_t padding = 512 - lone_bytes;
+//         size_written = 0;
+//         while (size_written < padding) {
+//             ssize_t size_written_this = write(
+//                 tar_fd, EMPTY_512_BLOCK, padding - size_written);
+//             if (size_written_this < 0) {
+//                 switch (errno) {
+//                 case EAGAIN:
+// #if (EAGAIN != EWOULDBLOCK)
+//                 case EWOULDBLOCK:
+// #endif
+//                 case EINTR:
+//                     break;
+//                 default:
+//                     pr_error_with_errno(
+//                         "Failed to pad %lu bytes to tar", size - size_written);
+//                     return -1;
+//                 }
+//             } else {
+//                 size_written += size_written_this;
+//             }
+//         }
+//     }
+// #ifdef TAR_WRITE_CHECK_OFFSET
+//     if (lseek(tar_fd, 0, SEEK_CUR) % 512) {
+//         pr_error("Tar not at 512 offset\n");
+//         return -1;
+//     }
+// #endif
+//     return 0;
+// }
+
+// int tar_add_global_header(
+//     int const tar_fd,
+//     char const *const restrict mtime,
+//     void const *const restrict content,
+//     unsigned short const len_content
+// ) {
+//     struct tar_header global_header =
+//         TAR_HEADER_PAX_GLOBAL_HEADER_INIT;
+//     if (snprintf(global_header.size, sizeof global_header.size,
+//                     "%011o", len_content) < 0) {
+//         pr_error("Failed to format global header size\n");
+//         return -1;
+//     }
+//     memcpy(global_header.mtime, mtime, sizeof global_header.mtime);
+//     if (tar_header_checksum_self(&global_header)) {
+//         pr_error("Failed to calculate header checksum\n");
+//         return -1;
+//     }
+//     if (tar_write_and_pad_to_512_block(
+//         tar_fd, &global_header, sizeof global_header)) {
+//         pr_error("Failed to write pax global header to tar\n");
+//         return -1;
+//     }
+//     if (tar_write_and_pad_to_512_block(tar_fd, content, len_content)) {
+//         pr_error("Failed to write file data to tar\n");
+//         return -1;
+//     }
+//     return 0;
+// }
+
+// int tar_append_longlink_optional(
+//     int const tar_fd,
+//     char const *const restrict link,
+//     unsigned short const len_link
+// ) {
+//     struct tar_header longlink_header;
+//     if (len_link < sizeof longlink_header.linkname) return 0;
+//     longlink_header = TAR_HEADER_GNU_LONGLINK_INIT;
+//     if (snprintf(longlink_header.size, sizeof longlink_header.size,
+//                     "%011o", len_link + 1) < 0) {
+//         pr_error("Failed to format long link size\n");
+//         return -1;
+//     }
+//     if (tar_header_checksum_self(&longlink_header)) {
+//         pr_error("Failed to calculate header checksum\n");
+//         return -1;
+//     }
+//     if (tar_write_and_pad_to_512_block(
+//         tar_fd, &longlink_header, sizeof longlink_header)) {
+//         pr_error("Failed to write data to tar\n");
+//         return -1;
+//     }
+//     if (tar_write_and_pad_to_512_block(tar_fd, link, len_link + 1)) {
+//         pr_error("Failed to write longlink to tar\n");
+//         return -1;
+//     }
+//     return 0;
+// }
+
+// int tar_append_longname_optional(
+//     int const tar_fd,
+//     char const *const restrict name,
+//     unsigned short const len_name
+// ) {
+//     struct tar_header longname_header;
+//     if (len_name < sizeof longname_header.name) return 0;
+//     longname_header = TAR_HEADER_GNU_LONGNAME_INIT;
+//     if (snprintf(longname_header.size, sizeof longname_header.size,
+//                     "%011o", len_name + 1) < 0) {
+//         pr_error("Failed to format long name size\n");
+//         return -1;
+//     }
+//     if (tar_header_checksum_self(&longname_header)) {
+//         pr_error("Failed to calculate header checksum\n");
+//         return -1;
+//     }
+//     if (tar_write_and_pad_to_512_block(
+//         tar_fd, &longname_header, sizeof longname_header)) {
+//         pr_error("Failed to write data to tar\n");
+//         return -1;
+//     }
+//     if (tar_write_and_pad_to_512_block(tar_fd, name, len_name + 1)) {
+//         pr_error("Failed to write longname to tar\n");
+//         return -1;
+//     }
+//     return 0;
+// }
+
+// int tar_append_symlink(
+//     int const tar_fd,
+//     char const *const restrict mtime,
+//     char const *const restrict name,
+//     unsigned short const len_name,
+//     char const *const restrict link,
+//     unsigned short const len_link
+// ) {
+//     if (tar_append_longlink_optional(tar_fd, link, len_link)) {
+//         pr_error("Failed to create longlink\n");
+//         return -1;
+//     }
+//     if (tar_append_longname_optional(tar_fd, name, len_name)) {
+//         pr_error("Failed to create longname\n");
+//         return -1;
+//     }
+//     struct tar_header symlink_header =
+//         TAR_HEADER_SYMLINK_INIT;
+//     memcpy(symlink_header.mtime, mtime, sizeof symlink_header.mtime);
+//     memcpy(symlink_header.name, name,
+//         len_name > sizeof symlink_header.name ?
+//             sizeof symlink_header.name : len_name);
+//     memcpy(symlink_header.linkname, link,
+//         len_link > sizeof symlink_header.linkname ?
+//             sizeof symlink_header.linkname : len_link);
+//     if (tar_header_checksum_self(&symlink_header)) {
+//         pr_error("Failed to calculate header checksum\n");
+//         return -1;
+//     }
+//     if (tar_write_and_pad_to_512_block(
+//         tar_fd, &symlink_header, sizeof symlink_header)) {
+//         pr_error("Failed to write data to tar\n");
+//         return -1;
+//     }
+//     return 0;
+// }
+
+// int tar_append_regular_file(
+//     int const tar_fd,
+//     void const *const restrict ro_buffer,
+//     git_object_size_t size,
+//     char const *const restrict mtime,
+//     char const *const restrict name,
+//     unsigned short const len_name,
+//     mode_t mode
+// ) {
+//     if (tar_append_longname_optional(tar_fd, name, len_name)) {
+//         pr_error("Failed to create longname\n");
+//         return -1;
+//     }
+//     struct tar_header regular_file_header;
+//     switch (mode) {
+//     case 0644:
+//         regular_file_header = TAR_HEADER_FILE_REG_INIT;
+//         break;
+//     case 0755:
+//         regular_file_header = TAR_HEADER_FILE_EXE_INIT;
+//         break;
+//     default:
+//         pr_warn("%03o mode is not expected, but we accept it for now\n", mode);
+//         regular_file_header = TAR_HEADER_FILE_REG_INIT;
+//         if (snprintf(regular_file_header.mode, sizeof regular_file_header.mode,
+//             "%07o", mode) < 0) {
+//             pr_error("Failed to format mode string\n");
+//             return -1;
+//         }
+//         break;
+//     };
+//     if (snprintf(regular_file_header.size, sizeof regular_file_header.size,
+//                     "%011lo", size) < 0) {
+//         pr_error("Failed to format long name size\n");
+//         return -1;
+//     }
+//     memcpy(regular_file_header.mtime, mtime, sizeof regular_file_header.mtime);
+//     memcpy(regular_file_header.name, name,
+//         len_name > sizeof regular_file_header.name ?
+//          sizeof regular_file_header.name : len_name);
+//     if (tar_header_checksum_self(&regular_file_header)) {
+//         pr_error("Failed to calculate header checksum\n");
+//         return -1;
+//     }
+//     if (tar_write_and_pad_to_512_block(
+//         tar_fd, &regular_file_header, sizeof regular_file_header)) {
+//         pr_error("Failed to write regular file header to tar\n");
+//         return -1;
+//     }
+//     if (tar_write_and_pad_to_512_block(tar_fd, ro_buffer, size)) {
+//         pr_error("Failed to write file data to tar\n");
+//         return -1;
+//     }
+//     return 0;
+// }
+
+// int tar_append_folder(
+//     int const tar_fd,
+//     char const *const restrict mtime,
+//     char const *const restrict name,
+//     unsigned short const len_name
+// ) {
+//     if (tar_append_longname_optional(tar_fd, name, len_name)) {
+//         pr_error("Failed to create longname\n");
+//         return -1;
+//     }
+//     struct tar_header folder_header = TAR_HEADER_FOLDER_INIT;
+//     memcpy(folder_header.mtime, mtime, sizeof folder_header.mtime);
+//     memcpy(folder_header.name, name,
+//         len_name > sizeof folder_header.name ?
+//          sizeof folder_header.name : len_name);
+//     if (tar_header_checksum_self(&folder_header)) {
+//         pr_error("Failed to calculate header checksum\n");
+//         return -1;
+//     }
+//     if (tar_write_and_pad_to_512_block(
+//         tar_fd, &folder_header, sizeof folder_header)) {
+//         pr_error("Failed to write folder header to tar\n");
+//         return -1;
+//     }
+//     return 0;
+// }
+
+// int tar_finish(
+//     int const tar_fd
+// ) {
+//     unsigned char const eof_marker[512 * 2] = {0};
+//     if (tar_write_and_pad_to_512_block(tar_fd, eof_marker, 512 * 2)) {
+//         pr_error("Failed to write EOF mark to tar file\n");
+//         return -1;
+//     }
+//     return 0;
+// }
+
+// int export_commit_tree_entry_blob_file_regular_to_archive(
+//     void const *const restrict ro_buffer,
+//     git_object_size_t size,
+//     char const *const restrict path,
+//     unsigned short const len_path,
+//     char const *const restrict mtime,
+//     int const fd_archive,
+//     mode_t mode
+// ){
+//     if (tar_append_regular_file(
+//         fd_archive, ro_buffer, size, mtime, path, len_path, mode)) {
+//         pr_error("Failed to append regular file '%s' to archive\n", path);
+//         return -1;
+//     }
+//     return 0;
+// }
+
+// int export_commit_tree_entry_blob_file_regular_to_checkout(
+//     void const *const restrict ro_buffer,
+//     git_object_size_t size,
+//     char const *const restrict path,
+//     int const dirfd_checkout,
+//     mode_t mode
+// ){
+//     int blob_fd = openat(dirfd_checkout, path, O_WRONLY | O_CREAT, mode);
+//     if (blob_fd < 0) {
+//         pr_error("Failed to create file '%s' with mode 0o%o\n",
+//             path, mode);
+//         return -1;
+//     }
+//     int r = -1;
+//     if (size) {
+//         git_object_size_t size_written = 0;
+//         while (size_written < size) {
+//             ssize_t size_written_this =
+//                 write(blob_fd,
+//                     ro_buffer + size_written,
+//                     size - size_written);
+//             if (size_written_this < 0) {
+//                 switch (errno) {
+//                 case EAGAIN:
+// #if (EAGAIN != EWOULDBLOCK)
+//                 case EWOULDBLOCK:
+// #endif
+//                 case EINTR:
+//                     break;
+//                 default:
+//                     pr_error_with_errno(
+//                         "Failed to write %lu bytes to file '%s'",
+//                         size - size_written,
+//                         path);
+//                     goto close_blob_fd;
+//                 }
+//             } else {
+//                 size_written += size_written_this;
+//             }
+//         }
+//     }
+//     r = 0;
+// close_blob_fd:
+//     if (close(blob_fd)) {
+//         pr_error_with_errno("Failed to close fd for blob");
+//     }
+//     return r;
+// }
+
+// int export_commit_tree_entry_blob_file_regular(
+//     void const *const restrict ro_buffer,
+//     git_object_size_t size,
+//     bool const archive,
+//     char const *const restrict mtime,
+//     int const fd_archive,
+//     char const *const restrict path_archive,
+//     unsigned short const len_path_archive,
+//     bool const checkout,
+//     int const dirfd_checkout,
+//     char const *const restrict path_checkout,
+//     mode_t mode
+// ) {
+//     if (archive) {
+//         if (export_commit_tree_entry_blob_file_regular_to_archive(
+//             ro_buffer, size, path_archive, len_path_archive, mtime, fd_archive,
+//             mode)) {
+//             pr_error("Failed to archive commit tree entry blob regular file "
+//                 "at '%s'\n", path_archive);
+//             return -1;
+//         }
+//     }
+//     if (checkout) {
+//         if (export_commit_tree_entry_blob_file_regular_to_checkout(
+//             ro_buffer, size, path_checkout, dirfd_checkout, mode)) {
+//             pr_error("Failed to checkout commit tree entry blob regular file "
+//                 "at '%s'\n", path_checkout);
+//             return -1;
+//         }
+//     }
+//     return 0;
+// }
+
+// int export_commit_tree_entry_blob_file_symlink_to_archive(
+//     char const *const restrict ro_buffer,
+//     char const *const restrict path,
+//     unsigned short const len_path,
+//     char const *const restrict mtime,
+//     int const fd_archive
+// ) {
+//     char link[PATH_MAX];
+//     unsigned short len_link =
+//         stpncpy(link, ro_buffer, PATH_MAX - 1) - link;
+//     link[len_link] = '\0';
+//     if (tar_append_symlink(
+//         fd_archive, mtime, path, len_path, link, len_link)) {
+//         pr_error("Failed to append symlink to archive\n");
+//         return -1;
+//     }
+//     return 0;
+// }
+
+
+// int export_commit_tree_entry_blob_file_symlink_to_checkout(
+//     char const *const restrict ro_buffer,
+//     char const *const restrict path,
+//     int const dirfd_checkout
+// ) {
+//     if (symlinkat(ro_buffer, dirfd_checkout, path) < 0) {
+//         pr_error_with_errno("Failed to create symlink '%s' -> '%s'",
+//             path, ro_buffer);
+//         return -1;
+//     }
+//     return 0;
+// }
+
+// int export_commit_tree_entry_blob_file_symlink(
+//     char const *const restrict ro_buffer,
+//     bool const archive,
+//     char const *const restrict mtime,
+//     int const fd_archive,
+//     char const *const restrict path_archive,
+//     unsigned short const len_path_archive,
+//     bool const checkout,
+//     int const dirfd_checkout,
+//     char const *const restrict path_checkout
+// ) {
+//     if (archive) {
+//         if (export_commit_tree_entry_blob_file_symlink_to_archive(
+//             ro_buffer, path_archive, len_path_archive, mtime, fd_archive)) {
+//             pr_error("Failed to archive commit tree entry blob file symlink "
+//                 "at '%s'\n", path_archive);
+//             return -1;
+//         }
+//     }
+//     if (checkout) {
+//         if (export_commit_tree_entry_blob_file_symlink_to_checkout(
+//             ro_buffer, path_checkout, dirfd_checkout)) {
+//             pr_error("Failed to checkout commit tree entry blob file symlink "
+//                 "at '%s'\n", path_checkout);
+//             return -1;
+//         }
+//     }
+//     return 0;
+// }
+
+// int export_commit_tree_entry_blob(
+//     git_tree_entry const *const restrict entry,
+//     struct repo const *const restrict repo,
+//     bool const archive,
+//     char const *const restrict mtime,
+//     int const fd_archive,
+//     char const *const restrict path_archive,
+//     unsigned short const len_path_archive,
+//     bool const checkout,
+//     int const dirfd_checkout,
+//     char const *const restrict path_checkout
+// ) {
+//     git_object *object;
+//     int r = git_tree_entry_to_object(
+//         &object, repo->repository, entry);
+//     if (r) {
+//         pr_error(
+//             "Failed to convert entry to object, libgit return %d\n",
+//             r);
+//         return -1;
+//     }
+//     void const *const restrict ro_buffer =
+//         git_blob_rawcontent((git_blob *)object);
+//     switch (git_tree_entry_filemode(entry)) {
+//     case GIT_FILEMODE_BLOB:
+//         r = export_commit_tree_entry_blob_file_regular(
+//             ro_buffer,
+//             git_blob_rawsize((git_blob *)object),
+//             archive, mtime, fd_archive,
+//             path_archive, len_path_archive,
+//             checkout, dirfd_checkout,
+//             path_checkout,
+//             0644);
+//         break;
+//     case GIT_FILEMODE_BLOB_EXECUTABLE:
+//         r = export_commit_tree_entry_blob_file_regular(
+//             ro_buffer,
+//             git_blob_rawsize((git_blob *)object),
+//             archive, mtime, fd_archive,
+//             path_archive, len_path_archive,
+//             checkout, dirfd_checkout,
+//             path_checkout,
+//             0755);
+//         break;
+//     case GIT_FILEMODE_LINK:
+//         r = export_commit_tree_entry_blob_file_symlink(
+//             ro_buffer,
+//             archive, mtime, fd_archive, path_archive, len_path_archive,
+//             checkout, dirfd_checkout, path_checkout);
+//         break;
+//     default:
+//         pr_error("Impossible tree entry filemode %d\n",
+//                 git_tree_entry_filemode(entry));
+//         r = -1;
+//         break;
+//     }
+//     free(object);
+//     return r;
+// };
+
+// int export_commit_tree_entry_tree_to_archive(
+//     char const *const restrict path,
+//     unsigned short const len_path,
+//     char const *const restrict mtime,
+//     int const fd_archive
+// ) {
+//     char path_with_slash[PATH_MAX];
+//     memcpy(path_with_slash, path, len_path);
+//     path_with_slash[len_path] = '/';
+//     path_with_slash[len_path + 1] = '\0';
+//     if (tar_append_folder(fd_archive, mtime, path_with_slash, len_path + 1)) {
+//         pr_error("Failed to append folder '%s' to archive\n", path);
+//         return -1;
+//     }
+//     return 0;
+// }
+
+// int export_commit_tree_entry_tree_to_checkout(
+//     char const *const restrict path,
+//     int const dirfd_checkout
+// ) {
+//     if (mkdirat(dirfd_checkout, path, 0755)) {
+//         pr_error_with_errno("Failed to create folder '%s'",
+//             path);
+//         return -1;
+//     }
+//     return 0;
+// }
+
+
+// int export_commit_tree_entry_tree(
+//     bool const archive,
+//     char const *const restrict mtime,
+//     int const fd_archive,
+//     char const *const restrict path_archive,
+//     unsigned short const len_path_archive,
+//     bool const checkout,
+//     int const dirfd_checkout,
+//     char const *const restrict path_checkout
+// ) {
+//     if (archive) {
+//         if (export_commit_tree_entry_tree_to_archive(
+//             path_archive, len_path_archive, mtime, fd_archive)) {
+//             pr_error("Failed to export '%s' to archive\n", path_archive);
+//             return -1;
+//         }
+//     }
+//     if (checkout) {
+//         if (export_commit_tree_entry_tree_to_checkout(
+//             path_checkout, dirfd_checkout)) {
+//             pr_error("Failed to export '%s' to checkout\n", path_checkout);
+//             return -1;
+//         }
+//     }
+//     return 0;
+// };
+
+// int export_commit_tree_entry_commit(
+// 	char const *const restrict root,
+//     git_tree_entry const *const restrict entry,
+//     struct config const *const restrict config,
+//     struct parsed_commit const *const restrict parsed_commit,
+//     char *const restrict submodule_path,
+//     unsigned short const len_submodule_path,
+//     bool const archive,
+//     char const *const restrict mtime,
+//     int const fd_archive,
+//     char const *const restrict archive_prefix,
+//     char const *const restrict path_archive,
+//     unsigned short const len_path_archive,
+//     bool const checkout,
+//     int const dirfd_checkout,
+//     char const *const restrict path_checkout
+// ) {
+//     // Export self as a tree (folder)
+//     if (export_commit_tree_entry_tree(
+//         archive, mtime, fd_archive, path_archive, len_path_archive,
+//         checkout, dirfd_checkout, path_checkout)) {
+//         pr_error("Failed to export submodule '%s' as a tree\n", path_archive);
+//         return -1;
+//     }
+
+//     // Find which wanted submodule commit the entry is
+//     git_oid const *const submodule_commit_id = git_tree_entry_id(entry);
+//     struct parsed_commit_submodule *parsed_commit_submodule = NULL;
+//     for (unsigned long i = 0; i < parsed_commit->submodules_count; ++i) {
+//         pr_debug("Parsed submodule '%s' commit %s\n",
+//         parsed_commit->submodules[i].path,
+//         parsed_commit->submodules[i].id_hex_string);
+//         if (!git_oid_cmp(
+//             &parsed_commit->submodules[i].id, submodule_commit_id)) {
+//             parsed_commit_submodule = parsed_commit->submodules + i;
+//             break;
+//         }
+//     }
+//     if (parsed_commit_submodule == NULL) {
+//         char oid_buffer[GIT_OID_MAX_HEXSIZE + 1];
+//         pr_error("Failed to find corresponding wanted commit submodule, "
+//         "path: '%s', commit: %s\n", path_checkout,
+//         git_oid_tostr(
+//             oid_buffer, GIT_OID_MAX_HEXSIZE + 1, submodule_commit_id));
+//         return -1;
+//     }
+
+//     // Find that wanted commit in target repo
+//     struct repo const *const restrict target_repo =
+//         config->repos + parsed_commit_submodule->target_repo_id;
+//     struct parsed_commit const *restrict parsed_commit_in_target_repo =
+//         target_repo->parsed_commits + parsed_commit_submodule->target_commit_id;
+//     pr_debug("Submodule from target repo '%s', id %ld\n",
+//         target_repo->url, parsed_commit_submodule->target_commit_id);
+
+//     // Recursively export
+//     char const *const restrict name = git_tree_entry_name(entry);
+//     unsigned short len_submodule_path_r =
+//         len_submodule_path + strlen(name) + strlen(root) + 1;
+//     if (len_submodule_path_r >= PATH_MAX) {
+//         pr_error("Path too long!\n");
+//         return -1;
+//     }
+//     int r = -1;
+//     if (sprintf(submodule_path + len_submodule_path,
+//         "%s%s/", root, name) < 0) {
+//         pr_error_with_errno("Failed to format name");
+//         goto revert_submodule_path;
+//     }
+
+//     git_commit *commit;
+//     if (git_commit_lookup(
+//         &commit, target_repo->repository, submodule_commit_id)) {
+//         pr_error("Failed to lookup commit\n");
+//         goto revert_submodule_path;
+//     }
+//     git_tree *tree;
+//     if (git_commit_tree(&tree, commit)) {
+//         pr_error("Failed to get tree pointed by commit\n");
+//         goto free_commit;
+//     }
+//     char mtime_r[TAR_HEADER_MTIME_LEN] = "";
+//     if (snprintf(
+//         mtime_r, TAR_HEADER_MTIME_LEN, "%011lo", git_commit_time(commit)
+//     ) < 0) {
+//         pr_error("Failed to format mtime\n");
+//         goto free_commit;
+//     }
+//     struct export_commit_treewalk_payload submodule_payload = {
+//         .config = config,
+//         .repo = target_repo,
+//         .parsed_commit = parsed_commit_in_target_repo,
+//         .submodule_path = submodule_path,
+//         .len_submodule_path = len_submodule_path_r,
+//         .archive = archive,
+//         .mtime = mtime_r,
+//         .fd_archive = fd_archive,
+//         .archive_prefix = archive_prefix,
+//         .checkout = checkout,
+//         .dirfd_checkout = dirfd_checkout,
+//     };
+//     if (git_tree_walk(
+//         tree, GIT_TREEWALK_PRE, export_commit_treewalk_callback,
+//             &submodule_payload)) {
+//         pr_error("Failed to walk tree recursively\n");
+//         goto free_commit;
+//     }
+//     r = 0;
+// free_commit:
+//     git_commit_free(commit);
+// revert_submodule_path:
+//     submodule_path[len_submodule_path] = '\0';
+//     return r;
+// };
+
+// int export_commit_treewalk_callback(
+// 	char const *const restrict root,
+//     git_tree_entry const *const restrict entry,
+//     void *payload
+// ) {
+//     struct export_commit_treewalk_payload *const restrict private_payload =
+//         (struct export_commit_treewalk_payload *const restrict) payload;
+//     bool const archive = private_payload->archive;
+//     bool const checkout = private_payload->checkout;
+//     if (archive || checkout);
+//     else {
+//         pr_error("Neither archive nor checkout needed\n");
+//         return -1;
+//     }
+//     char path_checkout[PATH_MAX];
+//     char const *const name = git_tree_entry_name(entry);
+//     int r = snprintf(
+//         path_checkout, PATH_MAX, "%s%s%s", private_payload->submodule_path,
+//         root, name);
+//     if (r < 0) {
+//         pr_error("Failed to format entry path\n");
+//         return -1;
+//     }
+//     unsigned short len_path_archive = r;
+//     char path_archive[PATH_MAX];
+//     char const *const restrict archive_prefix =
+//         private_payload->archive_prefix;
+//     if (archive_prefix && archive_prefix[0] != '\0') {
+//         if ((r = snprintf(path_archive, PATH_MAX, "%s%s",
+//                     archive_prefix, path_checkout)) < 0) {
+//             pr_error("Failed to format entry path\n");
+//             return -1;
+//         }
+//         len_path_archive = r;
+//     } else {
+//         memcpy(path_archive, path_checkout, len_path_archive + 1);
+//     }
+//     char const *const restrict mtime = private_payload->mtime;
+//     int const fd_archive = private_payload->fd_archive;
+//     int const dirfd_checkout = private_payload->dirfd_checkout;
+//     switch (git_tree_entry_type(entry)) {
+//     case GIT_OBJECT_BLOB:
+//         return export_commit_tree_entry_blob(
+//             entry, private_payload->repo,
+//             archive, mtime, fd_archive, path_archive, len_path_archive,
+//             checkout, dirfd_checkout, path_checkout);
+//     case GIT_OBJECT_TREE:
+//         return export_commit_tree_entry_tree(
+//             archive, mtime, fd_archive, path_archive, len_path_archive,
+//             checkout, dirfd_checkout, path_checkout);
+//     case GIT_OBJECT_COMMIT:
+//         return export_commit_tree_entry_commit(
+//             root, entry, private_payload->config,
+//             private_payload->parsed_commit, private_payload->submodule_path,
+//             private_payload->len_submodule_path, archive, mtime, fd_archive,
+//             archive_prefix, path_archive, len_path_archive,
+//             checkout, dirfd_checkout, path_checkout);
+//     default:
+//         pr_error("Impossible tree entry type %d\n", git_tree_entry_type(entry));
+//         return -1;
+//     }
+// }
+
+// int export_commit_add_global_comment_to_tar(
+//     int tar_fd,
+//     char const *const restrict repo,
+//     char const *const restrict commit,
+//     char const *const restrict mtime
+// ) {
+//     char comment[4096];
+//     int r = snprintf(comment, 4096, "Archive of repo '%s' commit '%s', "
+//                                     "all recursive submodules includeded, "
+//                                     "created with git-mirrorer by "
+//                                     "Guoxin \"7Ji\" Pu (c) 2023-present",
+//                                     repo, commit);
+//     if (r < 0) {
+//         pr_error("Failed to format comment\n");
+//         return -1;
+//     }
+//     if (r >= 4000) {
+//         pr_error("Comment too long: '%s'\n", comment);
+//         return -1;
+//     }
+//     unsigned short const len_comment = r;
+//     unsigned short width_length = get_unsigned_short_decimal_width(len_comment);
+//      // 1 between length and comment=
+//      // 8 for comment=
+//      // 1 for ending \n new line
+//     unsigned short width_all = width_length + len_comment + 10;
+//     for (;;) {
+//         width_length = get_unsigned_short_decimal_width(width_all);
+//         unsigned const width_all_new = width_length + len_comment + 10;
+//         if (width_all_new == width_all) break;
+//         width_all = width_all_new;
+//     }
+//     char content[4096];
+//     r = snprintf(content, 4096, "%hu comment=%s\n", width_all, comment);
+//     if (r < 0) {
+//         pr_error_with_errno("Failed to format content");
+//         return -1;
+//     }
+//     if (tar_add_global_header(tar_fd, mtime, content, r)) {
+//         pr_error("Failed to add global header to tar\n");
+//         return -1;
+//     }
+//     return 0;
+// }
+
+// // 1 path did not exist, or existed but we removed it,
+// // 0 exists and is of type, -1 error
+// int ensure_path_is_type_at(
+//     int dirfd,
+//     char const *const restrict path,
+//     mode_t type
+// ) {
+//     struct stat stat_buffer;
+//     if (fstatat(dirfd, path, &stat_buffer, AT_SYMLINK_NOFOLLOW)) {
+//         switch (errno) {
+//         case ENOENT:
+//             return 1;
+//         default:
+//             pr_error_with_errno(
+//                 "Failed to check stat of existing '%s'", path);
+//             return -1;
+//         }
+//     } else {
+//         if ((stat_buffer.st_mode & S_IFMT) == type) {
+//             pr_debug("'%s' is of expected type %u\n", path, type);
+//             return 0;
+//         } else {
+//             if (ensure_path_non_exist_at(dirfd, path)) {
+//                 pr_error_with_errno(
+//                     "Failed to remove existing '%s' whose type is not %u",
+//                     path, type);
+//                 return -1;
+//             }
+//             return 1;
+//         }
+//     }
+// }
+
+// struct export_handle {
+//     bool should_export;
+//     char path[PATH_MAX],
+//          path_work[PATH_MAX];
+//     unsigned short  len_path,
+//                     len_path_work;
+//     int fd;
+//     pid_t child;
+// };
+
+// int export_handle_init_common(
+//     struct export_handle *restrict handle,
+//     int const dir_fd,
+//     char const commit_string[GIT_OID_MAX_HEXSIZE + 1],
+//     char const *const restrict suffix,
+//     unsigned short const len_suffix,
+//     bool const is_dir
+// ) {
+//     handle->len_path = GIT_OID_MAX_HEXSIZE;
+//     memcpy(handle->path, commit_string, GIT_OID_MAX_HEXSIZE);
+//     if (suffix && suffix[0]) {
+//         handle->len_path += len_suffix;
+//         memcpy(handle->path + GIT_OID_MAX_HEXSIZE, suffix, len_suffix);
+//     }
+//     handle->path[handle->len_path] = '\0';
+//     mode_t type, mode;
+//     int flags;
+//     if (is_dir) {
+//         type = S_IFDIR;
+//         mode = 0755;
+//         flags = O_RDONLY | O_DIRECTORY;
+//     } else {
+//         type = S_IFREG;
+//         mode = 0644;
+//         flags = O_WRONLY | O_CREAT;
+//     }
+//     int r = ensure_path_is_type_at(dir_fd, handle->path, type);
+//     if (r > 0) {
+//         memcpy(handle->path_work, handle->path, handle->len_path);
+//         memcpy(handle->path_work + handle->len_path, ".work", 6);
+//         handle->len_path_work += 5;
+//         if (ensure_path_non_exist_at(dir_fd, handle->path_work)) {
+//             pr_error("Failed to ensure '%s' non-existing\n", handle->path_work);
+//             r = -1;
+//             goto set_no_export;
+//         }
+//         if (is_dir) {
+//             if (mkdir_recursively_at(dir_fd, handle->path_work)) {
+//                 pr_error("Failed to create work dir '%s'\n", handle->path_work);
+//                 r = -1;
+//                 goto set_no_export;
+//             }
+//         }
+//         if ((handle->fd = openat(
+//             dir_fd, handle->path_work, flags, mode)) < 0) {
+//             pr_error_with_errno("Failed to open '%s'", handle->path_work);
+//             r = -1;
+//             goto set_no_export;
+//         }
+//         handle->should_export = true;
+//     } else if (r < 0) {
+//         pr_error("Failed to ensure '%s' non-existing or is type %d\n",
+//                 handle->path, type);
+//         r = -1;
+//         goto set_no_export;
+//     } else {
+//         pr_debug("'%s' existing, no need to export\n", handle->path);
+//         r = 0;
+//         goto set_no_export;
+//     }
+//     return 0;
+// set_no_export:
+//     handle->should_export = false;
+//     return r;
+// }
+
+// #define export_handle_init_checkout(handle, dir_fd, commit_string) \
+//         export_handle_init_common(handle, dir_fd, commit_string, NULL, 0, true)
+
+// int export_handle_init_archive(
+//     struct export_handle *restrict handle,
+//     int const dir_fd,
+//     char const commit_string[GIT_OID_MAX_HEXSIZE + 1],
+//     char const *const restrict suffix,
+//     unsigned short const len_suffix,
+//     char *const *const restrict pipe_args,
+//     unsigned short const pipe_args_count
+// ) {
+//     if (export_handle_init_common(
+//         handle, dir_fd, commit_string, suffix, len_suffix, false)) {
+//         pr_error("Failed to init export handle for archive, common part\n");
+//         return -1;
+//     }
+//     if (!handle->should_export) return 0;
+//     if (pipe_args && pipe_args[0] && pipe_args_count) {
+//         int fd_pipes[2];
+//         if (pipe2(fd_pipes, O_CLOEXEC)) {
+//             pr_error_with_errno("Failed to create pipe\n");
+//             return -1;
+//         }
+//         switch ((handle->child = fork())) {
+//         case 0: // Child
+//             if (dup2(handle->fd, STDOUT_FILENO) < 0) {
+//                 pr_error_with_errno_file(stderr,
+//                     "[Child %ld] Failed to dup archive fd to stdout",
+//                     pthread_self());
+//                 exit(EXIT_FAILURE);
+//             }
+//             if (dup2(fd_pipes[0], STDIN_FILENO) < 0) {
+//                 pr_error_with_errno_file(stderr,
+//                     "[Child %ld] Failed to dup pipe read end to stdin",
+//                     pthread_self());
+//                 exit(EXIT_FAILURE);
+//             }
+//             // fd_pipes[0] (pipe read), fd_pipes[1] (pipe write)
+//             // and fd_archive will all be closed as they've been
+//             // opened/created with O_CLOEXEC
+//             if (execvp(pipe_args[0],
+//                 pipe_args)) {
+//                 pr_error_with_errno_file(
+//                     stderr, "[Child %ld] Failed to execute piper",
+//                             pthread_self());
+//                 exit(EXIT_FAILURE);
+//             }
+//             pr_error_file(stderr,
+//                 "[Child %ld] We should not be here\n", pthread_self());
+//             exit(EXIT_FAILURE);
+//             break;
+//         case -1:
+//             pr_error_with_errno("Failed to fork");
+//             goto close_fd;
+//         default: // Parent
+//             pr_debug("Forked piper to child %d\n", handle->child);
+//             if (close(fd_pipes[0])) { // Close the read end
+//                 pr_error_with_errno("Failed to close read end of the pipe");
+//                 goto kill_child;
+//             }
+//             if (close(handle->fd)) { // Close the original archive fd
+//                 pr_error_with_errno(
+//                     "Failed to close the original archive fd");
+//                 goto kill_child;
+//             }
+//             handle->fd = fd_pipes[1]; // write to pipe write end
+//             break;
+//         }
+//     }
+//     return 0;
+// // These upper tags are only reachable from archive routines, no need to check
+// kill_child:
+//     kill(handle->child, SIGKILL);
+// close_fd:
+//     if (close(handle->fd)) {
+//         pr_error_with_errno("Failed to close archive fd");
+//     }
+//     return -1;
+// }
+
+// int export_commit_prepare(
+//     struct config const *const restrict config,
+//     struct parsed_commit const *const restrict parsed_commit,
+//     struct export_handle *archive_handle,
+//     struct work_directory *const restrict workdir_archives,
+//     struct export_handle *checkout_handle,
+//     struct work_directory *const restrict workdir_checkouts
+// ) {
+//     if (archive_handle->should_export || checkout_handle->should_export);
+//     else {
+//         pr_error("Commit '%s' should neither be archived or checked out\n",
+//                     parsed_commit->id_hex_string);
+//         return -1;
+//     }
+//     if (checkout_handle->should_export) {
+//         if (export_handle_init_checkout(
+//             checkout_handle, workdir_checkouts->dirfd,
+//             parsed_commit->id_hex_string)) {
+//             pr_error("Failed to init export handle for checkout\n");
+//             return -1;
+//         }
+//         if (config->clean_checkouts) {
+//             if (work_directory_add_keep(workdir_checkouts,
+//                 checkout_handle->path, checkout_handle->len_path)) {
+//                 pr_error("Failed to add keep checkout '%s'\n",
+//                     checkout_handle->path);
+//                 goto close_checkout_fd;
+//             }
+//         }
+//     }
+//     if (archive_handle->should_export) {
+//         if (export_handle_init_archive(
+//             archive_handle, workdir_archives->dirfd,
+//             parsed_commit->id_hex_string,
+//             config->archive_suffix, config->len_archive_suffix,
+//             config->archive_pipe_args, config->archive_pipe_args_count)) {
+//             pr_error("Failed to init export handle for archive\n");
+//             goto close_checkout_fd;
+//         }
+//         if (config->clean_archives) {
+//             if (work_directory_add_keep(workdir_archives,
+//                 archive_handle->path, archive_handle->len_path)) {
+//                 pr_error("Failed to add keep archive '%s'\n",
+//                     archive_handle->path);
+//                 goto close_archive_fd;
+//             }
+//         }
+//     }
+//     return 0;
+// close_archive_fd:
+//     if (close(archive_handle->fd)) {
+//         pr_error_with_errno("Failed to close archive dirfd");
+//     }
+
+// close_checkout_fd:
+//     if (checkout_handle->should_export) {
+//         if (close(checkout_handle->fd)) {
+//             pr_error_with_errno("Failed to close checkout dirfd");
 //         }
 //     }
 //     return -1;
 // }
 
-// int wanted_object_complete_commit(
-//     struct wanted_commit *wanted_object
+// /* This should be only be called AFTER the repo is updated */
+// /* Updating the repo might break the commits */
+// int repo_lookup_all_parsed_commits(
+//     struct repo const *const restrict repo
 // ) {
-//     if (git_oid_fromstr(&wanted_object->oid, wanted_object->name)) {
-//         pr_error("Failed to resolve '%s' to a git object id\n",
-//             wanted_object->name);
-//         return -1;
-//     }
-//     if (git_oid_tostr(
-//             wanted_object->hex_string,
-//             sizeof wanted_object->hex_string,
-//             &wanted_object->oid
-//         )[0] == '\0') {
-//         pr_error("Failed to format git oid hex string\n");
-//         return -1;
+//     for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
+//         struct parsed_commit *const restrict parsed_commit =
+//             repo->parsed_commits + i;
+//         if (parsed_commit->commit != NULL) {
+//             pr_error("Commit '%s' already looked up, no commit should've been "
+//                     "looked up when this func is called\n",
+//                     parsed_commit->id_hex_string);
+//             return -1;
+//         }
+//         int r = git_commit_lookup(
+//             &parsed_commit->commit, repo->repository, &parsed_commit->id);
+//         if (r) {
+//             pr_error("Failed to lookup commit '%s' in repo '%s', libgit return "
+//             "%d\n", parsed_commit->id_hex_string, repo->url, r);
+//             for (unsigned long j = 0; j < i; ++j) {
+//                 git_commit_free(repo->parsed_commits[j].commit);
+//                 repo->parsed_commits[j].commit = NULL;
+//             }
+//             return -1;
+//         }
 //     }
 //     return 0;
 // }
 
-// int wanted_object_complete(
-//     struct wanted_object *wanted_object
+// void *repo_lookup_all_parsed_commits_thread(void *arg) {
+//     return (void *)(long)
+//         repo_lookup_all_parsed_commits((struct repo const *)arg);
+// }
+
+// int repo_free_all_parsed_commits(
+//     struct repo const *const restrict repo
 // ) {
-//     if (wanted_object_guess_type_self_optional(wanted_object)) {
-//         pr_error("Failed to guess type of object with unknown type\n");
+//     for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
+//         struct parsed_commit *const restrict parsed_commit =
+//             repo->parsed_commits + i;
+//         if (parsed_commit->commit) {
+//             git_commit_free(parsed_commit->commit);
+//             parsed_commit->commit = NULL;
+//         }
+//     }
+//     return 0;
+// }
+
+// int export_commit_write(
+//     struct config const *const restrict config,
+//     struct repo const *const restrict repo,
+//     struct parsed_commit const *const restrict parsed_commit,
+//     struct export_handle const *const restrict archive_handle,
+//     struct export_handle const *const restrict checkout_handle
+// ) {
+//     git_commit *commit;
+//     if (parsed_commit->commit) {
+//         if (git_commit_dup(&commit, parsed_commit->commit)) {
+//             pr_error("Failed to dup commit\n");
+//             return -1;
+//         }
+//     } else {
+//         if (git_commit_lookup(&commit, repo->repository, &parsed_commit->id)) {
+//             pr_error("Failed to lookup commit\n");
+//             return -1;
+//         }
+//     }
+//     git_tree *tree;
+//     if (git_commit_tree(&tree, commit)) {
+//         pr_error("Failed to get the tree pointed by commit\n");
+//         git_commit_free(commit);
+//         return -1;
+//     }
+//     pr_info("Exporting: '%s': %s ...\n",
+//         repo->url, parsed_commit->id_hex_string);
+//     char submodule_path[PATH_MAX] = "";
+//     unsigned short len_submodule_path = 0;
+//     char archive_prefix[PATH_MAX] = "";
+//     if (config->archive_gh_prefix) {
+//         if (snprintf(archive_prefix, PATH_MAX, "%s-%s/", repo->short_name,
+//         parsed_commit->id_hex_string) < 0) {
+//             pr_error_with_errno("Failed to generate github-like prefix\n");
+//             git_commit_free(commit);
+//             return -1;
+//         }
+//         pr_debug("Will add github-like prefix '%s' to tar\n", archive_prefix);
+//     }
+//     char mtime[TAR_HEADER_MTIME_LEN] = "";
+//     if (snprintf(
+//         mtime, TAR_HEADER_MTIME_LEN, "%011lo", git_commit_time(commit)
+//     ) < 0) {
+//         pr_error("Failed to format mtime\n");
+//         git_commit_free(commit);
+//         return -1;
+//     }
+//     if (archive_handle->should_export) {
+//         if (export_commit_add_global_comment_to_tar(archive_handle->fd,
+//             repo->url, parsed_commit->id_hex_string, mtime)) {
+//             pr_error("Failed to add pax global header comment\n");
+//             git_commit_free(commit);
+//             return -1;
+//         }
+//     }
+//     struct export_commit_treewalk_payload export_commit_treewalk_payload = {
+//         .config = config,
+//         .repo = repo,
+//         .parsed_commit = parsed_commit,
+//         .submodule_path = submodule_path,
+//         .len_submodule_path = len_submodule_path,
+//         .archive = archive_handle->should_export,
+//         .mtime = mtime, // second,
+//         // there's also git_commit_time_offset(commit), one offset for a minute
+//         .fd_archive = archive_handle->fd,
+//         .archive_prefix = archive_prefix,
+//         .checkout = checkout_handle->should_export,
+//         .dirfd_checkout = checkout_handle->fd,
+//     };
+//     if (git_tree_walk(
+//         tree, GIT_TREEWALK_PRE, export_commit_treewalk_callback,
+//         (void *)&export_commit_treewalk_payload)) {
+//         pr_error("Failed to walk through tree\n");
+//         git_commit_free(commit);
+//         return -1;
+//     }
+//     git_commit_free(commit);
+//     pr_debug("Ended exporting repo '%s' commit %s\n",
+//         repo->url, parsed_commit->id_hex_string);
+//     return 0;
+// }
+
+// int export_commit_finish(
+//     struct export_handle *archive_handle,
+//     struct export_handle *checkout_handle,
+//     int const dirfd_archives,
+//     int const dirfd_checkouts,
+//     bool const force
+// ) {
+//     int r = 0;
+//     if (archive_handle->should_export) {
+//         if (close(archive_handle->fd)) {
+//             pr_error_with_errno("Failed to clsoe archive fd");
+//             r = -1;
+//         }
+//         if (archive_handle->child > 0) {
+//             int status = 0;
+//             pid_t child_waited = waitpid(
+//                 archive_handle->child, &status,
+//                 force ? WNOHANG : 0);
+//             bool waited = false;
+//             switch (child_waited) {
+//             case -1:
+//                 pr_error("Failed to wait for child\n");
+//                 break;
+//             case 0:
+//                 if (!force) {
+//                     pr_warn("Waited child is 0 but we're not waiting nohang\n");
+//                 }
+//                 break;
+//             default:
+//                 if (child_waited == archive_handle->child) {
+//                     waited = true;
+//                 } else {
+//                     pr_warn("Waited child %d is not what we expected %d\n",
+//                             child_waited, archive_handle->child);
+//                 }
+//                 break;
+//             }
+//             if (!waited) {
+//                 pr_warn("Child not properly ended (yet), force to kill it");
+//                 if (kill(archive_handle->child, SIGKILL)) {
+//                     pr_error_with_errno("Failed to force kill child %d",
+//                         archive_handle->child);
+//                 }
+//                 r = -1;
+//             }
+//             if (status) {
+//                 pr_error("Piper child returned with %d\n", status);
+//                 r = -1;
+//             }
+//             archive_handle->child = -1;
+//         }
+//         if (!force &&
+//             renameat(dirfd_archives, archive_handle->path_work,
+//                     dirfd_archives, archive_handle->path)) {
+//             pr_error_with_errno("Failed to move '%s' to '%s'",
+//                 archive_handle->path_work, archive_handle->path);
+//             r = -1;
+//         }
+//     }
+//     if (checkout_handle->should_export) {
+//         if (close(checkout_handle->fd)) {
+//             pr_error_with_errno("Failed to close checkout dirfd");
+//             r = -1;
+//         }
+//         if (!force &&
+//             renameat(dirfd_checkouts, checkout_handle->path_work,
+//                 dirfd_checkouts, checkout_handle->path)) {
+//             pr_error_with_errno("Failed to move '%s' to '%s'",
+//                 checkout_handle->path_work, checkout_handle->path);
+//             r = -1;
+//         }
+//     }
+//     return r;
+// }
+
+// int export_commit_finish_force(
+//     struct export_handle *archive_handle,
+//     struct export_handle *checkout_handle
+// ) {
+//     int r = 0;
+//     if (archive_handle->should_export) {
+//         if (close(archive_handle->fd)) {
+//             pr_error_with_errno("Failed to clsoe archive fd");
+//             r = -1;
+//         }
+//         if (archive_handle->child > 0) {
+//             int status = 0;
+//             pid_t child_waited = waitpid(archive_handle->child, &status, WNOHANG);
+//             if (child_waited != archive_handle->child) {
+//                 pr_error_with_errno("Waited child is not the same");
+//                 r = -1;
+//             }
+//             if (status) {
+//                 pr_error("Piper returned with %d\n", status);
+//                 r = -1;
+//             }
+//         }
+//         if (rename(archive_handle->path_work, archive_handle->path)) {
+//             pr_error_with_errno("Failed to move '%s' to '%s'",
+//                 archive_handle->path_work, archive_handle->path);
+//             r = -1;
+//         }
+//     }
+//     if (checkout_handle->should_export) {
+//         if (close(checkout_handle->fd)) {
+//             pr_error_with_errno("Failed to close checkout dirfd");
+//             r = -1;
+//         }
+//         if (rename(checkout_handle->path_work, checkout_handle->path)) {
+//             pr_error_with_errno("Failed to move '%s' to '%s'",
+//                 checkout_handle->path_work, checkout_handle->path);
+//             r = -1;
+//         }
+//     }
+//     return r;
+// }
+
+// int export_commit_single_threaded(
+//     struct config const *const restrict config,
+//     struct repo const *const restrict repo,
+//     struct parsed_commit const *const restrict parsed_commit,
+//     bool const should_archive,
+//     struct work_directory *const restrict workdir_archives,
+//     bool const should_checkout,
+//     struct work_directory *const restrict workdir_checkouts
+// ) {
+//     struct export_handle archive_handle = {.should_export = should_archive};
+//     struct export_handle checkout_handle = {.should_export = should_checkout};
+//     if (export_commit_prepare(
+//             config, parsed_commit,
+//             &archive_handle, workdir_archives,
+//             &checkout_handle, workdir_checkouts)) {
+//         pr_error("Failed to preapre to export commit '%s'\n",
+//                         parsed_commit->id_hex_string);
+//         return -1;
+//     }
+//     if (archive_handle.should_export || checkout_handle.should_export);
+//     else {
+//         return 0;
+//     }
+//     if (export_commit_write(config, repo, parsed_commit,
+//                     &archive_handle, &checkout_handle)) {
+//         pr_error("Failed to write export commit '%s'\n",
+//                     parsed_commit->id_hex_string);
+//         export_commit_finish(&archive_handle, &checkout_handle,
+//             workdir_archives->dirfd, workdir_checkouts->dirfd, true);
+//         return -1;
+//     }
+//     if (export_commit_finish(&archive_handle, &checkout_handle,
+//             workdir_archives->dirfd, workdir_checkouts->dirfd, false)) {
+//         pr_error("Failed to finish exporting of commit\n");
+//         return -1;
+//     }
+//     pr_info("Exported: '%s': %s\n",
+//         repo->url, parsed_commit->id_hex_string);
+//     return 0;
+// }
+
+
+// // Called should've done export_commit_prepare
+// int export_commit_write_and_finish(
+//     struct config const *const restrict config,
+//     struct repo const *const restrict repo,
+//     struct parsed_commit const *const restrict parsed_commit,
+//     struct export_handle *const restrict archive_handle,
+//     int const dirfd_archives,
+//     struct export_handle *const restrict checkout_handle,
+//     int const dirfd_checkouts
+// ) {
+//     if (export_commit_write(config, repo, parsed_commit,
+//                     archive_handle, checkout_handle)) {
+//         pr_error("Failed to write export commit '%s'\n",
+//                     parsed_commit->id_hex_string);
+//         export_commit_finish(archive_handle, checkout_handle,
+//             dirfd_archives, dirfd_checkouts, true);
+//         return -1;
+//     }
+//     if (export_commit_finish(archive_handle, checkout_handle,
+//             dirfd_archives, dirfd_checkouts, false)) {
+//         pr_error("Failed to finish exporting of commit\n");
+//         return -1;
+//     }
+//     pr_info("Exported: '%s': %s\n",
+//         repo->url, parsed_commit->id_hex_string);
+//     return 0;
+// }
+
+// struct export_commit_write_and_finish_arg {
+//     struct config const *restrict config;
+//     struct repo const *restrict repo;
+//     struct parsed_commit const *restrict parsed_commit;
+//     struct export_handle *restrict archive_handle;
+//     int dirfd_archives;
+//     struct export_handle *restrict checkout_handle;
+//     int dirfd_checkouts;
+// };
+
+// void *export_commit_write_and_finish_thread(void *arg) {
+//     struct export_commit_write_and_finish_arg *const restrict private_arg =
+//         (struct export_commit_write_and_finish_arg *)arg;
+//     return (void *)(long)export_commit_write_and_finish(
+//         private_arg->config, private_arg->repo, private_arg->parsed_commit,
+//         private_arg->archive_handle, private_arg->dirfd_archives,
+//         private_arg->checkout_handle, private_arg->dirfd_checkouts
+//     );
+// }
+
+// int export_wanted_object_with_symlinks_atomic_optional(
+//     struct config const *const restrict config,
+//     struct repo const *const restrict repo,
+//     struct wanted_object const *const restrict wanted_object,
+//     struct work_directory *const restrict workdir_archives,
+//     struct work_directory *const restrict workdir_checkouts
+// ) {
+//     switch (wanted_object->type) {
+//     case WANTED_TYPE_ALL_BRANCHES:
+//     case WANTED_TYPE_ALL_TAGS:
+//         return 0;
+//     default:
+//         break;
+//     }
+//     if (wanted_object->archive | wanted_object->checkout);
+//     else return 0;
+//     if (wanted_object_guarantee_symlinks(
+//         wanted_object, repo,
+//         config->archive_suffix, config->len_archive_suffix,
+//         workdir_archives->links_dirfd,
+//         workdir_checkouts->links_dirfd)) {
+//         pr_error("Failed to guarantee symlinks for wanted object '%s' "
+//             "of repo '%s'\n", wanted_object->name, repo->url);
 //         return -1;
 //     }
 //     switch (wanted_object->type) {
-//     case WANTED_TYPE_UNKNOWN:
-//         pr_error("Impossible to complete an object with unknown type\n");
-//         return -1;
-//     case WANTED_TYPE_ALL_BRANCHES: // These two does not need to be upgraded
-//     case WANTED_TYPE_ALL_TAGS:
-//     case WANTED_TYPE_REFERENCE:
 //     case WANTED_TYPE_BRANCH:
 //     case WANTED_TYPE_TAG:
+//     case WANTED_TYPE_REFERENCE:
+//         if (!((struct wanted_reference const *)wanted_object)
+//             ->commit_resolved) {
+//             pr_error("Reference '%s' is not resolved into commit\n",
+//                     wanted_object->name);
+//             return -1;
+//         }
+//         __attribute__((fallthrough));
 //     case WANTED_TYPE_HEAD:
-//         return 0;
-//     case WANTED_TYPE_COMMIT:
-//         return wanted_object_complete_commit(
-//             (struct wanted_commit *)wanted_object);
+//         if (!((struct wanted_reference const *)wanted_object)
+//             ->commit_resolved) {
+//             pr_warn("Reference '%s' is not resolved into commit\n",
+//                     wanted_object->name);
+//             break;
+//         }
+//         __attribute__((fallthrough));
+//     case WANTED_TYPE_COMMIT: {
+//         if (wanted_object->parsed_commit_id == (unsigned long) -1) {
+//             pr_error("Commit %s is not parsed yet\n",
+//                 wanted_object->hex_string);
+//             return -1;
+//         }
+//         if (export_commit_single_threaded(config, repo,
+//             repo->parsed_commits + wanted_object->parsed_commit_id,
+//             wanted_object->archive, workdir_archives,
+//             wanted_object->checkout, workdir_checkouts)) {
+//             pr_error("Failed to export commit %s of repo '%s'\n",
+//                 wanted_object->hex_string, repo->url);
+//             return -1;
+//         }
+//         break;
+//     }
 //     default:
-//         pr_error("Impossible routine\n");
+//         pr_error("Impossible wanted type %d (%s)\n",
+//             wanted_object->type, wanted_type_strings[wanted_object->type]);
 //         return -1;
 //     }
 //     return 0;
 // }
 
-// void wanted_object_init_with_name(
-//     struct wanted_object *wanted_object,
-//     char const *const restrict name,
-//     unsigned short const len_name
+// int repo_guarantee_all_wanted_objects_symlinks(
+//     struct repo const *const restrict repo,
+//     char const *const restrict archive_suffix,
+//     unsigned short const len_archive_suffix,
+//     int const archives_links_dirfd,
+//     int const checkouts_links_dirfd
 // ) {
-//     *wanted_object = WANTED_OBJECT_INIT;
-//     memcpy(wanted_object->name, name, len_name);
-//     wanted_object->name[len_name] = '\0';
-//     wanted_object->len_name = len_name;
+//     for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
+//         struct wanted_object const *const restrict wanted_object =
+//             repo->wanted_objects + i;
+//         if (wanted_object_guarantee_symlinks(
+//             wanted_object, repo,
+//             archive_suffix, len_archive_suffix,
+//             archives_links_dirfd,
+//             checkouts_links_dirfd)) {
+//             pr_error("Failed to guarantee symlinks for wanted object '%s' "
+//                 "of repo '%s'\n", wanted_object->name, repo->url);
+//             return -1;
+//         }
+//     }
+//     return 0;
 // }
 
-// int wanted_object_init_with_name_and_type_and_complete(
-//     struct wanted_object *wanted_object,
-//     char const *const restrict name,
-//     unsigned short const len_name,
-//     enum wanted_type const wanted_type
+// int export_all_repos_single_threaded(
+//     struct config const *const restrict config,
+//     struct work_directory *const restrict workdir_archives,
+//     struct work_directory *const restrict workdir_checkouts
 // ) {
-//     wanted_object_init_with_name(wanted_object, name, len_name);
-//     wanted_object->type = wanted_type;
-//     if (wanted_object_complete(wanted_object)) {
-//         pr_error("Failed to complete object\n");
+//     pr_debug("Exporting all repos (single-threaded)...\n");
+//     int r = -1;
+//     unsigned long repo_free_count = config->repos_count;
+//     for (unsigned long i = 0; i < config->repos_count; ++i) {
+//         if (repo_lookup_all_parsed_commits(config->repos + i)) {
+//             repo_free_count = i;
+//             goto free_commits;
+//         }
+//     }
+//     for (unsigned long i = 0; i < config->repos_count; ++i) {
+//         struct repo const *const restrict repo = config->repos + i;
+//         for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
+//             struct wanted_object const *const restrict wanted_object =
+//                 repo->wanted_objects + j;
+//             if (export_wanted_object_with_symlinks_atomic_optional(
+//                     config, repo, wanted_object,
+//                     workdir_archives, workdir_checkouts)) {
+//                 pr_error("Failed to export wanted object '%s'\n",
+//                         wanted_object->name);
+//                 goto free_commits;
+//             }
+//         }
+//     }
+//     pr_debug("Exported all repos\n");
+//     r = 0;
+// free_commits:
+//     for (unsigned long i = 0; i < repo_free_count; ++i) {
+//         repo_free_all_parsed_commits(config->repos + i);
+//     }
+//     return r;
+// }
+
+// int guanrantee_all_repos_wanted_objects_symlinks(
+//     struct config const *const restrict config,
+//     int const archives_links_dirfd,
+//     int const checkouts_links_dirfd
+// ) {
+//     for (unsigned long i = 0; i < config->repos_count; ++i) {
+//         struct repo const *const restrict repo = config->repos + i;
+//         if (repo_guarantee_all_wanted_objects_symlinks(
+//             repo, config->archive_suffix, config->len_archive_suffix,
+//             archives_links_dirfd, checkouts_links_dirfd)) {
+//             pr_error("Failed to guarantee symlinks for all wanted objects of "
+//             "repo '%s'\n", repo->url);
+//             return -1;
+//         }
+//     }
+//     return 0;
+// }
+// struct guanrantee_all_repos_wanted_objects_symlinks_arg {
+//     struct config const *restrict config;
+//     int const archives_links_dirfd;
+//     int const checkouts_links_dirfd;
+// };
+
+// void *guanrantee_all_repos_wanted_objects_symlinks_thread(void *arg) {
+//     struct guanrantee_all_repos_wanted_objects_symlinks_arg *private_arg =
+//         (struct guanrantee_all_repos_wanted_objects_symlinks_arg *)arg;
+//     return (void *)(long)
+//                 guanrantee_all_repos_wanted_objects_symlinks(
+//                     private_arg->config,
+//                     private_arg->archives_links_dirfd,
+//                     private_arg->checkouts_links_dirfd);
+// }
+
+// int export_all_repos_multi_threaded_lookup(
+//     struct config const *const restrict config
+// ) {
+//    struct prepare_thread_handle {
+//         pthread_t thread;
+//         struct repo const *repo;
+//         bool active;
+//     };
+//     struct prepare_thread_handle *handles = calloc(
+//         config->export_threads, sizeof *handles);
+//     if (handles == NULL) {
+//         pr_error("Failed to allocate memory for prepare threads\n");
+//         return -1;
+//     }
+//     unsigned long repo_prepared_count = 0;
+//     int r = -1;
+//     long thread_ret;
+//     for (; repo_prepared_count < config->repos_count;
+//         ++repo_prepared_count) {
+//         struct repo const *const restrict repo =
+//             config->repos + repo_prepared_count;
+//         bool thread_added = false;
+//         for (;;) {
+//             unsigned short threads_active_count = 0;
+//             for (unsigned short i = 0; i < config->export_threads; ++i) {
+//                 struct prepare_thread_handle *handle = handles + i;
+//                 if (handle->active) {
+//                     r = pthread_tryjoin_np(
+//                         handle->thread, (void **)&thread_ret);
+//                     switch (r) {
+//                     case 0:
+//                         handle->active = false;
+//                         if (thread_ret) {
+//                             pr_error("Thread %ld for preparing repo '%s' "
+//                             "returned with %ld\n", handle->thread,
+//                             handle->repo->url, thread_ret);
+//                             r = -1;
+//                             goto wait_threads;
+//                         }
+//                         break;
+//                     case EBUSY:
+//                         break;
+//                     default:
+//                         pr_error("Failed to nonblocking wait for thread %ld "
+//                         "for preparing repo '%s', pthread return %d\n",
+//                         handle->thread, handle->repo->url, r);
+//                         r = -1;
+//                         goto wait_threads;
+//                     }
+//                 }
+//                 // If it's already running, ofc inc it;
+//                 // If it's not, then we put a thread to it, also inc it
+//                 ++threads_active_count;
+//                 if (!handle->active) {
+//                     handle->repo = repo;
+//                     r = pthread_create(&handle->thread, NULL,
+//                         repo_lookup_all_parsed_commits_thread, (void *)repo);
+//                     if (r) {
+//                         pr_error("Failed to create thread to prepare repo "
+//                         "'%s', pthread return '%d'\n", repo->url, r);
+//                         r = -1;
+//                         goto wait_threads;
+//                     }
+//                     handle->active = true;
+//                     thread_added = true;
+//                     break;
+//                 }
+//             }
+//             if (thread_added) break;
+//             usleep(100);
+//             if (threads_active_count == config->export_threads) {
+//                 pr_debug("Active threads reached max\n");
+//             }
+//             pr_debug("%hu threads running for looking up commits\n",
+//                             threads_active_count);
+//         }
+//     }
+//     r = 0;
+// wait_threads:
+//     if (r) pr_warn("Waiting for all exporting preparation threads to end...\n");
+//     for (unsigned short i = 0; i < config->export_threads; ++i) {
+//         struct prepare_thread_handle *handle = handles + i;
+//         if (handle->active) {
+//             int r2 = pthread_join(handle->thread, (void **)&thread_ret);
+//             if (r2) {
+//                 pr_error("Failed to join thread %ld for preparing repo '%s', "
+//                             "pthread return %d\n",
+//                             handle->thread, handle->repo->url, r);
+//                 r = -1;
+//             }
+//             handle->active = false;
+//             if (thread_ret) {
+//                 pr_error(
+//                     "Thread %ld for preparing repo '%s' returned with %ld\n",
+//                     handle->thread, handle->repo->url, thread_ret);
+//                 r = -1;
+//             }
+//         }
+//     }
+//     free(handles);
+//     if (r) {
+//         for (unsigned long i = 0; i < repo_prepared_count; ++i) {
+//             if (repo_free_all_parsed_commits(config->repos + i)) {
+//                 pr_error("Failed to free all parsed commits in repo '%s'\n",
+//                     config->repos[i].url);
+//             }
+//         }
+//     }
+//     return r;
+// }
+// struct commit_with_repo {
+//     struct parsed_commit *commit;
+//     struct repo *repo;
+// };
+
+// static inline
+// void commit_with_repo_list_swap_item(
+//     struct commit_with_repo *const restrict commits_with_repos,
+//     unsigned long const i,
+//     unsigned long const j
+// ) {
+//     struct commit_with_repo buffer = commits_with_repos[i];
+//     commits_with_repos[i] = commits_with_repos[j];
+//     commits_with_repos[j] = buffer;
+// }
+
+// static inline
+// unsigned long commit_with_repo_list_partition(
+//     struct commit_with_repo *const restrict commits_with_repos,
+//     unsigned long const low,
+//     unsigned long const high
+// ) {
+//     git_oid const *const restrict pivot = 
+//         &commits_with_repos[high].commit->id;
+//     unsigned long i = low - 1;
+//     for (unsigned long j = low; j < high; ++j) {
+//         // pr_debug("Comparing %s @ %p vs %s @ %p \n", 
+//         //     commits[j]->id_hex_string, commits[j], 
+//         //     pivot->id_hex_string, pivot);
+//         if (git_oid_cmp(&commits_with_repos[j].commit->id, pivot) < 0)
+//             commit_with_repo_list_swap_item(commits_with_repos, ++i, j);
+//     }
+//     commit_with_repo_list_swap_item(commits_with_repos, ++i, high);
+//     return i;
+// }
+
+// void commit_with_repo_list_quick_sort(
+//     struct commit_with_repo *const restrict commits_with_repos,
+//     unsigned long const low,
+//     unsigned long const high
+// ) {
+//     if (low < high) {
+//         unsigned long const pivot = commit_with_repo_list_partition(
+//                                 commits_with_repos, low, high);
+//          // if pivot is 0, that will make the new high (ulong) -1
+//         if (pivot) 
+//             commit_with_repo_list_quick_sort(
+//                     commits_with_repos, low, pivot - 1);
+//         commit_with_repo_list_quick_sort(commits_with_repos, pivot + 1, high);
+//     }
+// }
+
+// // To avoid race condition, i.e., same commit referenced by multiple
+// // repos, which is usually caused by repos being clones/mirrors of each
+// // other, we need to go through the whole repos and commits list first,
+// // to create a sorted, non-duplicated list of all commits.
+// // As a result of such iterating and sorting, single-thread exporting
+// // could theoritically be better if we have too many commits
+// long export_all_repos_get_unique_commits(
+//     struct commit_with_repo **const restrict unique_commits,
+//     struct config const *const restrict config
+// ) {
+//     unsigned long commits_allocated = 0;
+//     for (unsigned long i = 0; i < config->repos_count; ++i) {
+//         commits_allocated += config->repos[i].parsed_commits_count;
+//     }
+//     // No commits at all, this shouldn't happen, but silent return
+//     if (commits_allocated == 0) return 0;
+//     struct commit_with_repo *restrict commits_with_repos = 
+//         malloc(sizeof *commits_with_repos * commits_allocated);
+//     if (commits_with_repos == NULL) {
+//         pr_error("Failed to allocate memory for all commits\n");
+//         return -1;
+//     }
+//     unsigned long commit_id = 0;
+//     for (unsigned long i = 0; i < config->repos_count; ++i) {
+//         struct repo *const restrict repo = config->repos + i;
+//         for (unsigned long j = 0; j < repo->parsed_commits_count; ++j) {
+//             struct parsed_commit *const restrict commit = 
+//                 repo->parsed_commits + j;
+//             if (commit->archive || commit->checkout) {
+//                 struct commit_with_repo *commit_with_repo = 
+//                     commits_with_repos + commit_id;
+//                 commit_with_repo->commit = commit;
+//                 commit_with_repo->repo = repo;
+//                 // This shouldn't happen
+//                 if (++commit_id > commits_allocated) {
+//                     pr_error("Commits count overflow, %lu > %lu\n", 
+//                                 commit_id,  commits_allocated);
+//                     goto free_commits;
+
+//                 }
+//             }
+//         }
+//     }
+//     unsigned long commits_count = commit_id;
+//     commit_with_repo_list_quick_sort(commits_with_repos, 0, commits_count - 1);
+//     commit_id = 0;
+//     git_oid *commit_oid_last_unique = &commits_with_repos[0].commit->id;
+//     for (unsigned long i = 1; i < commits_count; ++i) {
+//         int r = git_oid_cmp(commit_oid_last_unique, 
+//                         &commits_with_repos[i].commit->id);
+//         if (r > 0) {
+//             pr_error("Descending commits in commits list which should be "
+//                         "ascending\n");
+//             goto free_commits;
+//         } else if (r < 0) {
+//             if (++commit_id != i)
+//                 commits_with_repos[commit_id] = commits_with_repos[i];
+//             commit_oid_last_unique = 
+//                 &commits_with_repos[commit_id].commit->id;
+//         } else { // Same, remove dup
+//             struct parsed_commit *const restrict commit_unique = 
+//                 commits_with_repos[commit_id].commit;
+//             struct parsed_commit *const restrict commit_duplicated = 
+//                 commits_with_repos[i].commit;
+//             if (commit_duplicated->archive) commit_unique->archive = true;
+//             if (commit_duplicated->checkout) commit_unique->checkout = true;
+//         }
+//     }
+//     struct commit_with_repo *commits_with_repos_new = 
+//         realloc(commits_with_repos, 
+//                 sizeof *commits_with_repos_new * commits_count);
+//     if (commits_with_repos_new) {
+//         commits_with_repos = commits_with_repos_new;
+//     } else {
+//         pr_error("Failed to release memory occupied by duplicated commits\n");
+//         goto free_commits;
+//     }
+//     // It's impossible to return 0 at this point
+//     // No need to check and deallocate
+//     commits_count = commit_id + 1;
+//     *unique_commits = commits_with_repos;
+//     return (long)commits_count;
+// free_commits:
+//     free(commits_with_repos);
+//     *unique_commits = NULL;
+//     return -1;
+// }
+
+// int export_all_unique_commits_multi_threaded(
+//     struct commit_with_repo *const restrict commits,
+//     unsigned long const commits_count,
+//     struct config const *const restrict config,
+//     struct work_directory *const restrict workdir_archives,
+//     struct work_directory *const restrict workdir_checkouts
+// ) {
+//     if (!commits_count) return 0;
+//     unsigned short const threads_count = 
+//         config->export_threads > 2 ? config->export_threads : 2;
+//     struct thread_handle {
+//         pthread_t thread;
+//         struct export_handle archive_handle;
+//         struct export_handle checkout_handle;
+//         struct export_commit_write_and_finish_arg arg;
+//         bool active;
+//     };
+//     struct thread_handle *handles = calloc(threads_count, sizeof *handles);
+//     if (handles == NULL) {
+//         pr_error_with_errno("Failed to allocate memory for handles");
+//         return -1;
+//     }
+//     int r = -1;
+//     long thread_ret;
+//     for (unsigned short i = 0; i < threads_count; ++i) {
+//         struct export_commit_write_and_finish_arg *arg = &(handles + i)->arg;
+//         arg->config = config;
+//         arg->dirfd_archives = workdir_archives->dirfd;
+//         arg->dirfd_checkouts = workdir_checkouts->dirfd;
+//         arg->archive_handle = &handles[i].archive_handle;
+//         arg->checkout_handle = &handles[i].checkout_handle;
+//     }
+//     for (unsigned long i = 0; i < commits_count; ++i) {
+//         struct parsed_commit const *const restrict parsed_commit =
+//                                         commits[i].commit;
+//         if (parsed_commit->archive || parsed_commit->checkout);
+//         else continue;
+//         struct export_handle archive_handle = {
+//             .should_export = parsed_commit->archive};
+//         struct export_handle checkout_handle = {
+//             .should_export = parsed_commit->checkout};
+//         if (export_commit_prepare(config, parsed_commit,
+//                         &archive_handle, workdir_archives,
+//                         &checkout_handle, workdir_checkouts)) {
+//             pr_error("Failed to prepare to export commit '%s'\n",
+//                         parsed_commit->id_hex_string);
+//             goto wait_threads;
+//         }
+//         if (archive_handle.should_export || checkout_handle.should_export);
+//         else continue;
+//         bool thread_added = false;
+//         for (;;) {
+//             unsigned short threads_active_count = 0;
+//             for (unsigned short k = 0; k < config->export_threads; ++k) {
+//                 struct thread_handle *handle = handles + k;
+//                 if (handle->active) {
+//                     r = pthread_tryjoin_np(handle->thread, (
+//                                             void **)&thread_ret);
+//                     switch (r) {
+//                     case 0:
+//                         handle->active = false;
+//                         if (thread_ret) {
+//                             pr_error(
+//                                 "Thread %ld for exporting commit %s return"
+//                                 "with %ld", handle->thread,
+//                                             parsed_commit->id_hex_string,
+//                                             thread_ret);
+//                             goto wait_threads;
+//                         }
+//                         break;
+//                     case EBUSY:
+//                         break;
+//                     default:
+//                         pr_error("Failed to nonblocking wait for thread %ld"
+//                         " for exporting commit %s, pthread return %d\n",
+//                         handle->thread, parsed_commit->id_hex_string, r);
+//                         goto wait_threads;
+//                     }
+//                 }
+//                 ++threads_active_count;
+//                 if (!handle->active) {
+//                     handle->archive_handle = archive_handle;
+//                     handle->checkout_handle = checkout_handle;
+//                     handle->arg.repo = commits[i].repo;
+//                     handle->arg.parsed_commit = parsed_commit;
+//                     r = pthread_create(&handle->thread, NULL,
+//                             export_commit_write_and_finish_thread,
+//                             &handle->arg);
+//                     if (r) {
+//                         pr_error("Failed to create thread to export commit "
+//                                 "%s, pthread return %d\n",
+//                                 parsed_commit->id_hex_string, r);
+//                         goto wait_threads;
+//                     }
+//                     handle->active = true;
+//                     thread_added = true;
+//                     break;
+//                 }
+//             }
+//             if (thread_added) break;
+//             usleep(100);
+//         }
+//     }
+//     r = 0;
+// wait_threads:
+//     if (r) pr_warn("Waiting for all exporting work threads to end...\n");
+//     for (unsigned short i = 0; i < threads_count; ++i) {
+//         struct thread_handle *handle = handles + i;
+//         if (handle->active) {
+//             int r2 = pthread_join(handle->thread, (void **)&thread_ret);
+//             if (r2) {
+//                 pr_error("Failed to join thread %ld for exporting commit %s , "
+//                             "pthread return %d\n", handle->thread,
+//                                 handle->arg.parsed_commit->id_hex_string, r);
+//                 r = -1;
+//             }
+//             handle->active = false;
+//             if (thread_ret) {
+//                 pr_error(
+//                     "Thread %ld for exporting commit %s returned with %ld\n",
+//                     handle->thread, handle->arg.parsed_commit->id_hex_string,
+//                     thread_ret);
+//                 r = -1;
+//             }
+//         }
+//     }
+//     free(handles);
+//     return r;
+// }
+
+// int export_all_repos_multi_threaded(
+//     struct config const *const restrict config,
+//     struct work_directory *const restrict workdir_archives,
+//     struct work_directory *const restrict workdir_checkouts
+// ) {
+//     pr_debug("Exporting all repos (%hu threads + 1 for symlinks)\n",
+//         config->export_threads);
+//     struct guanrantee_all_repos_wanted_objects_symlinks_arg
+//         symlinks_thread_arg = {
+//             .config = config,
+//             .archives_links_dirfd = workdir_archives->links_dirfd,
+//             .checkouts_links_dirfd = workdir_checkouts->links_dirfd
+//         };
+//     pthread_t symlinks_thread;
+//     int r = pthread_create(&symlinks_thread, NULL,
+//                 guanrantee_all_repos_wanted_objects_symlinks_thread,
+//                 &symlinks_thread_arg);
+//     if (r) {
+//         pr_error("Failed to create thread for generating symlinks, pthread "
+//             "return %d\n", r);
+//         return -1;
+//     }
+//     r = -1;
+//     struct commit_with_repo *commits = NULL;
+//     long commits_count = export_all_repos_get_unique_commits(
+//                             &commits, config);
+//     if (commits_count < 0) {
+//         pr_error("Failed to get all unique commits\n");
+//         goto free_commits;
+//     } else if (commits_count == 0) {
+//         pr_info("No commits to export\n");
+//         r = 0;
+//         goto free_commits;
+//     } else {
+//         r = export_all_unique_commits_multi_threaded(
+//             commits, commits_count, config,
+//             workdir_archives, workdir_checkouts);
+//         free(commits);
+//         commits = NULL;
+//         if (r) {
+//             pr_error("Failed to export repos (multi-threaded)\n");
+//             goto free_commits;
+//         }
+//     }
+//     r = 0;
+// free_commits:
+//     for (unsigned long i = 0; i < config->repos_count; ++i) {
+//         repo_free_all_parsed_commits(config->repos + i);
+//     }
+// // wait_symlink_thread:
+//     long thread_ret;
+//     int r2 = pthread_join(symlinks_thread, (void **)&thread_ret);
+//     if (r2) {
+//         pr_error("Failed to join thread %ld for symlinks, pthread return %d\n",
+//             symlinks_thread, r2);
+//         r = -1;
+//     }
+//     if (thread_ret) {
+//         pr_error("Thread %ld for guaranteeing symlinks returned with %ld\n",
+//                 symlinks_thread, thread_ret);
+//         r = -1;
+//     }
+//     if (r) {
+//         pr_warn("Failed to export all repos, but commits already exported "
+//             "should not be affected\n");
+//     } else {
+//         pr_debug("Exported all repos\n");
+//     }
+//     return r;
+// }
+
+// int export_all_repos(
+//     struct config const *const restrict config,
+//     struct work_directory *const restrict workdir_archives,
+//     struct work_directory *const restrict workdir_checkouts
+// ) {
+//     if (config->export_threads <= 1) {
+//         return export_all_repos_single_threaded(config,
+//             workdir_archives, workdir_checkouts);
+//     } else {
+//         return export_all_repos_multi_threaded(config,
+//             workdir_archives, workdir_checkouts);
+//     }
+// }
+
+// int raise_nofile_limit() {
+//     struct rlimit rlimit;
+//     if (getrlimit(RLIMIT_NOFILE, &rlimit)) {
+//         pr_error_with_errno("Failed to get limit of opened files");
+//         return -1;
+//     }
+//     if (rlimit.rlim_cur <= 1024) {
+//         pr_warn(
+//             "Current nofile limit too small (%lu), this may result in "
+//             "unexpeceted behaviours as git-mirrorer caches all repos "
+//             "with all of their fds kept open during the whole run. "
+//             "~10 fds are needed per repo.\n",
+//             rlimit.rlim_cur);
+//     }
+//     if (rlimit.rlim_cur == rlimit.rlim_max) return 0;
+//     rlimit.rlim_cur = rlimit.rlim_max > 16384 ? 16384 : rlimit.rlim_max;
+//     if (setrlimit(RLIMIT_NOFILE, &rlimit)) {
+//         pr_error_with_errno("Failed to raise limit of opened files");
+//         return -1;
+//     }
+//     pr_info("Raised limit of opened file descriptors to %lu\n",
+//             rlimit.rlim_cur);
+//     return 0;
+// }
+
+// int clean_all_dirs(
+//     struct work_directory *const restrict workdir_repos,
+//     struct work_directory *const restrict workdir_archives,
+//     struct work_directory *const restrict workdir_checkouts,
+//     struct config const *const restrict config
+// ) {
+//     int r = 0;
+//     if (config->clean_repos && work_directory_clean(
+//             workdir_repos, config->clean_links_pass, 
+//             HASH_STRING_LEN > 5 ? HASH_STRING_LEN + 1 : 6)) {
+//         pr_error("Failed to clean repos workdir '%s'\n", workdir_repos->path);
+//         r = -1;
+//     }
+//     if (config->clean_archives && work_directory_clean(
+//             workdir_archives, config->clean_links_pass, 
+//             config->len_archive_suffix + (
+//                 GIT_OID_MAX_HEXSIZE > 5 ? GIT_OID_MAX_HEXSIZE + 1 : 6))) {
+//         pr_error("Failed to clean archives workdir '%s'\n",
+//                 workdir_archives->path);
+//         r = -1;
+//     }
+//     if (config->clean_checkouts && work_directory_clean(
+//             workdir_checkouts, config->clean_links_pass,
+//             GIT_OID_MAX_HEXSIZE > 5 ? GIT_OID_MAX_HEXSIZE + 1 : 6)) {
+//         pr_error("Failed to clean checkouts workdir '%s'\n",
+//                 workdir_repos->path);
+//         r = -1;
+//     }
+//     return r;
+// }
+
+// int work_oneshot(
+//     struct config *const restrict config,
+//     struct work_directory *const restrict workdir_repos,
+//     struct work_directory *const restrict workdir_archives,
+//     struct work_directory *const restrict workdir_checkouts
+// ) {
+//     if (mirror_all_repos(
+//             config, workdir_repos, config->clean_repos)) {
+//         pr_error("Failed to mirro all repos\n");
+//         return -1;
+//     }
+//     if (export_all_repos(
+//             config, workdir_archives, workdir_checkouts)) {
+//         pr_error("Failed to export all repos (archives and checkouts)\n");
+//         return -1;
+//     }
+//     if (clean_all_dirs(
+//         workdir_repos, workdir_archives, workdir_checkouts, config)) {
+//         pr_error("Failed to clean up all folders\n");
 //         return -1;
 //     }
 //     return 0;
 // }
 
-// #define declare_func_add_wanted_object_and_init_with_name_no_complete(\
-//     PARENT, CHILDPREFIX...) \
-// int PARENT##_add_##CHILDPREFIX##wanted_object_and_init_with_name_no_complete( \
-//     struct PARENT *const restrict PARENT, \
-//     char const *const restrict name, \
-//     unsigned short len_name \
-// ) { \
-//     if (PARENT##_add_##CHILDPREFIX##wanted_object_no_init(PARENT)) { \
-//         pr_error("Failed to add wanted object\n"); \
-//         return -1; \
-//     } \
-//     wanted_object_init_with_name(\
-//         get_last(PARENT->CHILDPREFIX##wanted_objects), \
-//         name, len_name); \
-//     return 0; \
-// }
-
-// #define declare_func_add_wanted_object_and_init_with_name_and_complete(\
-//     PARENT, CHILDPREFIX...) \
-// int PARENT##_add_##CHILDPREFIX##wanted_object_and_init_with_name_and_complete (\
-//     struct PARENT *const restrict PARENT, \
-//     char const *const restrict name, \
-//     unsigned short len_name \
-// ) { \
-//     enum wanted_type wanted_type = wanted_type_guess_from_name(name, len_name);\
-//     if (wanted_type == WANTED_TYPE_UNKNOWN) { \
-//         pr_error("Failed to guess object type of '%s'\n", name); \
-//         return -1; \
-//     } \
-//     if (PARENT##_add_##CHILDPREFIX##wanted_object_no_init(PARENT)) { \
-//         pr_error("Failed to add wanted object\n"); \
-//         return -1; \
-//     } \
-//     if (wanted_object_init_with_name_and_type_and_complete( \
-//         get_last(PARENT->CHILDPREFIX##wanted_objects), \
-//         name, len_name, wanted_type)) { \
-//         pr_error("Failed to init object with name and complete\n"); \
-//         return -1; \
-//     } \
-//     return 0; \
-// }
-
-// #define declare_funcs_add_wanted_object_and_init(PARENT, CHILDPREFIX...) \
-//     declare_func_add_wanted_object_and_init_with_name_no_complete( \
-//         PARENT, CHILDPREFIX) \
-//     declare_func_add_wanted_object_and_init_with_name_and_complete( \
-//         PARENT, CHILDPREFIX)
-
-// declare_funcs_add_wanted_object_and_init(repo)
-// declare_funcs_add_wanted_object_and_init(config, empty_)
-// declare_funcs_add_wanted_object_and_init(config, always_)
-
-int opendir_create_if_non_exist_at(
-    int const dir_fd,
-    char const *const restrict path,
-    unsigned short const len_path
-) {
-    int subdir_fd = openat(
-            dir_fd, path,
-            O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (subdir_fd < 0) {
-        switch (errno) {
-        case ENOENT:
-            char path_dup[PATH_MAX];
-            memcpy(path_dup, path, len_path + 1);
-            if (mkdir_recursively_at(dir_fd, path_dup)) {
-                pr_error("Failed to create dir '%s'\n", path);
-                return -1;
-            }
-            if ((subdir_fd = openat(
-                dir_fd, path,
-                O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
-                pr_error_with_errno("Failed to open dir '%s'", path);
-                return -1;
-            }
-            break;
-        default:
-            pr_error_with_errno("Failed to open dir '%s'", path);
-            return -1;
-        }
-    }
-    return subdir_fd;
-}
-
-int guarantee_symlink_at (
-    int const links_dirfd,
-    char const *const restrict symlink_path,
-    unsigned short const len_symlink_path,
-    char const *const restrict symlink_target
-) {
-    if (len_symlink_path >= PATH_MAX) {
-        pr_error("Symlink path too long\n");
-        return -1;
-    }
-    char path[PATH_MAX];
-    ssize_t len = readlinkat(links_dirfd, symlink_path, path, PATH_MAX);
-    if (len < 0) {
-        switch (errno) {
-        case ENOENT:
-            break;
-        default:
-            pr_error_with_errno("Failed to read link at '%s'", symlink_path);
-            return -1;
-        }
-    } else {
-        path[len] = '\0';
-        if (strcmp(path, symlink_target)) {
-            pr_warn("Symlink at '%s' points to '%s' instead of '%s', "
-            "if you see this message for too many times, you've probably set "
-            "too many repos with same path but different schemes.\n",
-            symlink_path, path, symlink_target);
-            if (unlinkat(links_dirfd, symlink_path, 0) < 0) {
-                pr_error_with_errno("Faild to unlink '%s'", symlink_path);
-                return -1;
-            }
-        } else {
-            // pr_info("Symlink '%s' -> '%s' already existing\n",
-            //     symlink_path, symlink_target);
-            return 0;
-        }
-    }
-    if (symlinkat(symlink_target, links_dirfd, symlink_path) < 0) {
-        switch (errno) {
-        case ENOENT:
-            break;
-        default:
-            pr_error_with_errno(
-                "Failed to create symlink '%s' -> '%s'",
-                symlink_path, symlink_target);
-            return -1;
-        }
-    } else {
-        pr_debug("Created symlink '%s' -> '%s'\n",
-            symlink_path, symlink_target);
-        return 0;
-    }
-    // After above routine, the only possiblity is missing dirs
-    char symlink_path_dup[PATH_MAX];
-    memcpy(symlink_path_dup, symlink_path, len_symlink_path);
-    symlink_path_dup[len_symlink_path] = '\0';
-    unsigned short last_sep = 0;
-    for (unsigned short i = len_symlink_path; i > 0; --i) {
-        char *c = symlink_path_dup + i;
-        if (*c == '/') {
-            if (!last_sep) {
-                last_sep = i;
-            }
-            *c = '\0';
-            if (mkdirat(links_dirfd, symlink_path_dup, 0755)) {
-                if (errno != ENOENT) {
-                    pr_error_with_errno(
-                        "Failed to create folder '%s' as parent of symlink "
-                        "'%s' -> '%s'",
-                        symlink_path_dup, symlink_path, symlink_target);
-                    return -1;
-                }
-            } else {
-                for (unsigned short j = i; j < last_sep; ++j) {
-                    c = symlink_path_dup + j;
-                    if (*c == '\0') {
-                        *c = '/';
-                        if (mkdirat(links_dirfd, symlink_path_dup, 0755)) {
-                            pr_error_with_errno(
-                                "Failed to create folder '%s' as parent of "
-                                "symlink '%s' -> '%s'",
-                                symlink_path_dup, symlink_path, symlink_target);
-                            return -1;
-                        }
-                    }
-                }
-                break;
-            }
-        }
-    }
-    if (symlinkat(symlink_target, links_dirfd, symlink_path) < 0) {
-        pr_error_with_errno(
-            "Failed to create symlink '%s' -> '%s'",
-            symlink_path, symlink_target);
-        return -1;
-    }
-    pr_debug("Created symlink '%s' -> '%s'\n",
-        symlink_path, symlink_target);
-    return 0;
-}
-
-int wanted_object_guarantee_symlinks(
-    struct wanted_object const *const restrict wanted_object,
-    struct repo const *const restrict repo,
-    char const *const restrict archive_suffix,
-    unsigned short const len_archive_suffix,
-    int const archives_links_dirfd,
-    int const checkouts_links_dirfd
-) {
-    /* links/[sanitized url]/[commit hash](archive suffix)
-                            /named/[name](a.s.)
-                            /tags -> refs/tags
-                            /branches -> refs/heads
-     undetermimed layers -> /refs/[ref name](a.s.)
-                            /HEAD(a.s.)
-    */
-    bool    link_tags_to_dir_refs_tags = false,
-            link_branches_to_dir_refs_heads = false;
-    bool const  archive = wanted_object->archive,
-                checkout = wanted_object->checkout;
-    char const *dir_link = "";
-    // E.g.
-    //  archive: archives/abcdef.tar.gz
-    //  link: archives/links/github.com/user/repo/abcdeg.tar.gz
-    //  target: ../../../../abcdef.tar.gz
-    //   github.com/user/repo has 3 parts, depth is 4
-    unsigned short link_depth = repo->url_no_scheme_sanitized_parts + 1;
-    switch (wanted_object->type) {
-        case WANTED_TYPE_UNKNOWN:
-            pr_error("Wanted type unknown for '%s'\n", wanted_object->name);
-            return -1;
-        case WANTED_TYPE_ALL_BRANCHES:
-        case WANTED_TYPE_ALL_TAGS:
-            return 0;
-        case WANTED_TYPE_BRANCH:
-            link_branches_to_dir_refs_heads = true;
-            dir_link = "refs/heads/";
-            link_depth += 2;
-            break;
-        case WANTED_TYPE_TAG:
-            link_tags_to_dir_refs_tags = true;
-            dir_link = "refs/tags/";
-            link_depth += 2;
-            break;
-        case WANTED_TYPE_REFERENCE:
-            if (!strncmp(wanted_object->name, "refs/", 5)) {
-                char const *const ref_kind = wanted_object->name + 5;
-                if (!strncmp(ref_kind, "heads/", 6))
-                    link_branches_to_dir_refs_heads = true;
-                else if (!strncmp(ref_kind, "tags/", 5))
-                    link_tags_to_dir_refs_tags = true;
-            }
-            break;
-        case WANTED_TYPE_COMMIT:
-        case WANTED_TYPE_HEAD:
-            break;
-    }
-    switch (wanted_object->type) {
-    case WANTED_TYPE_BRANCH:
-    case WANTED_TYPE_TAG:
-    case WANTED_TYPE_REFERENCE:
-        if (!wanted_object->commit_resolved) {
-#ifdef ALL_REFERENCES_MUST_BE_RESOLVED
-            pr_error(
-#else
-            pr_warn(
-#endif
-                "Commit not resolved for wanted object '%s' yet\n",
-                    wanted_object->name);
-#ifdef ALL_REFERENCES_MUST_BE_RESOLVED
-            return -1;
-#else
-            return 0;
-#endif
-        }
-        break;
-    default:
-        break;
-    }
-    for (unsigned short i = 0; i < wanted_object->len_name; ++i) {
-        switch (wanted_object->name[i]) {
-        case '/':
-            ++link_depth;
-            break;
-        case '\0':
-            pr_error("Name '%s' ends pre-maturely\n", wanted_object->name);
-            return -1;
-        }
-    }
-    int archives_repo_links_dirfd = -1;
-    if (archive) {
-        if ((archives_repo_links_dirfd = opendir_create_if_non_exist_at(
-            archives_links_dirfd, repo->url_no_scheme_sanitized,
-            repo->len_url_no_scheme_sanitized)) < 0) {
-            pr_error("Failed to open archive repos links dir\n");
-            return -1;
-        }
-    }
-    int checkouts_repo_links_dirfd = -1;
-    int r = -1;
-    if (checkout) {
-        if ((checkouts_repo_links_dirfd = opendir_create_if_non_exist_at(
-            checkouts_links_dirfd, repo->url_no_scheme_sanitized,
-            repo->len_url_no_scheme_sanitized)) < 0) {
-            pr_error("Failed to open Checkout repos links dir\n");
-            goto close_archives_repo_links_dirfd;
-        }
-    }
-    if (link_branches_to_dir_refs_heads) {
-        if (archive && guarantee_symlink_at(
-            archives_repo_links_dirfd, "branches", 8, "refs/heads")) {
-            goto close_checkouts_repo_links_dirfd;
-        }
-        if (checkout && guarantee_symlink_at(
-            checkouts_repo_links_dirfd, "branches", 8, "refs/heads")) {
-            goto close_checkouts_repo_links_dirfd;
-        }
-    }
-    if (link_tags_to_dir_refs_tags) {
-        if (archive && guarantee_symlink_at(
-            archives_repo_links_dirfd, "tags", 4, "refs/tags")) {
-            goto close_checkouts_repo_links_dirfd;
-        }
-        if (checkout && guarantee_symlink_at(
-            checkouts_repo_links_dirfd, "tags", 4, "refs/tags")) {
-            goto close_checkouts_repo_links_dirfd;
-        }
-    }
-    // The commit hash one
-    char symlink_path[PATH_MAX] = "";
-    char *symlink_path_current =
-        stpcpy(symlink_path, wanted_object->hex_string);
-    // unsigned short len_symlink_path = HASH_STRING_LEN;
-    char symlink_target[PATH_MAX] = "";
-    char *symlink_target_current = symlink_target;
-    for (unsigned short i = 0; i < repo->url_no_scheme_sanitized_parts+1; ++i) {
-        symlink_target_current = stpcpy(symlink_target_current, "../");
-    }
-    symlink_target_current = stpcpy(symlink_target_current,
-                                    wanted_object->hex_string);
-    if (checkout && guarantee_symlink_at(
-        checkouts_repo_links_dirfd,
-        symlink_path, HASH_STRING_LEN,
-        symlink_target)) {
-        goto close_checkouts_repo_links_dirfd;
-    }
-    if (archive) {
-        if (archive_suffix[0] == '\0' && guarantee_symlink_at(
-            archives_repo_links_dirfd,
-            symlink_path, HASH_STRING_LEN,
-            symlink_target)) {
-            goto close_checkouts_repo_links_dirfd;
-        } else {
-            strcpy(symlink_path_current, archive_suffix);
-            strcpy(symlink_target_current, archive_suffix);
-            if (guarantee_symlink_at(
-                archives_repo_links_dirfd,
-                symlink_path, HASH_STRING_LEN + len_archive_suffix,
-                symlink_target)) {
-                goto close_checkouts_repo_links_dirfd;
-            }
-        }
-    }
-
-    // The named one
-    if (wanted_object->type != WANTED_TYPE_COMMIT) {
-        char *symlink_path_current = stpcpy(symlink_path, dir_link);
-        symlink_path_current =
-            stpcpy(symlink_path_current, wanted_object->name);
-        unsigned short len_symlink_path = symlink_path_current - symlink_path;
-        char *symlink_target_current = symlink_target;
-        for (unsigned short i = 0; i < link_depth; ++i) {
-            symlink_target_current = stpcpy(symlink_target_current, "../");
-        }
-        symlink_target_current = stpcpy(
-            symlink_target_current,
-            wanted_object->hex_string);
-        if (checkout && guarantee_symlink_at(
-            checkouts_repo_links_dirfd,
-            symlink_path, len_symlink_path,
-            symlink_target)) {
-            goto close_checkouts_repo_links_dirfd;
-        }
-        if (archive) {
-            if (archive_suffix[0] == '\0' && guarantee_symlink_at(
-                archives_repo_links_dirfd,
-                symlink_path, len_symlink_path,
-                symlink_target)) {
-                goto close_checkouts_repo_links_dirfd;
-            } else {
-                strcpy(symlink_path_current, archive_suffix);
-                strcpy(symlink_target_current, archive_suffix);
-                if (guarantee_symlink_at(
-                    archives_repo_links_dirfd,
-                    symlink_path, wanted_object->len_name + len_archive_suffix,
-                    symlink_target)) {
-                    goto close_checkouts_repo_links_dirfd;
-                }
-            }
-        }
-    }
-
-    r = 0;
-
-close_checkouts_repo_links_dirfd:
-    if (checkout) {
-        if (close(checkouts_repo_links_dirfd)) {
-            pr_error_with_errno(
-                "Failed to close file descriptor for checkouts/repo/links dir");
-        }
-    }
-close_archives_repo_links_dirfd:
-    if (archive) {
-        if (close(archives_repo_links_dirfd)) {
-            pr_error_with_errno(
-                "Failed to close file descriptor for archives/repo/links dir");
-        }
-    }
-    return r;
-}
-
-
-struct wanted_object *config_get_last_wanted_object_of_last_repo(
-    struct config *const restrict config
-) {
-    struct repo *const restrict repo = get_last(config->repos);
-    return get_last(repo->wanted_objects);
-}
-
-struct wanted_object *config_get_last_wanted_object_of_type(
-    struct config *const restrict config,
-    enum yaml_wanted_type type
-) {
-    switch (type) {
-    case YAML_WANTED_UNKNOWN:
-        pr_error("Wanted type unknown\n");
-        return NULL;
-    case YAML_WANTED_GLOBAL_EMPTY:
-        return get_last(config->empty_wanted_objects);
-    case YAML_WANTED_GLOBAL_ALWAYS:
-        return get_last(config->always_wanted_objects);
-        break;
-    case YAML_WANTED_REPO:
-        return config_get_last_wanted_object_of_last_repo(config);
-    }
-    return NULL;
-}
-
-
-void print_config_repo_wanted(
-    struct repo const *const restrict repo) {
-    for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
-        struct wanted_object const *const restrict wanted_object
-            = repo->wanted_objects + i;
-        printf(
-            "|        - %s:\n"
-            "|            type: %d (%s)\n"
-            "|            archive: %s\n"
-            "|            checkout: %s\n",
-            wanted_object->name,
-            wanted_object->type,
-            wanted_type_strings[wanted_object->type],
-            wanted_object->archive ? "yes" : "no",
-            wanted_object->checkout ? "yes" : "no"
-        );
-        switch (wanted_object->type) {
-        case WANTED_TYPE_BRANCH:
-        case WANTED_TYPE_TAG:
-        case WANTED_TYPE_REFERENCE:
-        case WANTED_TYPE_HEAD:
-            if (wanted_object->commit_resolved) {
-                printf(
-                    "|            commit: %s\n",
-                    wanted_object->commit.hex_string);
-            }
-            __attribute__((fallthrough));
-        case WANTED_TYPE_COMMIT:
-            if (wanted_object->parsed_commit_id == (unsigned long) -1)
-                break;
-            struct parsed_commit *parsed_commit =
-                repo->parsed_commits + wanted_object->parsed_commit_id;
-            if (parsed_commit->submodules_count) {
-                printf(
-                    "|            submodules:\n");
-            }
-            for (unsigned long i = 0;
-                i < parsed_commit->submodules_count;
-                ++i) {
-                struct parsed_commit_submodule * parsed_commit_submodule =
-                    parsed_commit->submodules + i;
-                printf(
-                    "|              - path: %s\n"
-                    "|                url: %s\n"
-                    "|                repo_id: %lu\n"
-                    "|                commit: %s\n",
-                    parsed_commit_submodule->path,
-                    parsed_commit_submodule->url,
-                    parsed_commit_submodule->target_repo_id,
-                    parsed_commit_submodule->id_hex_string);
-            }
-            // break;
-        default:
-            break;
-        }
-    }
-
-}
-
-void print_config_repo(struct repo const *const restrict repo) {
-    printf(
-        "|  - %s%s:\n"
-        "|      hash: %016lx\n"
-        "|      dir: %s\n"
-        "|      sanitized: %s\n",
-        repo->url,
-        repo->added_from ? " (added from submodule)" : "",
-        repo->url_hash,
-        repo->dir_path,
-        repo->url_no_scheme_sanitized);
-    if (repo->wanted_objects_count) {
-        printf(
-        "|      wanted (%lu, %s):\n",
-            repo->wanted_objects_count,
-            repo->wanted_dynamic ? "dynamic" : "static");
-        print_config_repo_wanted(repo);
-    }
-}
-
-void print_config(struct config const *const restrict config) {
-    printf(
-        "| proxy: %s\n"
-        "| proxy_after: %hu\n"
-        "| dir_repos: %s\n"
-        "| dir_archives: %s\n"
-        "| dir_checkouts: %s\n",
-        config->proxy_url,
-        config->proxy_after,
-        config->dir_repos,
-        config->dir_archives,
-        config->dir_checkouts);
-    if (config->repos_count) {
-        printf("| repos (%lu): \n", config->repos_count);
-        for (unsigned long i = 0; i < config->repos_count; ++i) {
-            print_config_repo(config->repos + i);
-        }
-    }
-}
-
-
-
-int guarantee_symlink (
-    char const *const restrict symlink_path,
-    unsigned short const len_symlink_path,
-    char const *const restrict symlink_target
-) {
-    if (len_symlink_path >= PATH_MAX) {
-        pr_error("Symlink path too long\n");
-        return -1;
-    }
-    char path[PATH_MAX];
-    ssize_t len = readlink(symlink_path, path, PATH_MAX);
-    if (len < 0) {
-        switch (errno) {
-        case ENOENT:
-            break;
-        default:
-            pr_error_with_errno("Failed to read link at '%s'", symlink_path);
-            return -1;
-        }
-    } else {
-        path[len] = '\0';
-        if (strcmp(path, symlink_target)) {
-            pr_warn("Symlink at '%s' points to '%s' instead of '%s', "
-            "if you see this message for too many times, you've probably set "
-            "too many repos with same path but different schemes.\n",
-            symlink_path, path, symlink_target);
-            if (unlink(symlink_path) < 0) {
-                pr_error_with_errno("Faild to unlink '%s'", symlink_path);
-                return -1;
-            }
-        } else {
-            pr_debug("Symlink '%s' -> '%s' already existing\n",
-                symlink_path, symlink_target);
-            return 0;
-        }
-    }
-    if (symlink(symlink_target, symlink_path) < 0) {
-        switch (errno) {
-        case ENOENT:
-            break;
-        default:
-            pr_error_with_errno(
-                "Failed to create symlink '%s' -> '%s'",
-                symlink_path, symlink_target);
-            return -1;
-        }
-    } else {
-        pr_debug("Created symlink '%s' -> '%s'\n",
-            symlink_path, symlink_target);
-        return 0;
-    }
-    char symlink_path_dup[PATH_MAX];
-    memcpy(symlink_path_dup, symlink_path, len_symlink_path);
-    symlink_path_dup[len_symlink_path] = '\0';
-    unsigned short last_sep = 0;
-    for (unsigned short i = len_symlink_path; i > 0; --i) {
-        char *c = symlink_path_dup + i;
-        if (*c == '/') {
-            if (!last_sep) {
-                last_sep = i;
-            }
-            *c = '\0';
-            if (mkdir(symlink_path_dup, 0755)) {
-                if (errno != ENOENT) {
-                    pr_error_with_errno(
-                        "Failed to create folder '%s' as parent of symlink "
-                        "'%s' -> '%s'",
-                        symlink_path_dup, symlink_path, symlink_target);
-                    return -1;
-                }
-            } else {
-                for (unsigned short j = i; j < last_sep; ++j) {
-                    c = symlink_path_dup + j;
-                    if (*c == '\0') {
-                        *c = '/';
-                        if (mkdir(symlink_path_dup, 0755)) {
-                            pr_error_with_errno(
-                                "Failed to create folder '%s' as parent of "
-                                "symlink '%s' -> '%s'",
-                                symlink_path_dup, symlink_path, symlink_target);
-                            return -1;
-                        }
-                    }
-                }
-                break;
-            }
-        }
-    }
-    if (symlink(symlink_target, symlink_path) < 0) {
-        pr_error_with_errno(
-            "Failed to create symlink '%s' -> '%s'",
-            symlink_path, symlink_target);
-        return -1;
-    }
-    pr_debug("Created symlink '%s' -> '%s'\n",
-        symlink_path, symlink_target);
-    return 0;
-}
-
-int repo_guarantee_symlink(
-    struct repo *const restrict repo,
-    int const links_dirfd
-) {
-    if (repo->url_no_scheme_sanitized_parts * 3 + HASH_STRING_LEN + 1
-             >= PATH_MAX) {
-        pr_error("Link target would be too long");
-        return -1;
-    }
-    char symlink_target[PATH_MAX] = "";
-    char *symlink_target_current = symlink_target;
-    for (unsigned short i = 0; i < repo->url_no_scheme_sanitized_parts; ++i) {
-        symlink_target_current = stpcpy(symlink_target_current, "../");
-    }
-    symlink_target_current = stpcpy(symlink_target_current, repo->hash_name);
-    if (guarantee_symlink_at(links_dirfd, repo->url_no_scheme_sanitized,
-        repo->len_url_no_scheme_sanitized, symlink_target)) {
-        pr_error("Failed to guarantee a symlink at '%s' pointing to '%s'\n",
-            repo->url_no_scheme_sanitized, symlink_target);
-        return -1;
-    }
-    return 0;
-}
-
-int repo_finish_bare(
-    struct repo *const restrict repo,
-    char const *const restrict dir_repos,
-    unsigned short len_dir_repos
-) {
-    if (repo == NULL || dir_repos == NULL || len_dir_repos == 0 ||
-        repo->wanted_objects_count > 0) {
-        pr_error("Internal: invalid arguments\n");
-        return -1;
-    }
-    repo->len_dir_path = len_dir_repos + HASH_STRING_LEN + 1;
-    if (snprintf(repo->dir_path, repo->len_dir_path + 1, "%s/"HASH_FORMAT,
-        dir_repos, repo->url_hash) < 0) {
-        pr_error_with_errno(
-            "Failed to format dir path of repo '%s'\n",
-            repo->url);
-        return -1;
-    }
-    pr_debug("Repo '%s' will be stored at '%s'\n", repo->url, repo->dir_path);
-    return 0;
-}
-
-int work_directory_add_keep(
-    struct work_directory *const restrict work_directory,
-    char const *const restrict keep,
-    unsigned short const len_keep
-) {
-    if (work_directory_add_keep_no_init(work_directory)) {
-        pr_error("Failed to add keep to work directory\n");
-        return -1;
-    }
-    if (len_keep >= sizeof *work_directory->keeps) {
-        pr_error("Length of keep item '%s' too long\n", keep);
-        return -1;
-    }
-    char *keep_last = (char *)(get_last(work_directory->keeps));
-    memcpy(keep_last, keep, len_keep);
-    keep_last[len_keep] = '\0';
-    return 0;
-}
-
-static inline
-void work_directory_free(
-    struct work_directory *const restrict workdir
-) {
-    if (workdir->dirfd > 0) {
-        if (close(workdir->dirfd)) {
-            pr_error_with_errno("Failed to close dirfd for workdir");
-        }
-        workdir->dirfd = -1;
-    }
-    if (workdir->links_dirfd > 0) {
-        if (close(workdir->links_dirfd)) {
-            pr_error_with_errno("Failed to close links dirfd for workdir");
-        }
-        workdir->links_dirfd = -1;
-    }
-    if (workdir->keeps) {
-        free(workdir->keeps);
-        workdir->keeps = NULL;
-    }
-}
-
-static inline
-void work_directories_free(
-    struct work_directory *const restrict workdir_repos,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts
-) {
-    work_directory_free(workdir_repos);
-    work_directory_free(workdir_archives);
-    work_directory_free(workdir_checkouts);
-}
-
-static inline
-void keep_list_swap_item(
-    char (*keeps)[NAME_MAX + 1],
-    unsigned long const i,
-    unsigned long const j,
-    unsigned short const memlen // including terminating \0
-) {
-    if (i == j) return;
-    char buffer[NAME_MAX + 1];
-    // keeps[i] and keeps + i points to the same memory address
-    // Type: keeps[i]  : char[256], collapsing to char *
-    //       keeps + i : char (*)[256], won't collapse
-    // Use memcpy instead of strcpy to save strlen call
-    memcpy(buffer, keeps + i, memlen);
-    memcpy(keeps + i, keeps + j, memlen);
-    memcpy(keeps + j, buffer, memlen);
-}
-
-static inline
-unsigned long keep_list_partition(
-    char (*keeps)[NAME_MAX + 1],
-    unsigned long const low,
-    unsigned long const high,
-    unsigned short const memlen
-) {
-    char *pivot = keeps[high];
-    unsigned long i = low - 1;
-    for (unsigned long j = low; j < high; ++j) {
-        pr_debug("Comparing '%s' vs '%s'\n", keeps[j], pivot);
-        if (strcmp(keeps[j], pivot) < 0) {
-            keep_list_swap_item(keeps, ++i, j, memlen);
-        }
-    }
-    keep_list_swap_item(keeps, ++i, high, memlen);
-    return i;
-}
-
-void keep_list_quick_sort(
-    char (*keeps)[NAME_MAX + 1],
-    unsigned long const low,
-    unsigned long const high,
-    unsigned short const memlen
-) {
-    pr_debug("Soring %lu to %lu\n", low, high);
-    if (low < high) {
-        pr_debug("Into %lu to %lu\n", low, high);
-        unsigned long const pivot = keep_list_partition(
-                                keeps, low, high, memlen);
-         // if pivot is 0, that will make the new high (ulong) -1
-        if (pivot) keep_list_quick_sort(keeps, low, pivot - 1, memlen);
-        keep_list_quick_sort(keeps, pivot + 1, high, memlen);
-    }
-    pr_debug("Ended sorting %lu to %lu\n", low, high);
-}
-
-// 1 dir empty (now), 0 dir non empty, -1 error
-int remove_dead_symlinks_recursively_at(
-    int const dir_fd,
-    unsigned short const pass
-) {
-    if (pass == 0) return 0;
-    int dirfd_dup = dup(dir_fd);
-    if (dirfd_dup < 0) {
-        pr_error_with_errno("Failed to duplicate fd");
-        return -1;
-    }
-    DIR *dir_p = fdopendir(dirfd_dup);
-    if (dir_p == NULL) {
-        if (close(dirfd_dup)) {
-            pr_error_with_errno("Failed to close uplicated fd");
-        }
-        return -1;
-    }
-    struct dirent *entry;
-    errno = 0;
-    int r = -1;
-    for (unsigned short i = 0; i < pass; ++i) {
-        while ((entry = readdir(dir_p)) != NULL) {
-            switch (entry->d_name[0]) {
-            case '\0':
-                continue;
-            case '.':
-                switch (entry->d_name[1]) {
-                case '\0':
-                    continue;
-                case '.':
-                    if (entry->d_name[2] == '\0')
-                        continue;
-                    break;
-                }
-                break;
-            }
-            switch (entry->d_type) {
-            case DT_DIR: {
-                int const link_fd = openat(
-                    dir_fd, entry->d_name, O_RDONLY | O_DIRECTORY);
-                if (link_fd < 0) {
-                    pr_error_with_errno("Failed to open subdir '%s'", 
-                                        entry->d_name);
-                    r = -1;
-                    goto close_dir;
-                }
-                r = remove_dead_symlinks_recursively_at(link_fd, pass);
-                if (close(link_fd)) {
-                    pr_error_with_errno("Failed to close subdir '%s'",
-                        entry->d_name);
-                    r = -1;
-                }
-                if (r < 0) {
-                    pr_error(
-                        "Failed to remove dead symlinks recursively at '%s'\n",
-                                entry->d_name);
-                    r = -1;
-                    goto close_dir;
-                }
-                if (r > 0) {
-                    if (unlinkat(dir_fd, entry->d_name, AT_REMOVEDIR)) {
-                        pr_error_with_errno(
-                            "Failed to remove empty folder '%s'",
-                                entry->d_name);
-                        r = -1;
-                        goto close_dir;
-                    }
-                }
-                break;
-            }
-            case DT_LNK: {
-                char path[PATH_MAX];
-                ssize_t len_path = readlinkat(
-                        dir_fd, entry->d_name, path, PATH_MAX);
-                if (len_path < 0) {
-                    pr_error_with_errno(
-                        "Failed to readlink '%s'", entry->d_name);
-                    r = -1;
-                    goto close_dir;
-                }
-                path[len_path] = '\0';
-                struct stat stat_buffer;
-                if (fstatat(dir_fd, path, &stat_buffer, 
-                    AT_SYMLINK_NOFOLLOW) == 0) break;
-                errno = 0;
-                if (unlinkat(dir_fd, entry->d_name, 0)) {
-                    pr_error_with_errno(
-                        "Failed to remove dead link '%s'", path);
-                    r = -1;
-                    goto close_dir;
-                }
-                pr_debug("Removed dead link '%s'\n", path);
-                break;
-            }
-            default: continue;
-            }
-        }
-        if (errno) {
-            pr_error_with_errno("Failed to read dir");
-            r = -1;
-            goto close_dir;
-        }
-        rewinddir(dir_p);
-    }
-    errno = 0;
-    unsigned short entries_count = 0;
-    while ((entry = readdir(dir_p)) != NULL) {
-        if (++entries_count > 2) break;
-    }
-    if (entries_count < 2) {
-        pr_error("Directory entry count smaller than 2, which is impossible\n");
-        r = -1;
-        goto close_dir;
-    }
-    if (entries_count == 2) r = 1;
-    else r = 0;
-close_dir:
-    if (closedir(dir_p)) {
-        pr_error_with_errno("Failed to close dir");
-    }
-    return r;
-}
-
-int work_directory_clean(
-    struct work_directory *const restrict workdir,
-    unsigned short clean_links_pass,
-    unsigned short const keep_memlen // including the terminating \0
-) {
-    pr_info("Cleaning '%s'\n", workdir->path);
-    int fd_dup = dup(workdir->dirfd);
-    if (fd_dup < 0) {
-        pr_error_with_errno("Failed to duplicate fd for '%s'", workdir->path);
-        return -1;
-    }
-    DIR *dir_p = fdopendir(fd_dup);
-    if (dir_p == NULL) {
-        pr_error("Failed to opendir '%s'\n", workdir->path);
-        if (close(fd_dup)) {
-            pr_error_with_errno("Failed to close duplicated fd for '%s'",
-                                workdir->path);
-        }
-        return -1;
-    }
-    // Quick sort the keeps list
-#ifdef DEBUGGING
-    for (unsigned long i = 0; i < workdir->keeps_count; ++i) {
-        pr_debug("[Before] Keeping '%s'\n", workdir->keeps[i]);
-    }
-#endif
-    keep_list_quick_sort(workdir->keeps, 0, workdir->keeps_count - 1,
-        keep_memlen > NAME_MAX + 1 ? NAME_MAX + 1 : keep_memlen);
-#ifdef DEBUGGING
-    for (unsigned long i = 0; i < workdir->keeps_count; ++i) {
-        pr_debug("[After] Keeping '%s'\n", workdir->keeps[i]);
-    }
-#endif
-    // Iterate over the folder to remove things not in kept list
-    // unsigned long keeps_count = workdir->keeps_count;
-    struct dirent *entry;
-    errno = 0;
-    int r = -1;
-    // Condition at outer level to reduce comparison
-    if (workdir->keeps_count) {
-        while ((entry = readdir(dir_p)) != NULL) {
-            switch (entry->d_name[0]) {
-            case '\0':
-                continue;
-            case '.':
-                switch (entry->d_name[1]) {
-                case '\0':
-                    continue;
-                case '.':
-                    if (entry->d_name[2] == '\0')
-                        continue;
-                    break;
-                }
-                break;
-            }
-            switch (entry->d_type) {
-            case DT_REG:
-            case DT_DIR:
-            case DT_LNK:
-                break;
-            default: continue;
-            }
-            bool keep = false;
-            unsigned long low = 0;
-            unsigned long high = workdir->keeps_count - 1;
-            while (low <= high) {
-                unsigned long mid = (low + high) / 2;
-                pr_debug("Low @ %lu: %s, High @ %lu: %s, Mid @ %lu: %s"
-                "\n", low, workdir->keeps[low], high, workdir->keeps[high], mid,
-                workdir->keeps[mid]);
-                r = strcmp(entry->d_name, workdir->keeps[mid]);
-                if (r > 0) {
-                    low = mid + 1;
-                } else if (r < 0) {
-                    if (mid) high = mid - 1;
-                    else break;
-                } else {
-                    keep = true;
-                    break;
-                }
-            }
-            if (!keep && ensure_path_non_exist_at(
-                    workdir->dirfd, entry->d_name)) {
-                pr_error("Failed to remove '%s' which is not needed under work "
-                    "folder'%s'\n", entry->d_name, workdir->path);
-                goto close_dir;
-            }
-        }
-    } else {
-        while ((entry = readdir(dir_p)) != NULL) {
-            switch (entry->d_name[0]) {
-            case '\0':
-                continue;
-            case '.':
-                switch (entry->d_name[1]) {
-                case '\0':
-                    continue;
-                case '.':
-                    if (entry->d_name[2] == '\0')
-                        continue;
-                    break;
-                }
-                break;
-            }
-            switch (entry->d_type) {
-            case DT_REG:
-            case DT_DIR:
-            case DT_LNK:
-                break;
-            default: continue;
-            }
-            if (ensure_path_non_exist_at(workdir->dirfd, entry->d_name)) {
-                pr_error("Failed to remove '%s' which is not needed under work "
-                    "folder'%s'\n", entry->d_name, workdir->path);
-                goto close_dir;
-            }
-        }
-    }
-    if (errno) {
-        pr_error_with_errno("Failed to read dir\n");
-        goto close_dir;
-    }
-    r = 0;
-close_dir:
-    if (closedir(dir_p)) {
-        pr_error_with_errno("Failed to close dir");
-    }
-    if (clean_links_pass && 
-            remove_dead_symlinks_recursively_at(
-                workdir->links_dirfd, clean_links_pass) < 0)  {
-        pr_error("Failed to remove dead links under '%s'\n", workdir->path);
-    }
-    return r;
-}
-
-// 0 existing and opened, 1 does not exist but created, -1 error
-int repo_open_or_init_bare(
-    struct repo *const restrict repo
-) {
-    if (repo == NULL || repo->url[0] == '\0' ||
-        repo->dir_path[0] == '\0') {
-        pr_error("Internal: invalid argument\n");
-        return -1;
-    }
-    if (repo->repository != NULL) {
-        pr_error("Repository already opened for repo '%s'\n", repo->url);
-        return -1;
-    }
-    int r = git_repository_open_bare(&repo->repository, repo->dir_path);
-    switch (r) {
-    case GIT_OK:
-        pr_debug(
-            "Opened existing bare repository '%s' for repo '%s'\n",
-            repo->dir_path, repo->url);
-        return 0;
-    case GIT_ENOTFOUND:
-        pr_warn(
-            "Dir '%s' for repo '%s' does not exist yet, trying to create it\n",
-            repo->dir_path, repo->url);
-        r = git_repository_init(&repo->repository, repo->dir_path, 1);
-        if (r < 0) {
-            pr_error(
-                "Failed to initialize a bare repostitory at '%s' "
-                "for repo '%s', "
-                "libgit return %d\n",
-                repo->dir_path, repo->url, r);
-            return -1;
-        } else {
-            git_remote *remote;
-            r = git_remote_create_with_fetchspec(
-                &remote, repo->repository, MIRROR_REMOTE,
-                repo->url, MIRROR_FETCHSPEC);
-            if (r < 0) {
-                pr_error(
-                    "Failed to create remote '"MIRROR_REMOTE"' "
-                    "with fetch spec '"MIRROR_FETCHSPEC"' for url '%s', "
-                    "libgit returns %d\n",
-                    repo->url, r);
-                git_repository_free(repo->repository);
-                return -1;
-            }
-            git_config *config;
-            r = git_repository_config(&config, repo->repository);
-            if (r < 0) {
-                pr_error(
-                    "Failed to get config for repo for url '%s', "
-                    "libgit return %d\n", repo->url, r);
-                git_remote_free(remote);
-                git_repository_free(repo->repository);
-                return -1;
-            }
-            r = git_config_set_bool(config, MIRROR_CONFIG, true);
-            if (r < 0) {
-                pr_error(
-                    "Failed to set config '"MIRROR_CONFIG"' to true for "
-                    "repo for url '%s, libgit return %d\n", repo->url, r);
-                git_config_free(config);
-                git_remote_free(remote);
-                git_repository_free(repo->repository);
-                return -1;
-            }
-            git_config_free(config);
-            git_remote_free(remote);
-            return 1;
-        }
-    default:
-        pr_error(
-            "Failed to open bare repository at '%s' for repo '%s' "
-            "and cannot fix libgit return %d\n", repo->dir_path, repo->url, r);
-        return -1;
-    }
-
-    return 0;
-}
-
-char const *mirror_refspecs_strings[] = {
-    MIRROR_FETCHSPEC,
-    NULL
-};
-
-static git_strarray const mirror_refspecs = {
-    .count = 1, 
-    .strings = (char **)mirror_refspecs_strings
-};
-
-int repo_update(
-    struct repo *const restrict repo,
-    git_fetch_options const *const restrict fetch_options,
-    unsigned short const proxy_after
-) {
-    pr_info("Updating: '%s' ...\n", repo->url);
-    git_remote *remote;
-    int r = git_remote_create_anonymous(&remote, repo->repository, repo->url);
-    if (r) {
-        pr_error("Failed to create anonymous remote for '%s', "
-            "libgit return %d\n", repo->url, r);
-        return -1;
-    }
-    pr_debug("Beginning fetching from '%s'\n", repo->url);
-    git_fetch_options fetch_options_dup = *fetch_options;
-    if (fetch_options->callbacks.sideband_progress ||
-        fetch_options->callbacks.transfer_progress) {
-        fetch_options_dup.callbacks.payload = repo;
-    }
-    fetch_options_dup.proxy_opts.type = GIT_PROXY_NONE;
-    unsigned short max_try = proxy_after + 3;
-    git_error const *error = NULL;
-    for (unsigned short try = 0; try < max_try; ++try) {
-        if (try == proxy_after) {
-            if (try)
-                pr_warn(
-                    "Failed to fetch from '%s' for %hu times, use proxy\n",
-                    repo->url, proxy_after);
-            fetch_options_dup.proxy_opts.type = GIT_PROXY_SPECIFIED;
-        }
-        r = git_remote_connect(remote, GIT_DIRECTION_FETCH, 
-            &fetch_options_dup.callbacks, &fetch_options_dup.proxy_opts, NULL);
-        if (r) {
-            error = git_error_last();
-            pr_error("Failed to connect to '%s', libgit return %d: %d (%s)\n",
-                repo->url, r, error->klass, error->message);
-            continue;
-        }
-        r = git_remote_download(remote, &mirror_refspecs, &fetch_options_dup);
-        if (r) {
-            error = git_error_last();
-            pr_error("Failed to download from remote '%s', libgit retutn %d: "
-            "%d (%s)\n", repo->url, r, error->klass, error->message);
-            r = git_remote_disconnect(remote);
-            if (r) {
-                error = git_error_last();
-                pr_error("Failed to disconnect from remote '%s' after failed "
-                "download, libgit return %d: %d (%s)\n", 
-                    repo->url, r, error->klass, error->message);
-            } else {
-                r = -1;
-            }
-            continue;
-        }
-        r = git_remote_disconnect(remote);
-        if (r) {
-            error = git_error_last();
-            pr_error("Failed to disconnect from remote '%s', "
-                    "libgit return %d: %d (%s)\n", 
-                    repo->url, r, error->klass, error->message);
-            continue;
-        }
-        r = git_remote_update_tips(remote, &fetch_options_dup.callbacks, 0, 
-                            GIT_REMOTE_DOWNLOAD_TAGS_AUTO, NULL);
-        if (r) {
-            error = git_error_last();
-            pr_error("Failed to update tips for remote '%s', "
-                "libgit return %d: %d (%s)\n", 
-                    repo->url, r, error->klass, error->message);
-            continue;
-        }
-        r = git_remote_prune(remote, &fetch_options_dup.callbacks);
-        if (r) {
-            pr_error("Failed to prune remote '%s', libgit return %d: %d (%s)\n",
-                    repo->url, r, error->klass, error->message);
-            continue;
-        }
-        break;
-    }
-    if (r) {
-        pr_error("Failed to update repo '%s' after %hu tries, "
-                "considered failure\n", repo->url, max_try);
-        r = -1;
-        goto free_remote;
-    }
-    git_remote_head const **heads;
-    size_t heads_count;
-    if (git_remote_ls(&heads, &heads_count, remote)) {
-        pr_error("Failed to ls remote\n");
-        r = -1;
-        goto free_remote;
-    } else {
-        for (size_t i = 0; i < heads_count; ++i) {
-            git_remote_head const *const head = heads[i];
-            if (!strcmp(head->name, "HEAD")) {
-                if (head->symref_target == NULL) {
-                    pr_warn("Remote HEAD points to no branch\n");
-                    break;
-                }
-                pr_debug("Remote HEAD points to '%s' now\n",
-                        head->symref_target);
-                if ((r = git_repository_set_head(
-                        repo->repository, head->symref_target))) {
-                    pr_error("Failed to update repo '%s' HEAD to '%s'\n",
-                        repo->url, head->symref_target);
-                    r = -1;
-                    goto free_remote;
-                }
-                pr_debug("Set local HEAD of repo '%s' to '%s'\n",
-                    repo->url, head->symref_target);
-                break;
-            }
-        }
-    }
-
-    pr_info("Updated repo '%s'\n", repo->url);
-    repo->updated = true;
-    r = 0;
-free_remote:
-    git_remote_free(remote);
-    return r;
-}
-
-void *repo_update_thread(void *arg) {
-    struct repo_update_thread_arg *private_arg =
-        (struct repo_update_thread_arg *)arg;
-    pr_debug("Thread called for repo '%s'\n", private_arg->repo->url);
-    return (void *)(long)repo_update(private_arg->repo,
-        &private_arg->fetch_options, private_arg->proxy_after);
-}
-
-// Will also create symlink
-int repo_prepare_open_or_create_if_needed(
-    struct repo *const restrict repo,
-    int const links_dirfd,
-    git_fetch_options *const restrict fetch_options,
-    unsigned short const proxy_after,
-    bool const delay_update
-) {
-    if (repo->repository != NULL) return 0;
-    if (repo_guarantee_symlink(repo, links_dirfd)) {
-        pr_error("Failed to create symlink\n");
-        return -1;
-    }
-    switch (repo_open_or_init_bare(repo)) {
-    case -1:
-        pr_error("Failed to open or init bare repo for '%s'\n", repo->url);
-        return -1;
-    case 0:
-        break;
-    case 1:
-        pr_warn(
-            "Repo '%s' just created locally, need to update\n", repo->url);
-        if (delay_update) repo->wanted_dynamic = true;
-        else if (repo_update(repo, fetch_options, proxy_after)) {
-            pr_error(
-                "Failed to update freshly created repo '%s'\n", repo->url);
-            return -1;
-        }
-        break;
-    }
-    return 0;
-}
-
-void parsed_commit_free(
-    struct parsed_commit *const restrict parsed_commit
-) {
-    if (parsed_commit->submodules) {
-        free(parsed_commit->submodules);
-    }
-    if (parsed_commit->commit) {
-        git_commit_free(parsed_commit->commit);
-    }
-    *parsed_commit = PARSED_COMMIT_INIT;
-}
-
-void repo_free(
-    struct repo *const restrict repo
-) {
-    if (repo->parsed_commits) {
-        for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
-            parsed_commit_free(repo->parsed_commits + i);
-        }
-        free (repo->parsed_commits);
-    }
-    if (repo->wanted_objects) {
-        free (repo->wanted_objects);
-    }
-    if (repo->repository) {
-        git_repository_free(repo->repository);
-    }
-    *repo = REPO_INIT;
-}
-
-void config_free(
-    struct config *const restrict config
-) {
-    if (config->repos) {
-        for (unsigned long i = 0; i < config->repos_count; ++i) {
-            repo_free(config->repos + i);
-        }
-        free (config->repos);
-    }
-    if (config->always_wanted_objects) {
-        free(config->always_wanted_objects);
-    }
-    if (config->empty_wanted_objects) {
-        free(config->empty_wanted_objects);
-    }
-    *config = CONFIG_INIT;
-}
-
-int parsed_commit_add_submodule_and_init_with_path_and_url(
-    struct parsed_commit *const restrict parsed_commit,
-    char const *const restrict path,
-    unsigned short len_path,
-    char const *const restrict url,
-    unsigned short len_url
-) {
-    if (parsed_commit_add_submodule_no_init(parsed_commit)) {
-        pr_error("Failed to add submodule to commit\n");
-        return -1;
-    }
-    struct parsed_commit_submodule *const restrict submodule =
-        parsed_commit->submodules + parsed_commit->submodules_count -1;
-    *submodule = PARSED_COMMIT_SUBMODULE_INIT;
-    memcpy(submodule->path, path, len_path + 1);
-    memcpy(submodule->url, url, len_url + 1);
-    submodule->len_path = len_path;
-    submodule->len_url = len_url;
-    submodule->url_hash = hash_calculate(submodule->url, submodule->len_url);
-    return 0;
-}
-
-// May re-allocate the config->repos array, must re-assign repo after calling
-
-int parsed_commit_add_submodule_from_commit_tree(
-    struct parsed_commit *const restrict parsed_commit,
-    git_tree const *const restrict tree,
-    char const *const restrict path,
-    unsigned short const len_path,
-    char const *const restrict url,
-    unsigned short const len_url
-) {
-    for (unsigned long i = 0; i < parsed_commit->submodules_count; ++i) {
-        if (!strcmp(parsed_commit->submodules[i].path, path)) {
-            pr_warn(
-                "Already defined a submodule at path '%s' for commit %s\n",
-                path, parsed_commit->id_hex_string);
-            return -1;
-        }
-    }
-    if (parsed_commit_add_submodule_and_init_with_path_and_url(
-        parsed_commit, path, len_path, url, len_url)) {
-        pr_error("Failed to init submodule for commit %s with path "
-                "'%s' and url '%s'\n",
-                parsed_commit->id_hex_string, path, url);
-        return -1;
-    }
-    struct parsed_commit_submodule *const restrict submodule =
-        get_last(parsed_commit->submodules);
-    git_tree_entry *entry;
-    if (git_tree_entry_bypath(&entry, tree, path)) {
-        pr_error("Path '%s' of submodule does not exist in tree\n", path);
-        return -1;
-    }
-    int r = -1;
-    if (git_tree_entry_type(entry) != GIT_OBJECT_COMMIT) {
-        pr_error("Object at path '%s' in tree is not a commit\n", path);
-        goto free_entry;
-    }
-    submodule->id = *git_tree_entry_id(entry);
-    if (git_oid_tostr(
-            submodule->id_hex_string,
-            sizeof submodule->id_hex_string,
-            &submodule->id
-        )[0] == '\0') {
-        pr_error("Failed to format commit id into hex string\n");
-        goto free_entry;
-    }
-    pr_info(
-        "Submodule needed: '%s' <= '%s': %s\n",
-        path, url, submodule->id_hex_string);
-    r = 0;
-free_entry:
-    git_tree_entry_free(entry);
-    return r;
-}
-
-// May re-allocate repo->parsed_commits
-int repo_add_parsed_commit(
-    struct repo *const restrict repo,
-    git_oid const *const restrict oid
-) {
-    if (repo_add_parsed_commit_no_init(repo)) {
-        pr_error("Failed to add parsed commit without init\n");
-        return -1;
-    }
-    struct parsed_commit *const restrict parsed_commit =
-        get_last(repo->parsed_commits);
-    *parsed_commit = PARSED_COMMIT_INIT;
-    parsed_commit->id = *oid;
-    if (git_oid_tostr(
-            parsed_commit->id_hex_string,
-            sizeof parsed_commit->id_hex_string,
-            &parsed_commit->id
-        )[0] == '\0') {
-        pr_error("Failed to format commit id into hex string\n");
-        return -1;
-    }
-    return 0;
-}
-
-// May re-allocate config->repos
-int repo_parse_commit_submodule_in_tree(
-    struct config *const restrict config,
-    unsigned long const repo_id,
-    unsigned long const commit_id,
-    git_tree const *const restrict tree,
-    char const *const restrict path,
-    unsigned short const len_path,
-    char const *const restrict url,
-    unsigned short const len_url
-) {
-    struct repo const *repo = config->repos + repo_id;
-    struct parsed_commit *parsed_commit =
-        repo->parsed_commits + commit_id;
-    if (parsed_commit_add_submodule_from_commit_tree(
-        parsed_commit, tree, path, len_path, url, len_url)) {
-        pr_error("Failed to add submodule from commit tree\n");
-        return -1;
-    }
-    struct parsed_commit_submodule *const restrict submodule =
-        get_last(parsed_commit->submodules);
-
-    for (unsigned long i = 0; i < config->repos_count; ++i) {
-        struct repo *const repo_cmp = config->repos + i;
-        if (repo_cmp->url_hash == submodule->url_hash) {
-            submodule->target_repo_id = i;
-            for (unsigned long j = 0; j < repo_cmp->parsed_commits_count; ++j) {
-                if (git_oid_cmp(
-                    &submodule->id,
-                    &repo_cmp->parsed_commits[j].id)) continue;
-                pr_debug(
-                    "Already added commit %s to repo '%s', skipped\n",
-                    submodule->id_hex_string, repo_cmp->url);
-                submodule->target_commit_id = j;
-                return 0;
-            }
-            break;
-        }
-    }
-    if (submodule->target_repo_id == (unsigned long) -1) {
-        pr_warn("Repo '%s' was not seen before, need to add it\n", url);
-        if (config_add_repo_and_init_with_url(config, url, len_url,
-            REPO_ADDED_FROM_SUBMODULE)) {
-            pr_error("Failed to add repo '%s'\n", url);
-            return -1;
-        }
-        repo = config->repos + repo_id;
-        submodule->target_repo_id = config->repos_count - 1;
-        if (repo_finish_bare(
-            get_last(config->repos), config->dir_repos, config->len_dir_repos)){
-            pr_error("Failed to finish bare repo\n");
-            return -1;
-        }
-    }
-    if (submodule->target_repo_id == (unsigned long) -1) {
-        pr_error("Submodule '%s' with url '%s' for commmit %s of repo '%s' "
-        "still missing target repo id, refuse to continue\n",
-            path, url, submodule->id_hex_string, repo->url);
-        return -1;
-    }
-    if (submodule->target_commit_id != (unsigned long) -1) return 0;
-    struct repo *repo_target =
-        config->repos + submodule->target_repo_id;
-    // The repo is either completely new, or we found it but not found commit
-    // There is no need to check for commit duplication here
-    int r = repo_add_parsed_commit(repo_target, &submodule->id);
-    // The above function may re-allocate repo_target, the re-assign here
-    // is in case repo == repo_target
-    parsed_commit = repo->parsed_commits + commit_id;
-    if (r) {
-        pr_error("Failed to add parsed commit to repo\n");
-        return -1;
-    }
-    submodule->target_commit_id = repo_target->parsed_commits_count - 1;
-    if (submodule->target_repo_id >= repo_id) {
-        pr_debug("Added commit %s as wanted to repo '%s', will handle "
-            "that repo later\n", submodule->id_hex_string, repo_target->url);
-        return 0;
-    }
-    pr_warn("Added commit %s as wanted to parsaed repo '%s', need to go back "
-            "to handle that specific commit\n",
-            submodule->id_hex_string, repo_target->url);
-    r = repo_ensure_parsed_commit(config, submodule->target_repo_id,
-                                    submodule->target_commit_id);
-    repo = config->repos + repo_id;
-    parsed_commit = repo->parsed_commits + commit_id;
-    if (r) {
-        pr_error("Failed to ensure repo '%s' commit %s 's submodule at '%s' "
-                "from '%s' commit %s in target repo\n",
-                repo->url, parsed_commit->id_hex_string, path, url,
-                submodule->id_hex_string);
-        return 1;
-    };
-    return 0;
-}
-
-
-// May re-allocate the config->repos array, must re-assign repo after calling
-int repo_parse_commit_blob_gitmodules(
-    struct config *const restrict config,
-    unsigned long const repo_id,
-    unsigned long const commit_id,
-    git_tree const *const tree,
-    git_blob *const restrict blob_gitmodules
-) {
-    char const *blob_gitmodules_ro_buffer =
-        git_blob_rawcontent(blob_gitmodules);
-    if (blob_gitmodules_ro_buffer == NULL) {
-        pr_error("Failed to get a ro buffer for gitmodules\n");
-        return -1;
-    }
-    git_object_size_t blob_gitmodules_size =
-        git_blob_rawsize(blob_gitmodules);
-    if (blob_gitmodules_size == 0) {
-        pr_error("Tree entry .gitmodules blob size is 0\n");
-        return -1;
-    }
-    char    submodule_name[NAME_MAX] = "",
-            submodule_path[PATH_MAX] = "",
-            submodule_url[PATH_MAX] = "";
-    unsigned short  len_submodule_name = 0,
-                    len_submodule_path = 0,
-                    len_submodule_url = 0;
-    for (git_object_size_t id_start = 0; id_start < blob_gitmodules_size; ) {
-        switch (blob_gitmodules_ro_buffer[id_start]) {
-        case '\0':
-        case '\n':
-        case '\r':
-        case '\b':
-            ++id_start;
-            continue;
-        }
-        unsigned short len_line = 0;
-        git_object_size_t id_end = id_start + 1;
-        for (; id_end < blob_gitmodules_size && len_line == 0;) {
-            switch (blob_gitmodules_ro_buffer[id_end]) {
-            case '\0':
-            case '\n':
-                len_line = id_end - id_start;
-                break;
-            default:
-                ++id_end;
-                break;
-            }
-        }
-        if (len_line > 7) { // The shortest, "\turl = "
-            char const *line = blob_gitmodules_ro_buffer + id_start;
-            char const *line_end = blob_gitmodules_ro_buffer + id_end;
-            switch (blob_gitmodules_ro_buffer[id_start]) {
-            case '[':
-                if (!strncmp(line + 1, "submodule \"", 11)) {
-                    if (submodule_name[0]) {
-                        pr_error(
-                            "Incomplete submodule definition for '%s'\n",
-                            submodule_name);
-                        return -1;
-                    }
-                    char const *submodule_name_start = line + 12;
-                    char const *right_quote = submodule_name_start;
-                    for (;
-                        *right_quote != '"' && right_quote < line_end;
-                        ++right_quote);
-                    len_submodule_name = right_quote - submodule_name_start;
-                    strncpy(
-                        submodule_name,
-                        submodule_name_start,
-                        len_submodule_name);
-                    submodule_name[len_submodule_name] = '\0';
-                }
-                break;
-            case '\t':
-                char const *value = NULL;
-                char *submodule_value = NULL;
-                unsigned short *len_submodule_value = NULL;
-                if (!strncmp(line + 1, "path = ", 7)) {
-                    value = line + 8;
-                    submodule_value = submodule_path;
-                    len_submodule_value = &len_submodule_path;
-                } else if (!strncmp(line + 1, "url = ", 6)) {
-                    value = line + 7;
-                    submodule_value = submodule_url;
-                    len_submodule_value = &len_submodule_url;
-                }
-                if (value) {
-                    if (submodule_name[0] == '\0') {
-                        pr_error(
-                            "Submodule definition begins before "
-                            "the submodule name\n");
-                        return -1;
-                    }
-                    if (submodule_value[0] != '\0') {
-                        pr_error("Duplicated value definition for "
-                            "submodule '%s'\n", submodule_name);
-                        return -1;
-                    }
-                    *len_submodule_value = line_end - value;
-                    strncpy(submodule_value, value, *len_submodule_value);
-                    submodule_value[*len_submodule_value] = '\0';
-                    if (submodule_path[0] != '\0' &&
-                        submodule_url[0] != '\0') {
-                        pr_debug(
-                            "Submodule '%s', path '%s', url '%s'\n",
-                            submodule_name, submodule_path, submodule_url);
-                        if (repo_parse_commit_submodule_in_tree(
-                            config, repo_id, commit_id, tree,
-                                    submodule_path, len_submodule_path,
-                                    submodule_url, len_submodule_url)) {
-                            pr_error(
-                                "Failed to recursively clone or update "
-                                "submodule '%s' (url '%s')\n",
-                                submodule_name, submodule_url);
-                            return -1;
-                        }
-                        submodule_name[0] = '\0';
-                        submodule_path[0] = '\0';
-                        submodule_url[0] = '\0';
-                    }
-                }
-                break;
-            default:
-                break;
-            }
-        }
-        id_start = id_end + 1;
-    }
-    return 0;
-}
-
-// May re-allocate the config->repos array, must re-assign repo after calling
-int repo_parse_commit_tree_entry_gitmodules(
-    struct config *const restrict config,
-    unsigned long const repo_id,
-    unsigned long const commit_id,
-    git_tree const *const tree,
-    git_tree_entry const *const entry_gitmodules
-) {
-    struct repo const *restrict repo = config->repos + repo_id;
-    struct parsed_commit *restrict parsed_commit =
-        repo->parsed_commits + commit_id;
-    if (git_tree_entry_type(entry_gitmodules) != GIT_OBJECT_BLOB) {
-        pr_error(
-            "Tree entry .gitmodules in commit %s for repo '%s' "
-            "is not a blob\n",
-            parsed_commit->id_hex_string, repo->url);
-        return -1;
-    }
-    git_object *object_gitmodules;
-    int r = git_tree_entry_to_object(
-        &object_gitmodules, repo->repository, entry_gitmodules);
-    if (r) {
-        pr_error("Failed to convert tree entry for gitmodules to object\n");
-        return -1;
-    }
-    git_blob *blob_gitmodules = (git_blob *)object_gitmodules;
-    r = repo_parse_commit_blob_gitmodules(
-        config, repo_id, commit_id, tree, blob_gitmodules);
-    repo = config->repos + repo_id;
-    parsed_commit = repo->parsed_commits + commit_id;
-    if (r) {
-        pr_error("Failed to parse gitmodules blob\n");
-        r = -1;
-        goto free_object;
-    }
-    r = 0;
-free_object:
-    free(object_gitmodules);
-    return r;
-}
-
-// May re-allocate repo->parsed_commits
-int repo_parse_wanted_commit(
-    struct repo *const restrict repo,
-    struct wanted_commit *const restrict wanted_commit
-) {
-    for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
-        if (!git_oid_cmp(&repo->parsed_commits[i].id, &wanted_commit->oid)) {
-            wanted_commit->parsed_commit_id = i;
-            goto sync_export_setting;
-        }
-    }
-    if (repo_add_parsed_commit(repo, &wanted_commit->oid)) {
-        pr_error("Failed to add parsed commit\n");
-        return -1;
-    }
-    wanted_commit->parsed_commit_id = repo->parsed_commits_count - 1;
-sync_export_setting:
-    struct parsed_commit *parsed_commit =
-        repo->parsed_commits + wanted_commit->parsed_commit_id;
-    if (wanted_commit->archive) parsed_commit->archive = true;
-    if (wanted_commit->checkout) parsed_commit->checkout = true;
-    return 0;
-}
-
-// May re-allocate repo->parsed_commits
-int repo_parse_wanted_reference_common(
-    struct repo *const restrict repo,
-    struct wanted_reference *const restrict wanted_reference,
-    git_reference *reference,
-    git_fetch_options *const restrict fetch_options,
-    unsigned short const proxy_after
-) {
-    git_object *object;
-    int r;
-    if ((r = git_reference_peel(&object, reference, GIT_OBJECT_COMMIT))) {
-        if (repo->updated) {
-            pr_error(
-                "Failed to peel reference '%s' into a commit object, "
-                "libgit return %d\n",
-                wanted_reference->name, r);
-#ifdef ALL_REFERENCES_MUST_BE_RESOLVED
-            return -1;
-#else
-            return 0;
-#endif
-        }
-        pr_warn("Failed to peel reference '%s' into a commit object, "
-                "libgit return %d, but repo not updated yet, update to retry\n",
-                wanted_reference->name, r);
-        if (repo_update(repo, fetch_options, proxy_after)) {
-            pr_error("Failed to update\n");
-            return -1;
-        }
-        if ((r = git_reference_peel(&object, reference, GIT_OBJECT_COMMIT))) {
-            pr_error("Failed to peel reference '%s' into commit object even "
-            "after updating, libgit return %d\n", wanted_reference->name, r);
-            return -1;
-        }
-    }
-    git_commit *commit = (git_commit *)object;
-    wanted_reference->commit_resolved = true;
-    wanted_reference->commit.oid = *git_commit_id(commit);
-    if (git_oid_tostr(
-            wanted_reference->commit.hex_string,
-            sizeof wanted_reference->commit.hex_string,
-            &wanted_reference->commit.oid
-        )[0] == '\0') {
-        pr_error("Failed to format git oid hex string\n");
-        git_object_free(object);
-        return -1;
-    }
-    git_object_free(object);
-    pr_info("Reference resolved: '%s': '%s' => %s\n",
-        repo->url, wanted_reference->name,
-        wanted_reference->commit.hex_string);
-    return repo_parse_wanted_commit(repo,
-                                (struct wanted_commit *)wanted_reference);
-}
-
-void repo_parse_wanted_head_explain_libgit_return(int const r) {
-    switch (r) {
-    case GIT_EUNBORNBRANCH:
-        pr_error("Failed to find HEAD, HEAD points to a non-"
-            "existing branch\n");
-        break;
-    case GIT_ENOTFOUND:
-        pr_error("Failed to find HEAD, HEAD is missing\n");
-        break;
-    default:
-        pr_error("Failed to find HEAD, unhandled libgit return %d\n", r);
-        break;
-    }
-}
-
-// May re-allocate repo->parsed_commits
-int repo_parse_wanted_head(
-    struct repo *const restrict repo,
-    struct wanted_reference *const restrict wanted_head,
-    git_fetch_options *const restrict fetch_options,
-    unsigned short const proxy_after
-) {
-    git_reference *head;
-    int r = git_repository_head(&head, repo->repository);
-    if (r) {
-        repo_parse_wanted_head_explain_libgit_return(r);
-        if (repo->updated) {
-            pr_error("Failed to find HEAD\n");
-            return -1;
-        }
-        pr_warn("Failed to find HEAD, but repo not updated yet, "
-                "update to retry");
-        if (repo_update(repo, fetch_options, proxy_after)) {
-            pr_error("Failed to update\n");
-            return -1;
-        }
-        if ((r = git_repository_head(&head, repo->repository))) {
-            repo_parse_wanted_head_explain_libgit_return(r);
-            pr_error("Still failed to find HEAD after updating\n");
-            return -1;
-        }
-    }
-    r = repo_parse_wanted_reference_common(
-        repo, wanted_head, head, fetch_options, proxy_after);
-    git_reference_free(head);
-    return r;
-}
-
-void repo_parse_wanted_branch_explain_libgit_return(
-    int const r,
-    char const *const restrict branch,
-    char const *const restrict repo
-) {
-    switch (r) {
-    case GIT_ENOTFOUND:
-        pr_error("Branch '%s' was not found in repo '%s'\n",
-            branch, repo);
-        break;
-    case GIT_EINVALIDSPEC:
-        pr_error("'%s' is an illegal branch spec\n", branch);
-        break;
-    default:
-        pr_error("Failed to find branch '%s', "
-            "unhandled libgit return %d\n",
-            branch, r);
-        break;
-    }
-}
-
-// May re-allocate the config->repos array, must re-assign repo after calling
-int repo_parse_wanted_branch(
-    struct repo *const restrict repo,
-    struct wanted_reference *const restrict wanted_branch,
-    git_fetch_options *const restrict fetch_options,
-    unsigned short const proxy_after
-) {
-    git_reference *reference;
-    int r = git_branch_lookup(
-        &reference, repo->repository, wanted_branch->name, GIT_BRANCH_LOCAL);
-    if (r) {
-        repo_parse_wanted_branch_explain_libgit_return(
-            r, wanted_branch->name, repo->url);
-        if (repo->updated) {
-            pr_error("Failed to find branch\n");
-            return -1;
-        }
-        pr_warn(
-            "Failed to find branch, but repo not updated, update to retry\n");
-        if (repo_update(repo, fetch_options, proxy_after)) {
-            pr_error("Failed to update repo\n");
-            return -1;
-        }
-        if ((r = git_branch_lookup(
-            &reference, repo->repository, wanted_branch->name, GIT_BRANCH_LOCAL
-        ))) {
-            repo_parse_wanted_branch_explain_libgit_return(
-                r, wanted_branch->name, repo->url);
-            pr_error("Still failed to lookup branch even after update\n");
-            return -1;
-        }
-    }
-    r = repo_parse_wanted_reference_common(
-        repo, wanted_branch, reference, fetch_options, proxy_after);
-    git_reference_free(reference);
-    return r;
-}
-
-void repo_parse_wanted_reference_explain_libgit_return(
-    int const r,
-    char const *const restrict reference,
-    char const *const restrict repo
-) {
-    switch (r) {
-    case GIT_ENOTFOUND:
-        pr_error("Not found reference '%s' in repo '%s'\n", reference, repo);
-        break;
-    case GIT_EINVALIDSPEC:
-        pr_error("'%s' is not a valid reference spec\n", reference);
-        break;
-    default:
-        pr_error("Failed to lookup reference, unhandled libgit return %d\n", r);
-        break;
-    }
-}
-
-int repo_parse_wanted_reference_with_given_ref_name(
-    struct repo *const restrict repo,
-    struct wanted_reference *const restrict wanted_reference,
-    git_fetch_options *const restrict fetch_options,
-    unsigned short const proxy_after,
-    char const *const ref_name
-) {
-    git_reference *reference;
-    int r = git_reference_lookup(&reference, repo->repository, ref_name);
-    if (r) {
-        repo_parse_wanted_reference_explain_libgit_return(
-            r, ref_name, repo->url);
-        if (repo->updated) {
-            pr_error("Failed to lookup reference\n");
-            return -1;
-        }
-        pr_warn("Failed to lookup reference, but repo not updated yet, "
-            "update to retry\n");
-        if (repo_update(repo, fetch_options, proxy_after)) {
-            pr_error("Failed to update\n");
-            return -1;
-        }
-        if ((r = git_reference_lookup(
-            &reference, repo->repository, ref_name))) {
-            repo_parse_wanted_reference_explain_libgit_return(
-                r, ref_name, repo->url);
-            pr_error("Failed to lookup reference even after update\n");
-            return -1;
-        }
-    }
-    r = repo_parse_wanted_reference_common(
-        repo, wanted_reference, reference, fetch_options, proxy_after);
-    git_reference_free(reference);
-    return r;
-}
-
-
-int repo_parse_wanted_tag(
-    struct repo *const restrict repo,
-    struct wanted_reference *const restrict wanted_tag,
-    git_fetch_options *const restrict fetch_options,
-    unsigned short const proxy_after
-) {
-    char ref_name[NAME_MAX];
-    char const *const tag_name = wanted_tag->commit.base.name;
-    if (snprintf(ref_name, sizeof ref_name, "refs/tags/%s", tag_name) < 0) {
-        pr_error_with_errno(
-            "Failed to generate full ref name of tag '%s' for repo '%s'",
-            tag_name, repo->url);
-        return -1;
-    }
-    return repo_parse_wanted_reference_with_given_ref_name(
-        repo, wanted_tag, fetch_options, proxy_after, ref_name);
-}
-
-int repo_parse_wanted_reference(
-    struct repo *const restrict repo,
-    struct wanted_reference *const restrict wanted_reference,
-    git_fetch_options *const restrict fetch_options,
-    unsigned short const proxy_after
-) {
-    return repo_parse_wanted_reference_with_given_ref_name(
-        repo, wanted_reference, fetch_options, proxy_after,
-        wanted_reference->name);
-}
-
-int repo_add_wanted_reference(
-    struct repo *const restrict repo,
-    char const *const restrict reference_name,
-    bool const archive,
-    bool const checkout
-) {
-    if (strncmp(reference_name, "refs/", 5)) {
-        pr_error("Reference does not start with 'refs/'\n");
-        return -1;
-    }
-    if (repo_add_wanted_object_and_init_with_name_no_complete(
-        repo, reference_name, strlen(reference_name))) {
-        pr_error("Failed to add reference '%s' to repo '%s'\n",
-            reference_name, repo->url);
-        return -1;
-    }
-    struct wanted_object *const restrict wanted_reference =
-        get_last(repo->wanted_objects);
-    wanted_reference->archive = archive;
-    wanted_reference->checkout = checkout;
-    wanted_reference->type = WANTED_TYPE_REFERENCE;
-    pr_debug("Added wanted reference '%s' to repo '%s'\n",
-        wanted_reference->commit.base.name, repo->url);
-    return 0;
-}
-
-int repo_parse_wanted_all_branches(
-    struct repo *const restrict repo,
-    struct wanted_base *const restrict wanted_all_branches
-) {
-    git_branch_iterator *branch_iterator;
-    int r = git_branch_iterator_new(
-        &branch_iterator, repo->repository, GIT_BRANCH_LOCAL);
-    if (r) {
-        pr_error("Failed to create branch iterator for repo '%s', "
-        "libgit return %d\n", repo->url, r);
-        return -1;
-    }
-    git_reference *reference = NULL;
-    git_branch_t branch_t;
-    pr_info(
-        "Looping through all branches to create "
-        "individual wanted references\n");
-    pr_info("All branches:");
-    while ((r = git_branch_next(
-        &reference, &branch_t, branch_iterator)) == GIT_OK) {
-        char const *const reference_name = git_reference_name(reference);
-        printf(" '%s'", reference_name);
-        if (branch_t != GIT_BRANCH_LOCAL) {
-            pr_error("\nFound branch is not a local branch\n");
-            r = -1;
-            goto free_reference;
-        }
-        if (strncmp(reference_name, "refs/", 5)) {
-            pr_error("\nReference does not start with 'refs/'\n");
-            r = -1;
-            goto free_reference;
-        }
-        if (repo_add_wanted_reference(repo, reference_name,
-            wanted_all_branches->archive, wanted_all_branches->checkout)) {
-            pr_error("\nFailed to add branch reference '%s' as wannted to "
-            "repo '%s'\n", reference_name, repo->url);
-            r = -1;
-            goto free_reference;
-        }
-        git_reference_free(reference);
-    }
-    printf("\n");
-    reference = NULL;
-    switch (r) {
-    case GIT_OK:
-        pr_error("Got GIT_OK at the end, this shouldn't happen\n");
-        r = -1;
-        goto free_iterator;
-    case GIT_ITEROVER:
-        break;
-    default:
-        pr_error(
-            "Failed to iterate through all banches, libgit return %d\n", r);
-        r = -1;
-        goto free_iterator;
-    }
-    r = 0;
-free_reference:
-    if (reference) git_reference_free(reference);
-free_iterator:
-    git_branch_iterator_free(branch_iterator);
-    return r;
-}
-
-struct repo_parse_wanted_all_tags_foreach_payload {
-    struct repo *const restrict repo;
-    bool const archive;
-    bool const checkout;
-};
-
-int repo_parse_wanted_all_tags_foreach_callback(
-    char const *name, git_oid *oid, void *payload
-) {
-    (void) oid;
-    struct repo_parse_wanted_all_tags_foreach_payload
-        *const restrict private_payload =
-        (struct repo_parse_wanted_all_tags_foreach_payload *
-            const restrict) payload;
-    if (repo_add_wanted_reference(private_payload->repo, name,
-        private_payload->archive, private_payload->checkout)) {
-        pr_error("Failed to add tag reference '%s' as wannted to "
-        "repo '%s'\n", name, private_payload->repo->url);
-        return -1;
-    }
-    return 0;
-}
-
-int repo_parse_wanted_all_tags(
-    struct repo *const restrict repo,
-    struct wanted_base *const restrict wanted_all_tags
-) {
-    unsigned long i = repo->wanted_objects_count;
-    struct repo_parse_wanted_all_tags_foreach_payload
-        const private_payload = {
-            .repo = repo,
-            .archive = wanted_all_tags->archive,
-            .checkout = wanted_all_tags->checkout,
-        };
-    pr_debug(
-        "Looping through all tags to create individual wanted references\n");
-    int r = git_tag_foreach(
-        repo->repository, repo_parse_wanted_all_tags_foreach_callback,
-        (void *)&private_payload);
-    if (r) {
-        pr_error("Failed git_tag_foreach callback, libgit return %d\n", r);
-        return -1;
-    }
-    pr_info("All tags:");
-    for (; i < repo->wanted_objects_count; ++i) {
-        printf(" '%s'", repo->wanted_objects[i].name);
-    }
-    printf("\n");
-    return 0;
-}
-
-// May re-allocate config->repos, and repo->parsed_commits
-int repo_lookup_commit_and_update_if_failed(
-    git_commit **const restrict commit,
-    struct config *const restrict config,
-    unsigned long const repo_id,
-    unsigned long const commit_id
-) {
-    struct repo *restrict repo = config->repos + repo_id;
-    struct parsed_commit *restrict parsed_commit =
-        repo->parsed_commits + commit_id;
-    int r = git_commit_lookup(commit, repo->repository, &parsed_commit->id);
-    if (r) {
-        if (repo->updated) {
-            pr_error(
-                "Failed to lookup commit %s in repo '%s' "
-                "even it's up-to-date, "
-                "libgit return %d, consider failure\n",
-                parsed_commit->id_hex_string, repo->url, r);
-            return -1;
-        }
-        pr_warn(
-            "Commit %s does not exist in repo '%s' (libgit return %d), "
-            "but the repo is not updated yet, "
-            "trying to update the repo before looking up the commit again\n",
-            parsed_commit->id_hex_string, repo->url, r);
-        if (repo_update(repo, &config->fetch_options, config->proxy_after)) {
-            pr_error("Failed to update repo\n");
-            return -1;
-        }
-        pr_warn(
-            "Repo '%s' updated, go back to ensure old parsed commits are "
-            "still robust\n", repo->url);
-        r = repo_ensure_first_parsed_commits(config, repo_id, commit_id);
-        repo = config->repos + repo_id;
-        parsed_commit = repo->parsed_commits + commit_id;
-        if (r) {
-            pr_error("Updated repo '%s' breaks robustness of old parsed commit "
-            "%s", repo->url, parsed_commit->id_hex_string);
-            return -1;
-        }
-        if ((r = git_commit_lookup(
-            commit, repo->repository, &parsed_commit->id))) {
-            pr_error(
-                "Failed to lookup commit %s in repo '%s' "
-                "even after updating the repo, libgit return %d, "
-                "consider failure\n",
-                parsed_commit->id_hex_string, repo->url, r);
-            return -1;
-        }
-    }
-    return 0;
-}
-
-// May re-allocate config->repos, and repo->parsed_commits
-int repo_ensure_parsed_commit_submodules (
-    struct config *const restrict config,
-    unsigned long const repo_id,
-    unsigned long const commit_id,
-    git_commit *commit
-) {
-    struct repo *restrict repo = config->repos + repo_id;
-    struct parsed_commit *restrict parsed_commit =
-        repo->parsed_commits + commit_id;
-    if (parsed_commit->submodules_parsed) return 0;
-    git_tree *tree;
-    int r = git_commit_tree(&tree, commit);
-    if (r) {
-        pr_error(
-            "Failed to get the commit tree pointed by commit %s "
-            "in repo '%s', libgit return %d\n",
-            parsed_commit->id_hex_string, repo->url, r);
-        return -1;
-    }
-    git_tree_entry const *const entry_gitmodules =
-        git_tree_entry_byname(tree, ".gitmodules");
-    if (entry_gitmodules != NULL) {
-        pr_debug(
-            "Found .gitmodules in commit tree of %s for repo '%s', "
-            "parsing submodules\n", parsed_commit->id_hex_string, repo->url);
-        r = repo_parse_commit_tree_entry_gitmodules(
-            config, repo_id, commit_id, tree, entry_gitmodules);
-        repo = config->repos + repo_id;
-        parsed_commit = repo->parsed_commits + commit_id;
-        if (r) {
-            pr_error(
-                "Failed to parse submodules in commit tree of %s "
-                "for repo '%s'\n",
-                parsed_commit->id_hex_string, repo->url);
-            return -1;
-        }
-    }
-    parsed_commit->submodules_parsed = true;
-    return 0;
-}
-
-// May re-allocate config->repos, and repo->parsed_commits
-int repo_ensure_parsed_commit(
-    struct config *const restrict config,
-    unsigned long const repo_id,
-    unsigned long const commit_id
-) {
-    git_commit *commit;
-    int r = repo_lookup_commit_and_update_if_failed(
-                &commit, config, repo_id, commit_id);
-
-    struct repo *restrict repo = config->repos + repo_id;
-    struct parsed_commit *restrict parsed_commit =
-        repo->parsed_commits + commit_id;
-    if (r) {
-        pr_error("Failed to lookup commit %s in repo '%s'\n",
-            parsed_commit->id_hex_string, repo->url);
-        return -1;
-    }
-    if (!parsed_commit->submodules_parsed) {
-        r = (repo_ensure_parsed_commit_submodules(
-            config, repo_id, commit_id, commit));
-        repo = config->repos + repo_id;
-        parsed_commit = repo->parsed_commits + commit_id;
-        if (r) {
-            pr_error("Failed to parse repo '%s' commit %s submodules\n",
-                repo->url, parsed_commit->id_hex_string);
-            r = -1;
-            goto free_commit;
-        }
-    }
-    pr_info("Commit robust: '%s': %s\n",
-        repo->url, parsed_commit->id_hex_string);
-    r = 0;
-free_commit:
-    git_commit_free(commit);
-    return r;
-}
-
-// May re-allocate config->repos, and repo->parsed_commits
-int repo_ensure_first_parsed_commits(
-    struct config *const restrict config,
-    unsigned long const repo_id,
-    unsigned long const stop_before_commit_id
-) {
-    struct repo *restrict repo = config->repos + repo_id;
-    for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
-        if (i == stop_before_commit_id) break;
-        if (repo_ensure_parsed_commit(config, repo_id, i)) {
-            repo = config->repos + repo_id;
-            pr_error(
-                "Failed to ensure robustness of commit %s of repo '%s'\n",
-                repo->parsed_commits[i].id_hex_string, repo->url);
-            return -1;
-        }
-        repo = config->repos + repo_id;
-    }
-    return 0;
-}
-
-// May re-allocate config->repos, and repo->parsed_commits
-int repo_ensure_all_parsed_commits(
-    struct config *const restrict config,
-    unsigned long const repo_id
-) {
-    struct repo *restrict repo = config->repos + repo_id;
-    pr_debug("Ensursing all parsed commit for repo '%s', count %lu\n",
-        repo->url, repo->parsed_commits_count);
-    for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
-        if (repo_ensure_parsed_commit(config, repo_id, i)) {
-            repo = config->repos + repo_id;
-            pr_error(
-                "Failed to ensure robustness of commit %s of repo '%s'\n",
-                repo->parsed_commits[i].id_hex_string, repo->url);
-            return -1;
-        }
-        repo = config->repos + repo_id;
-    }
-    return 0;
-}
-
-int mirror_repo(
-    struct config *const restrict config,
-    unsigned long const repo_id,
-    int const links_dirfd
-) {
-    int r = repo_prepare_open_or_create_if_needed(
-        config->repos + repo_id, links_dirfd,
-        &config->fetch_options, config->proxy_after, false);
-    struct repo *restrict repo = config->repos + repo_id;
-    if (r) {
-        pr_error("Failed to ensure repo '%s' is opened\n", repo->url);
-        return -1;
-    }
-    pr_info("Mirroring repo '%s'\n", repo->url);
-    if (repo->wanted_dynamic && !repo->updated) {
-        pr_warn(
-            "Dynamic wanted objects set for repo '%s', need to update\n",
-            repo->url);
-        if (repo_update(
-            repo, &config->fetch_options, config->proxy_after)) {
-            pr_error(
-                "Failed to update repo '%s' to prepare for "
-                "dynamic wanted objects\n",
-                repo->url);
-            return -1;
-        }
-    }
-    git_fetch_options *const fetch_options = &config->fetch_options;
-    unsigned short const proxy_after = config->proxy_after;
-
-    bool updated = repo->updated;
-    for (;;) {
-        for (unsigned i = 0; i < repo->wanted_objects_count;) {
-            struct wanted_object *wanted_object = repo->wanted_objects + i;
-            switch (wanted_object->type) {
-            case WANTED_TYPE_COMMIT:
-                if (repo_parse_wanted_commit(repo,
-                    (struct wanted_commit *)wanted_object)) {
-                    pr_error(
-                        "Failed to parse wanted commit %s for repo '%s'\n",
-                        wanted_object->hex_string, repo->url);
-                    return -1;
-                }
-                break;
-            case WANTED_TYPE_ALL_TAGS:
-                if (repo_parse_wanted_all_tags(repo,
-                    (struct wanted_base *)wanted_object)) {
-                    pr_error(
-                        "Failed to parse wanted all branches for repo '%s'\n",
-                        repo->url);
-                    return -1;
-                }
-                break;
-            case WANTED_TYPE_ALL_BRANCHES:
-                if (repo_parse_wanted_all_branches(repo,
-                    (struct wanted_base *)wanted_object)) {
-                    pr_error("Failed to parse wanted all tags for repo '%s'\n",
-                        repo->url);
-                    return -1;
-                }
-                break;
-            case WANTED_TYPE_BRANCH:
-                if (repo_parse_wanted_branch(repo,
-                    (struct wanted_reference *)wanted_object,
-                    fetch_options, proxy_after)) {
-                    pr_error(
-                        "Failed to parsed wanted branch '%s'  for repo '%s'\n",
-                        wanted_object->name, repo->url);
-                    return -1;
-                }
-                break;
-            case WANTED_TYPE_TAG:
-                if (repo_parse_wanted_tag(repo,
-                    (struct wanted_reference *)wanted_object,
-                    fetch_options, proxy_after)) {
-                    pr_error(
-                        "Failed to parsed wanted tag '%s'  for repo '%s'\n",
-                        wanted_object->name, repo->url);
-                    return -1;
-                }
-                break;
-            case WANTED_TYPE_REFERENCE:
-                if (repo_parse_wanted_reference(repo,
-                    (struct wanted_reference *)wanted_object,
-                    fetch_options, proxy_after)) {
-                    pr_error(
-                        "Failed to parsed wanted reference '%s'  for "
-                        "repo '%s'\n",
-                        wanted_object->name, repo->url);
-                    return -1;
-                }
-                break;
-            case WANTED_TYPE_HEAD:
-                if (repo_parse_wanted_head(repo,
-                    (struct wanted_reference *)wanted_object,
-                    fetch_options, proxy_after)) {
-                    pr_error("Failed to parsed wanted HEAD for repo '%s'\n",
-                    repo->url);
-                    return -1;
-                }
-                break;
-            case WANTED_TYPE_UNKNOWN:
-            default:
-                pr_error(
-                    "Impossible wanted type unknown for wanted object '%s' "
-                    "for repo '%s'\n",
-                    wanted_object->name, repo->url);
-                return -1;
-            }
-            if (repo->updated && !updated) {
-                pr_warn(
-                    "Silent update happended during run, need to reset loop\n");
-                // Drop all wanted objects added later
-                updated = true;
-                repo->wanted_objects_count =
-                    repo->wanted_objects_count_original;
-                i = 0;
-                pr_warn("Repo updated, go back to first wanted object\n");
-                continue;
-            }
-            ++i;
-        }
-        if (repo_ensure_all_parsed_commits(config, repo_id)) {
-            pr_error("Failed to ensure robustness of all parsed commits\n");
-            return -1;
-        }
-        repo = config->repos + repo_id;
-        if (updated == repo->updated) {
-            break;
-        } else {
-            pr_warn("Silent update happened during run, need to reset loop\n");
-            updated = repo->updated;
-        }
-    }
-    pr_info("Repo mirrored and robust: '%s'\n", repo->url);
-    return 0;
-}
-
-int update_status_add_server_and_init_with_hash_optional(
-    struct update_status *const restrict update_status,
-    hash_type const server_hash
-) {
-    for (unsigned long i = 0; i < update_status->servers_count; ++i) {
-        if (server_hash == update_status->servers[i].server_hash)
-            return 0;
-    }
-    if (update_status_add_server_no_init(update_status)) {
-        pr_error("Failed to add server\n");
-        return -1;
-    }
-    struct update_server_repo_activity *const server =
-        get_last(update_status->servers);
-    server->server_hash = server_hash;
-    server->repos_updating_count = 0;
-    return 0;
-}
-
-
-int open_and_update_all_dynamic_repos_threaded_optional(
-    struct config *const restrict config,
-    int const links_dirfd
-) {
-    git_fetch_options *const fetch_options = &config->fetch_options;
-    unsigned short const proxy_after = config->proxy_after;
-    struct update_status update_status = {0};
-    int r = -1;
-    for (unsigned long i = 0; i < config->repos_count; ++i) {
-        struct repo *const restrict repo = config->repos + i;
-        if (repo_prepare_open_or_create_if_needed(
-            repo, links_dirfd, fetch_options, proxy_after, true)) {
-            pr_error("Failed to prepare repo\n");
-            goto free_servers_and_ids_maybe;
-        }
-        if (!repo->wanted_dynamic) continue;
-        if (update_status_add_server_and_init_with_hash_optional(
-            &update_status, repo->server_hash)) {
-            pr_error("Failed to add server\n");
-            goto free_servers_and_ids_maybe;
-        }
-        if (update_status_add_repo_id_no_init(&update_status)) {
-            pr_error("Failed to add repo id\n");
-            goto free_servers_and_ids_maybe;
-        }
-        *(get_last(update_status.repo_ids)) = i;
-    }
-    // If there's only 1 thread needed, going this routine just wastes time
-    if (update_status.repo_ids_count <= 1) {
-        r = 0;
-        goto free_servers_and_ids_maybe;
-    }
-    // We only allow 10 concurrent connections to a server
-    // Here we allocate the most possibly used memory to avoid future
-    // realloc calls
-    unsigned long const max_possible_connections =
-        update_status.servers_count * config->connections_per_server;
-    if (max_possible_connections <= 1) {
-        r = 0;
-        goto free_servers_and_ids_maybe;
-    }
-    update_status.thread_handles_allocated =
-        max_possible_connections > update_status.repo_ids_count ?
-            update_status.repo_ids_count :
-            max_possible_connections;
-    update_status.thread_handles = calloc(
-        update_status.thread_handles_allocated,
-        sizeof *update_status.thread_handles);
-    if (update_status.thread_handles == NULL) {
-        pr_error_with_errno("Failed to allocate memory for thread ids");
-        goto free_thread_handles;
-    }
-    for (unsigned i = 0; i < update_status.thread_handles_allocated; ++i) {
-        struct repo_update_thread_arg *arg =
-            &update_status.thread_handles[i].arg;
-        arg->fetch_options = *fetch_options;
-        arg->proxy_after = proxy_after;
-    }
-    pr_info("Updating repos with %hu connections per server...\n",
-            config->connections_per_server);
-    while (update_status.repo_ids_count || update_status.threads_active_count) {
-        update_status.changed = false;
-        for (unsigned long i = 0; i < update_status.repo_ids_count; ++i) {
-            struct repo *const restrict repo =
-                config->repos + update_status.repo_ids[i];
-            unsigned long server_id = (unsigned long) -1;
-            for (unsigned long j = 0; j < update_status.servers_count; ++j) {
-                if (repo->server_hash == update_status.servers[j].server_hash) {
-                    server_id = j;
-                    break;
-                }
-            }
-            if (server_id == (unsigned long) -1) {
-                pr_error("Failed to find server hash\n");
-                goto wait_threads;
-            }
-            // Already at max concurrent connection
-            if (update_status.servers[server_id].repos_updating_count >=
-                config->connections_per_server) {
-                continue;
-            }
-            ++update_status.servers[server_id].repos_updating_count;
-            if (++update_status.threads_active_count >
-                    update_status.thread_handles_allocated) {
-                pr_error(
-                    "Allocated memory for threads not enough %lu / %lu\n",
-                    update_status.threads_active_count,
-                    update_status.thread_handles_allocated);
-                goto wait_threads;
-            }
-            struct update_thread_handle *handle = NULL;
-            for (unsigned long j = 0;
-                j < update_status.thread_handles_allocated;
-                ++j) {
-                if (!update_status.thread_handles[j].active) {
-                    handle = update_status.thread_handles + j;
-                    break;
-                }
-            }
-            if (handle == NULL) {
-                pr_error("Failed to find empty handle\n");
-                goto wait_threads;
-            }
-            handle->arg.repo = repo;
-            r = pthread_create(&handle->thread,
-                            NULL, repo_update_thread, &handle->arg);
-            if (r) {
-                pr_error("Failed to create thread, pthread return %d\n", r);
-                --update_status.threads_active_count;
-                r = -1;
-                goto wait_threads;
-            }
-            handle->server_id = server_id;
-            handle->active = true;
-            handle->checked = 0;
-            update_status.repo_ids[i] =
-                update_status.repo_ids[--update_status.repo_ids_count];
-            update_status.changed = true;
-        }
-        // Here there must be at least one active, no need to check
-        for (unsigned long i = 0;
-            i < update_status.thread_handles_allocated;
-            ++i) {
-            struct update_thread_handle *handle =
-                update_status.thread_handles + i;;
-            if (!handle->active) continue;
-            long thread_ret;
-            r = pthread_tryjoin_np(handle->thread, (void **)&thread_ret);
-            switch (r) {
-            case 0:
-                handle->active = false;
-                --update_status.threads_active_count;
-                --update_status.servers[handle->server_id].repos_updating_count;
-                if (thread_ret) {
-                    pr_error(
-                        "Repo update thread bad return %ld\n", thread_ret);
-                    r = -1;
-                    goto wait_threads;
-                }
-                update_status.changed = true;
-                break;
-            case EBUSY:
-                if (++handle->checked % 100 == 0)  {
-                    pr_warn("Repo '%s' takes too long to update, "
-                        "%lu cycles after started it\n",
-                        handle->arg.repo->url,
-                        handle->checked);
-                }
-                break;
-            default:
-                pr_error("Failed to join thread, pthread return %d\n", r);
-                r = -1;
-                goto wait_threads;
-            }
-        }
-        if (update_status.changed) {
-            if (update_status.threads_active_count) {
-                if (update_status.repo_ids_count) {
-                    pr_info("Updating %lu repos, "
-                        "%lu more repos "
-                        "needs to be updated...\n",
-                        update_status.threads_active_count,
-                        update_status.repo_ids_count);
-                } else {
-                    pr_info("Updating %lu repos...\n",
-                        update_status.threads_active_count);
-                }
-            }
-        } else {
-            sleep(1);
-        }
-    }
-    r = 0;
-wait_threads:
-    if (r) pr_warn("Waiting for all update threads to end...\n");
-    for (unsigned long i = 0;
-        i < update_status.thread_handles_allocated; ++i) {
-        struct update_thread_handle *handle = update_status.thread_handles + i;
-        if (handle->active) {
-            long thread_ret;
-            int r2 = pthread_join(handle->thread, (void **)&thread_ret);
-            if (r2) {
-                pr_error("Faiiled to join updating thread %ld for repo '%s', "
-                    "pthread return %d\n",
-                    handle->thread, handle->arg.repo->url, r2);
-                r = -1;
-            }
-            handle->active = false;
-            if (thread_ret) {
-                pr_error(
-                    "Thread %ld for updating repo '%s' returned with %ld\n",
-                    handle->thread, handle->arg.repo->url, thread_ret);
-                r = -1;
-            }
-        }
-    }
-    pr_info("All update threads ended\n");
-free_thread_handles:
-    free(update_status.thread_handles);
-// free_servers_and_ids:
-    free(update_status.servers);
-    free(update_status.repo_ids);
-    return r;
-free_servers_and_ids_maybe:
-    if (update_status.servers) free(update_status.servers);
-    if (update_status.repo_ids) free(update_status.repo_ids);
-    return r;
-}
-
-int mirror_all_repos(
-    struct config *const restrict config,
-    struct work_directory *const restrict workdir_repos,
-    bool const clean
-) {
-    if (open_and_update_all_dynamic_repos_threaded_optional(
-        config, workdir_repos->links_dirfd)) {
-        pr_error("Failed to pre-update repos\n");
-        return -1;
-    }
-    for (unsigned long i = 0; i < config->repos_count; ++i) {
-        if (clean) {
-            struct repo const *const restrict repo = config->repos + i;
-            if (work_directory_add_keep(
-                workdir_repos, repo->hash_name, HASH_STRING_LEN)) {
-                pr_error("Failed to add '%s' to keep items\n", repo->hash_name);
-                return -1;
-            }
-        }
-        if (mirror_repo(config, i, workdir_repos->links_dirfd)) {
-            pr_error("Failed to mirror all repos\n");
-            return -1;
-        }
-    }
-    pr_debug("Finished mirroring all repos\n");
-    return 0;
-}
-
-int tar_write_and_pad_to_512_block(
-    int const tar_fd,
-    void const *const restrict data,
-    size_t const size
-) {
-#ifdef TAR_WRITE_CHECK_OFFSET
-    if (lseek(tar_fd, 0, SEEK_CUR) % 512) {
-        pr_error("Tar not at 512 offset\n");
-        return -1;
-    }
-#endif
-    size_t size_written = 0;
-    while (size_written < size) {
-        ssize_t size_written_this = write(
-            tar_fd, data + size_written, size - size_written);
-        if (size_written_this < 0) {
-             switch (errno) {
-            case EAGAIN:
-#if (EAGAIN != EWOULDBLOCK)
-            case EWOULDBLOCK:
-#endif
-            case EINTR:
-                break;
-            default:
-                pr_error_with_errno(
-                    "Failed to write %lu bytes to tar", size - size_written);
-                return -1;
-            }
-        } else {
-            size_written += size_written_this;
-        }
-    }
-    size_t lone_bytes = size % 512;
-    if (lone_bytes) {
-        size_t padding = 512 - lone_bytes;
-        size_written = 0;
-        while (size_written < padding) {
-            ssize_t size_written_this = write(
-                tar_fd, EMPTY_512_BLOCK, padding - size_written);
-            if (size_written_this < 0) {
-                switch (errno) {
-                case EAGAIN:
-#if (EAGAIN != EWOULDBLOCK)
-                case EWOULDBLOCK:
-#endif
-                case EINTR:
-                    break;
-                default:
-                    pr_error_with_errno(
-                        "Failed to pad %lu bytes to tar", size - size_written);
-                    return -1;
-                }
-            } else {
-                size_written += size_written_this;
-            }
-        }
-    }
-#ifdef TAR_WRITE_CHECK_OFFSET
-    if (lseek(tar_fd, 0, SEEK_CUR) % 512) {
-        pr_error("Tar not at 512 offset\n");
-        return -1;
-    }
-#endif
-    return 0;
-}
-
-int tar_add_global_header(
-    int const tar_fd,
-    char const *const restrict mtime,
-    void const *const restrict content,
-    unsigned short const len_content
-) {
-    struct tar_header global_header =
-        TAR_HEADER_PAX_GLOBAL_HEADER_INIT;
-    if (snprintf(global_header.size, sizeof global_header.size,
-                    "%011o", len_content) < 0) {
-        pr_error("Failed to format global header size\n");
-        return -1;
-    }
-    memcpy(global_header.mtime, mtime, sizeof global_header.mtime);
-    if (tar_header_checksum_self(&global_header)) {
-        pr_error("Failed to calculate header checksum\n");
-        return -1;
-    }
-    if (tar_write_and_pad_to_512_block(
-        tar_fd, &global_header, sizeof global_header)) {
-        pr_error("Failed to write pax global header to tar\n");
-        return -1;
-    }
-    if (tar_write_and_pad_to_512_block(tar_fd, content, len_content)) {
-        pr_error("Failed to write file data to tar\n");
-        return -1;
-    }
-    return 0;
-}
-
-int tar_append_longlink_optional(
-    int const tar_fd,
-    char const *const restrict link,
-    unsigned short const len_link
-) {
-    struct tar_header longlink_header;
-    if (len_link < sizeof longlink_header.linkname) return 0;
-    longlink_header = TAR_HEADER_GNU_LONGLINK_INIT;
-    if (snprintf(longlink_header.size, sizeof longlink_header.size,
-                    "%011o", len_link + 1) < 0) {
-        pr_error("Failed to format long link size\n");
-        return -1;
-    }
-    if (tar_header_checksum_self(&longlink_header)) {
-        pr_error("Failed to calculate header checksum\n");
-        return -1;
-    }
-    if (tar_write_and_pad_to_512_block(
-        tar_fd, &longlink_header, sizeof longlink_header)) {
-        pr_error("Failed to write data to tar\n");
-        return -1;
-    }
-    if (tar_write_and_pad_to_512_block(tar_fd, link, len_link + 1)) {
-        pr_error("Failed to write longlink to tar\n");
-        return -1;
-    }
-    return 0;
-}
-
-int tar_append_longname_optional(
-    int const tar_fd,
-    char const *const restrict name,
-    unsigned short const len_name
-) {
-    struct tar_header longname_header;
-    if (len_name < sizeof longname_header.name) return 0;
-    longname_header = TAR_HEADER_GNU_LONGNAME_INIT;
-    if (snprintf(longname_header.size, sizeof longname_header.size,
-                    "%011o", len_name + 1) < 0) {
-        pr_error("Failed to format long name size\n");
-        return -1;
-    }
-    if (tar_header_checksum_self(&longname_header)) {
-        pr_error("Failed to calculate header checksum\n");
-        return -1;
-    }
-    if (tar_write_and_pad_to_512_block(
-        tar_fd, &longname_header, sizeof longname_header)) {
-        pr_error("Failed to write data to tar\n");
-        return -1;
-    }
-    if (tar_write_and_pad_to_512_block(tar_fd, name, len_name + 1)) {
-        pr_error("Failed to write longname to tar\n");
-        return -1;
-    }
-    return 0;
-}
-
-int tar_append_symlink(
-    int const tar_fd,
-    char const *const restrict mtime,
-    char const *const restrict name,
-    unsigned short const len_name,
-    char const *const restrict link,
-    unsigned short const len_link
-) {
-    if (tar_append_longlink_optional(tar_fd, link, len_link)) {
-        pr_error("Failed to create longlink\n");
-        return -1;
-    }
-    if (tar_append_longname_optional(tar_fd, name, len_name)) {
-        pr_error("Failed to create longname\n");
-        return -1;
-    }
-    struct tar_header symlink_header =
-        TAR_HEADER_SYMLINK_INIT;
-    memcpy(symlink_header.mtime, mtime, sizeof symlink_header.mtime);
-    memcpy(symlink_header.name, name,
-        len_name > sizeof symlink_header.name ?
-            sizeof symlink_header.name : len_name);
-    memcpy(symlink_header.linkname, link,
-        len_link > sizeof symlink_header.linkname ?
-            sizeof symlink_header.linkname : len_link);
-    if (tar_header_checksum_self(&symlink_header)) {
-        pr_error("Failed to calculate header checksum\n");
-        return -1;
-    }
-    if (tar_write_and_pad_to_512_block(
-        tar_fd, &symlink_header, sizeof symlink_header)) {
-        pr_error("Failed to write data to tar\n");
-        return -1;
-    }
-    return 0;
-}
-
-int tar_append_regular_file(
-    int const tar_fd,
-    void const *const restrict ro_buffer,
-    git_object_size_t size,
-    char const *const restrict mtime,
-    char const *const restrict name,
-    unsigned short const len_name,
-    mode_t mode
-) {
-    if (tar_append_longname_optional(tar_fd, name, len_name)) {
-        pr_error("Failed to create longname\n");
-        return -1;
-    }
-    struct tar_header regular_file_header;
-    switch (mode) {
-    case 0644:
-        regular_file_header = TAR_HEADER_FILE_REG_INIT;
-        break;
-    case 0755:
-        regular_file_header = TAR_HEADER_FILE_EXE_INIT;
-        break;
-    default:
-        pr_warn("%03o mode is not expected, but we accept it for now\n", mode);
-        regular_file_header = TAR_HEADER_FILE_REG_INIT;
-        if (snprintf(regular_file_header.mode, sizeof regular_file_header.mode,
-            "%07o", mode) < 0) {
-            pr_error("Failed to format mode string\n");
-            return -1;
-        }
-        break;
-    };
-    if (snprintf(regular_file_header.size, sizeof regular_file_header.size,
-                    "%011lo", size) < 0) {
-        pr_error("Failed to format long name size\n");
-        return -1;
-    }
-    memcpy(regular_file_header.mtime, mtime, sizeof regular_file_header.mtime);
-    memcpy(regular_file_header.name, name,
-        len_name > sizeof regular_file_header.name ?
-         sizeof regular_file_header.name : len_name);
-    if (tar_header_checksum_self(&regular_file_header)) {
-        pr_error("Failed to calculate header checksum\n");
-        return -1;
-    }
-    if (tar_write_and_pad_to_512_block(
-        tar_fd, &regular_file_header, sizeof regular_file_header)) {
-        pr_error("Failed to write regular file header to tar\n");
-        return -1;
-    }
-    if (tar_write_and_pad_to_512_block(tar_fd, ro_buffer, size)) {
-        pr_error("Failed to write file data to tar\n");
-        return -1;
-    }
-    return 0;
-}
-
-int tar_append_folder(
-    int const tar_fd,
-    char const *const restrict mtime,
-    char const *const restrict name,
-    unsigned short const len_name
-) {
-    if (tar_append_longname_optional(tar_fd, name, len_name)) {
-        pr_error("Failed to create longname\n");
-        return -1;
-    }
-    struct tar_header folder_header = TAR_HEADER_FOLDER_INIT;
-    memcpy(folder_header.mtime, mtime, sizeof folder_header.mtime);
-    memcpy(folder_header.name, name,
-        len_name > sizeof folder_header.name ?
-         sizeof folder_header.name : len_name);
-    if (tar_header_checksum_self(&folder_header)) {
-        pr_error("Failed to calculate header checksum\n");
-        return -1;
-    }
-    if (tar_write_and_pad_to_512_block(
-        tar_fd, &folder_header, sizeof folder_header)) {
-        pr_error("Failed to write folder header to tar\n");
-        return -1;
-    }
-    return 0;
-}
-
-int tar_finish(
-    int const tar_fd
-) {
-    unsigned char const eof_marker[512 * 2] = {0};
-    if (tar_write_and_pad_to_512_block(tar_fd, eof_marker, 512 * 2)) {
-        pr_error("Failed to write EOF mark to tar file\n");
-        return -1;
-    }
-    return 0;
-}
-
-int export_commit_tree_entry_blob_file_regular_to_archive(
-    void const *const restrict ro_buffer,
-    git_object_size_t size,
-    char const *const restrict path,
-    unsigned short const len_path,
-    char const *const restrict mtime,
-    int const fd_archive,
-    mode_t mode
-){
-    if (tar_append_regular_file(
-        fd_archive, ro_buffer, size, mtime, path, len_path, mode)) {
-        pr_error("Failed to append regular file '%s' to archive\n", path);
-        return -1;
-    }
-    return 0;
-}
-
-int export_commit_tree_entry_blob_file_regular_to_checkout(
-    void const *const restrict ro_buffer,
-    git_object_size_t size,
-    char const *const restrict path,
-    int const dirfd_checkout,
-    mode_t mode
-){
-    int blob_fd = openat(dirfd_checkout, path, O_WRONLY | O_CREAT, mode);
-    if (blob_fd < 0) {
-        pr_error("Failed to create file '%s' with mode 0o%o\n",
-            path, mode);
-        return -1;
-    }
-    int r = -1;
-    if (size) {
-        git_object_size_t size_written = 0;
-        while (size_written < size) {
-            ssize_t size_written_this =
-                write(blob_fd,
-                    ro_buffer + size_written,
-                    size - size_written);
-            if (size_written_this < 0) {
-                switch (errno) {
-                case EAGAIN:
-#if (EAGAIN != EWOULDBLOCK)
-                case EWOULDBLOCK:
-#endif
-                case EINTR:
-                    break;
-                default:
-                    pr_error_with_errno(
-                        "Failed to write %lu bytes to file '%s'",
-                        size - size_written,
-                        path);
-                    goto close_blob_fd;
-                }
-            } else {
-                size_written += size_written_this;
-            }
-        }
-    }
-    r = 0;
-close_blob_fd:
-    if (close(blob_fd)) {
-        pr_error_with_errno("Failed to close fd for blob");
-    }
-    return r;
-}
-
-int export_commit_tree_entry_blob_file_regular(
-    void const *const restrict ro_buffer,
-    git_object_size_t size,
-    bool const archive,
-    char const *const restrict mtime,
-    int const fd_archive,
-    char const *const restrict path_archive,
-    unsigned short const len_path_archive,
-    bool const checkout,
-    int const dirfd_checkout,
-    char const *const restrict path_checkout,
-    mode_t mode
-) {
-    if (archive) {
-        if (export_commit_tree_entry_blob_file_regular_to_archive(
-            ro_buffer, size, path_archive, len_path_archive, mtime, fd_archive,
-            mode)) {
-            pr_error("Failed to archive commit tree entry blob regular file "
-                "at '%s'\n", path_archive);
-            return -1;
-        }
-    }
-    if (checkout) {
-        if (export_commit_tree_entry_blob_file_regular_to_checkout(
-            ro_buffer, size, path_checkout, dirfd_checkout, mode)) {
-            pr_error("Failed to checkout commit tree entry blob regular file "
-                "at '%s'\n", path_checkout);
-            return -1;
-        }
-    }
-    return 0;
-}
-
-int export_commit_tree_entry_blob_file_symlink_to_archive(
-    char const *const restrict ro_buffer,
-    char const *const restrict path,
-    unsigned short const len_path,
-    char const *const restrict mtime,
-    int const fd_archive
-) {
-    char link[PATH_MAX];
-    unsigned short len_link =
-        stpncpy(link, ro_buffer, PATH_MAX - 1) - link;
-    link[len_link] = '\0';
-    if (tar_append_symlink(
-        fd_archive, mtime, path, len_path, link, len_link)) {
-        pr_error("Failed to append symlink to archive\n");
-        return -1;
-    }
-    return 0;
-}
-
-
-int export_commit_tree_entry_blob_file_symlink_to_checkout(
-    char const *const restrict ro_buffer,
-    char const *const restrict path,
-    int const dirfd_checkout
-) {
-    if (symlinkat(ro_buffer, dirfd_checkout, path) < 0) {
-        pr_error_with_errno("Failed to create symlink '%s' -> '%s'",
-            path, ro_buffer);
-        return -1;
-    }
-    return 0;
-}
-
-int export_commit_tree_entry_blob_file_symlink(
-    char const *const restrict ro_buffer,
-    bool const archive,
-    char const *const restrict mtime,
-    int const fd_archive,
-    char const *const restrict path_archive,
-    unsigned short const len_path_archive,
-    bool const checkout,
-    int const dirfd_checkout,
-    char const *const restrict path_checkout
-) {
-    if (archive) {
-        if (export_commit_tree_entry_blob_file_symlink_to_archive(
-            ro_buffer, path_archive, len_path_archive, mtime, fd_archive)) {
-            pr_error("Failed to archive commit tree entry blob file symlink "
-                "at '%s'\n", path_archive);
-            return -1;
-        }
-    }
-    if (checkout) {
-        if (export_commit_tree_entry_blob_file_symlink_to_checkout(
-            ro_buffer, path_checkout, dirfd_checkout)) {
-            pr_error("Failed to checkout commit tree entry blob file symlink "
-                "at '%s'\n", path_checkout);
-            return -1;
-        }
-    }
-    return 0;
-}
-
-int export_commit_tree_entry_blob(
-    git_tree_entry const *const restrict entry,
-    struct repo const *const restrict repo,
-    bool const archive,
-    char const *const restrict mtime,
-    int const fd_archive,
-    char const *const restrict path_archive,
-    unsigned short const len_path_archive,
-    bool const checkout,
-    int const dirfd_checkout,
-    char const *const restrict path_checkout
-) {
-    git_object *object;
-    int r = git_tree_entry_to_object(
-        &object, repo->repository, entry);
-    if (r) {
-        pr_error(
-            "Failed to convert entry to object, libgit return %d\n",
-            r);
-        return -1;
-    }
-    void const *const restrict ro_buffer =
-        git_blob_rawcontent((git_blob *)object);
-    switch (git_tree_entry_filemode(entry)) {
-    case GIT_FILEMODE_BLOB:
-        r = export_commit_tree_entry_blob_file_regular(
-            ro_buffer,
-            git_blob_rawsize((git_blob *)object),
-            archive, mtime, fd_archive,
-            path_archive, len_path_archive,
-            checkout, dirfd_checkout,
-            path_checkout,
-            0644);
-        break;
-    case GIT_FILEMODE_BLOB_EXECUTABLE:
-        r = export_commit_tree_entry_blob_file_regular(
-            ro_buffer,
-            git_blob_rawsize((git_blob *)object),
-            archive, mtime, fd_archive,
-            path_archive, len_path_archive,
-            checkout, dirfd_checkout,
-            path_checkout,
-            0755);
-        break;
-    case GIT_FILEMODE_LINK:
-        r = export_commit_tree_entry_blob_file_symlink(
-            ro_buffer,
-            archive, mtime, fd_archive, path_archive, len_path_archive,
-            checkout, dirfd_checkout, path_checkout);
-        break;
-    default:
-        pr_error("Impossible tree entry filemode %d\n",
-                git_tree_entry_filemode(entry));
-        r = -1;
-        break;
-    }
-    free(object);
-    return r;
-};
-
-int export_commit_tree_entry_tree_to_archive(
-    char const *const restrict path,
-    unsigned short const len_path,
-    char const *const restrict mtime,
-    int const fd_archive
-) {
-    char path_with_slash[PATH_MAX];
-    memcpy(path_with_slash, path, len_path);
-    path_with_slash[len_path] = '/';
-    path_with_slash[len_path + 1] = '\0';
-    if (tar_append_folder(fd_archive, mtime, path_with_slash, len_path + 1)) {
-        pr_error("Failed to append folder '%s' to archive\n", path);
-        return -1;
-    }
-    return 0;
-}
-
-int export_commit_tree_entry_tree_to_checkout(
-    char const *const restrict path,
-    int const dirfd_checkout
-) {
-    if (mkdirat(dirfd_checkout, path, 0755)) {
-        pr_error_with_errno("Failed to create folder '%s'",
-            path);
-        return -1;
-    }
-    return 0;
-}
-
-
-int export_commit_tree_entry_tree(
-    bool const archive,
-    char const *const restrict mtime,
-    int const fd_archive,
-    char const *const restrict path_archive,
-    unsigned short const len_path_archive,
-    bool const checkout,
-    int const dirfd_checkout,
-    char const *const restrict path_checkout
-) {
-    if (archive) {
-        if (export_commit_tree_entry_tree_to_archive(
-            path_archive, len_path_archive, mtime, fd_archive)) {
-            pr_error("Failed to export '%s' to archive\n", path_archive);
-            return -1;
-        }
-    }
-    if (checkout) {
-        if (export_commit_tree_entry_tree_to_checkout(
-            path_checkout, dirfd_checkout)) {
-            pr_error("Failed to export '%s' to checkout\n", path_checkout);
-            return -1;
-        }
-    }
-    return 0;
-};
-
-int export_commit_tree_entry_commit(
-	char const *const restrict root,
-    git_tree_entry const *const restrict entry,
-    struct config const *const restrict config,
-    struct parsed_commit const *const restrict parsed_commit,
-    char *const restrict submodule_path,
-    unsigned short const len_submodule_path,
-    bool const archive,
-    char const *const restrict mtime,
-    int const fd_archive,
-    char const *const restrict archive_prefix,
-    char const *const restrict path_archive,
-    unsigned short const len_path_archive,
-    bool const checkout,
-    int const dirfd_checkout,
-    char const *const restrict path_checkout
-) {
-    // Export self as a tree (folder)
-    if (export_commit_tree_entry_tree(
-        archive, mtime, fd_archive, path_archive, len_path_archive,
-        checkout, dirfd_checkout, path_checkout)) {
-        pr_error("Failed to export submodule '%s' as a tree\n", path_archive);
-        return -1;
-    }
-
-    // Find which wanted submodule commit the entry is
-    git_oid const *const submodule_commit_id = git_tree_entry_id(entry);
-    struct parsed_commit_submodule *parsed_commit_submodule = NULL;
-    for (unsigned long i = 0; i < parsed_commit->submodules_count; ++i) {
-        pr_debug("Parsed submodule '%s' commit %s\n",
-        parsed_commit->submodules[i].path,
-        parsed_commit->submodules[i].id_hex_string);
-        if (!git_oid_cmp(
-            &parsed_commit->submodules[i].id, submodule_commit_id)) {
-            parsed_commit_submodule = parsed_commit->submodules + i;
-            break;
-        }
-    }
-    if (parsed_commit_submodule == NULL) {
-        char oid_buffer[GIT_OID_MAX_HEXSIZE + 1];
-        pr_error("Failed to find corresponding wanted commit submodule, "
-        "path: '%s', commit: %s\n", path_checkout,
-        git_oid_tostr(
-            oid_buffer, GIT_OID_MAX_HEXSIZE + 1, submodule_commit_id));
-        return -1;
-    }
-
-    // Find that wanted commit in target repo
-    struct repo const *const restrict target_repo =
-        config->repos + parsed_commit_submodule->target_repo_id;
-    struct parsed_commit const *restrict parsed_commit_in_target_repo =
-        target_repo->parsed_commits + parsed_commit_submodule->target_commit_id;
-    pr_debug("Submodule from target repo '%s', id %ld\n",
-        target_repo->url, parsed_commit_submodule->target_commit_id);
-
-    // Recursively export
-    char const *const restrict name = git_tree_entry_name(entry);
-    unsigned short len_submodule_path_r =
-        len_submodule_path + strlen(name) + strlen(root) + 1;
-    if (len_submodule_path_r >= PATH_MAX) {
-        pr_error("Path too long!\n");
-        return -1;
-    }
-    int r = -1;
-    if (sprintf(submodule_path + len_submodule_path,
-        "%s%s/", root, name) < 0) {
-        pr_error_with_errno("Failed to format name");
-        goto revert_submodule_path;
-    }
-
-    git_commit *commit;
-    if (git_commit_lookup(
-        &commit, target_repo->repository, submodule_commit_id)) {
-        pr_error("Failed to lookup commit\n");
-        goto revert_submodule_path;
-    }
-    git_tree *tree;
-    if (git_commit_tree(&tree, commit)) {
-        pr_error("Failed to get tree pointed by commit\n");
-        goto free_commit;
-    }
-    char mtime_r[TAR_HEADER_MTIME_LEN] = "";
-    if (snprintf(
-        mtime_r, TAR_HEADER_MTIME_LEN, "%011lo", git_commit_time(commit)
-    ) < 0) {
-        pr_error("Failed to format mtime\n");
-        goto free_commit;
-    }
-    struct export_commit_treewalk_payload submodule_payload = {
-        .config = config,
-        .repo = target_repo,
-        .parsed_commit = parsed_commit_in_target_repo,
-        .submodule_path = submodule_path,
-        .len_submodule_path = len_submodule_path_r,
-        .archive = archive,
-        .mtime = mtime_r,
-        .fd_archive = fd_archive,
-        .archive_prefix = archive_prefix,
-        .checkout = checkout,
-        .dirfd_checkout = dirfd_checkout,
-    };
-    if (git_tree_walk(
-        tree, GIT_TREEWALK_PRE, export_commit_treewalk_callback,
-            &submodule_payload)) {
-        pr_error("Failed to walk tree recursively\n");
-        goto free_commit;
-    }
-    r = 0;
-free_commit:
-    git_commit_free(commit);
-revert_submodule_path:
-    submodule_path[len_submodule_path] = '\0';
-    return r;
-};
-
-int export_commit_treewalk_callback(
-	char const *const restrict root,
-    git_tree_entry const *const restrict entry,
-    void *payload
-) {
-    struct export_commit_treewalk_payload *const restrict private_payload =
-        (struct export_commit_treewalk_payload *const restrict) payload;
-    bool const archive = private_payload->archive;
-    bool const checkout = private_payload->checkout;
-    if (archive || checkout);
-    else {
-        pr_error("Neither archive nor checkout needed\n");
-        return -1;
-    }
-    char path_checkout[PATH_MAX];
-    char const *const name = git_tree_entry_name(entry);
-    int r = snprintf(
-        path_checkout, PATH_MAX, "%s%s%s", private_payload->submodule_path,
-        root, name);
-    if (r < 0) {
-        pr_error("Failed to format entry path\n");
-        return -1;
-    }
-    unsigned short len_path_archive = r;
-    char path_archive[PATH_MAX];
-    char const *const restrict archive_prefix =
-        private_payload->archive_prefix;
-    if (archive_prefix && archive_prefix[0] != '\0') {
-        if ((r = snprintf(path_archive, PATH_MAX, "%s%s",
-                    archive_prefix, path_checkout)) < 0) {
-            pr_error("Failed to format entry path\n");
-            return -1;
-        }
-        len_path_archive = r;
-    } else {
-        memcpy(path_archive, path_checkout, len_path_archive + 1);
-    }
-    char const *const restrict mtime = private_payload->mtime;
-    int const fd_archive = private_payload->fd_archive;
-    int const dirfd_checkout = private_payload->dirfd_checkout;
-    switch (git_tree_entry_type(entry)) {
-    case GIT_OBJECT_BLOB:
-        return export_commit_tree_entry_blob(
-            entry, private_payload->repo,
-            archive, mtime, fd_archive, path_archive, len_path_archive,
-            checkout, dirfd_checkout, path_checkout);
-    case GIT_OBJECT_TREE:
-        return export_commit_tree_entry_tree(
-            archive, mtime, fd_archive, path_archive, len_path_archive,
-            checkout, dirfd_checkout, path_checkout);
-    case GIT_OBJECT_COMMIT:
-        return export_commit_tree_entry_commit(
-            root, entry, private_payload->config,
-            private_payload->parsed_commit, private_payload->submodule_path,
-            private_payload->len_submodule_path, archive, mtime, fd_archive,
-            archive_prefix, path_archive, len_path_archive,
-            checkout, dirfd_checkout, path_checkout);
-    default:
-        pr_error("Impossible tree entry type %d\n", git_tree_entry_type(entry));
-        return -1;
-    }
-}
-
-int export_commit_add_global_comment_to_tar(
-    int tar_fd,
-    char const *const restrict repo,
-    char const *const restrict commit,
-    char const *const restrict mtime
-) {
-    char comment[4096];
-    int r = snprintf(comment, 4096, "Archive of repo '%s' commit '%s', "
-                                    "all recursive submodules includeded, "
-                                    "created with git-mirrorer by "
-                                    "Guoxin \"7Ji\" Pu (c) 2023-present",
-                                    repo, commit);
-    if (r < 0) {
-        pr_error("Failed to format comment\n");
-        return -1;
-    }
-    if (r >= 4000) {
-        pr_error("Comment too long: '%s'\n", comment);
-        return -1;
-    }
-    unsigned short const len_comment = r;
-    unsigned short width_length = get_unsigned_short_decimal_width(len_comment);
-     // 1 between length and comment=
-     // 8 for comment=
-     // 1 for ending \n new line
-    unsigned short width_all = width_length + len_comment + 10;
-    for (;;) {
-        width_length = get_unsigned_short_decimal_width(width_all);
-        unsigned const width_all_new = width_length + len_comment + 10;
-        if (width_all_new == width_all) break;
-        width_all = width_all_new;
-    }
-    char content[4096];
-    r = snprintf(content, 4096, "%hu comment=%s\n", width_all, comment);
-    if (r < 0) {
-        pr_error_with_errno("Failed to format content");
-        return -1;
-    }
-    if (tar_add_global_header(tar_fd, mtime, content, r)) {
-        pr_error("Failed to add global header to tar\n");
-        return -1;
-    }
-    return 0;
-}
-
-// 1 path did not exist, or existed but we removed it,
-// 0 exists and is of type, -1 error
-int ensure_path_is_type_at(
-    int dirfd,
-    char const *const restrict path,
-    mode_t type
-) {
-    struct stat stat_buffer;
-    if (fstatat(dirfd, path, &stat_buffer, AT_SYMLINK_NOFOLLOW)) {
-        switch (errno) {
-        case ENOENT:
-            return 1;
-        default:
-            pr_error_with_errno(
-                "Failed to check stat of existing '%s'", path);
-            return -1;
-        }
-    } else {
-        if ((stat_buffer.st_mode & S_IFMT) == type) {
-            pr_debug("'%s' is of expected type %u\n", path, type);
-            return 0;
-        } else {
-            if (ensure_path_non_exist_at(dirfd, path)) {
-                pr_error_with_errno(
-                    "Failed to remove existing '%s' whose type is not %u",
-                    path, type);
-                return -1;
-            }
-            return 1;
-        }
-    }
-}
-
-struct export_handle {
-    bool should_export;
-    char path[PATH_MAX],
-         path_work[PATH_MAX];
-    unsigned short  len_path,
-                    len_path_work;
-    int fd;
-    pid_t child;
-};
-
-int export_handle_init_common(
-    struct export_handle *restrict handle,
-    int const dir_fd,
-    char const commit_string[GIT_OID_MAX_HEXSIZE + 1],
-    char const *const restrict suffix,
-    unsigned short const len_suffix,
-    bool const is_dir
-) {
-    handle->len_path = GIT_OID_MAX_HEXSIZE;
-    memcpy(handle->path, commit_string, GIT_OID_MAX_HEXSIZE);
-    if (suffix && suffix[0]) {
-        handle->len_path += len_suffix;
-        memcpy(handle->path + GIT_OID_MAX_HEXSIZE, suffix, len_suffix);
-    }
-    handle->path[handle->len_path] = '\0';
-    mode_t type, mode;
-    int flags;
-    if (is_dir) {
-        type = S_IFDIR;
-        mode = 0755;
-        flags = O_RDONLY | O_DIRECTORY;
-    } else {
-        type = S_IFREG;
-        mode = 0644;
-        flags = O_WRONLY | O_CREAT;
-    }
-    int r = ensure_path_is_type_at(dir_fd, handle->path, type);
-    if (r > 0) {
-        memcpy(handle->path_work, handle->path, handle->len_path);
-        memcpy(handle->path_work + handle->len_path, ".work", 6);
-        handle->len_path_work += 5;
-        if (ensure_path_non_exist_at(dir_fd, handle->path_work)) {
-            pr_error("Failed to ensure '%s' non-existing\n", handle->path_work);
-            r = -1;
-            goto set_no_export;
-        }
-        if (is_dir) {
-            if (mkdir_recursively_at(dir_fd, handle->path_work)) {
-                pr_error("Failed to create work dir '%s'\n", handle->path_work);
-                r = -1;
-                goto set_no_export;
-            }
-        }
-        if ((handle->fd = openat(
-            dir_fd, handle->path_work, flags, mode)) < 0) {
-            pr_error_with_errno("Failed to open '%s'", handle->path_work);
-            r = -1;
-            goto set_no_export;
-        }
-        handle->should_export = true;
-    } else if (r < 0) {
-        pr_error("Failed to ensure '%s' non-existing or is type %d\n",
-                handle->path, type);
-        r = -1;
-        goto set_no_export;
-    } else {
-        pr_debug("'%s' existing, no need to export\n", handle->path);
-        r = 0;
-        goto set_no_export;
-    }
-    return 0;
-set_no_export:
-    handle->should_export = false;
-    return r;
-}
-
-#define export_handle_init_checkout(handle, dir_fd, commit_string) \
-        export_handle_init_common(handle, dir_fd, commit_string, NULL, 0, true)
-
-int export_handle_init_archive(
-    struct export_handle *restrict handle,
-    int const dir_fd,
-    char const commit_string[GIT_OID_MAX_HEXSIZE + 1],
-    char const *const restrict suffix,
-    unsigned short const len_suffix,
-    char *const *const restrict pipe_args,
-    unsigned short const pipe_args_count
-) {
-    if (export_handle_init_common(
-        handle, dir_fd, commit_string, suffix, len_suffix, false)) {
-        pr_error("Failed to init export handle for archive, common part\n");
-        return -1;
-    }
-    if (!handle->should_export) return 0;
-    if (pipe_args && pipe_args[0] && pipe_args_count) {
-        int fd_pipes[2];
-        if (pipe2(fd_pipes, O_CLOEXEC)) {
-            pr_error_with_errno("Failed to create pipe\n");
-            return -1;
-        }
-        switch ((handle->child = fork())) {
-        case 0: // Child
-            if (dup2(handle->fd, STDOUT_FILENO) < 0) {
-                pr_error_with_errno_file(stderr,
-                    "[Child %ld] Failed to dup archive fd to stdout",
-                    pthread_self());
-                exit(EXIT_FAILURE);
-            }
-            if (dup2(fd_pipes[0], STDIN_FILENO) < 0) {
-                pr_error_with_errno_file(stderr,
-                    "[Child %ld] Failed to dup pipe read end to stdin",
-                    pthread_self());
-                exit(EXIT_FAILURE);
-            }
-            // fd_pipes[0] (pipe read), fd_pipes[1] (pipe write)
-            // and fd_archive will all be closed as they've been
-            // opened/created with O_CLOEXEC
-            if (execvp(pipe_args[0],
-                pipe_args)) {
-                pr_error_with_errno_file(
-                    stderr, "[Child %ld] Failed to execute piper",
-                            pthread_self());
-                exit(EXIT_FAILURE);
-            }
-            pr_error_file(stderr,
-                "[Child %ld] We should not be here\n", pthread_self());
-            exit(EXIT_FAILURE);
-            break;
-        case -1:
-            pr_error_with_errno("Failed to fork");
-            goto close_fd;
-        default: // Parent
-            pr_debug("Forked piper to child %d\n", handle->child);
-            if (close(fd_pipes[0])) { // Close the read end
-                pr_error_with_errno("Failed to close read end of the pipe");
-                goto kill_child;
-            }
-            if (close(handle->fd)) { // Close the original archive fd
-                pr_error_with_errno(
-                    "Failed to close the original archive fd");
-                goto kill_child;
-            }
-            handle->fd = fd_pipes[1]; // write to pipe write end
-            break;
-        }
-    }
-    return 0;
-// These upper tags are only reachable from archive routines, no need to check
-kill_child:
-    kill(handle->child, SIGKILL);
-close_fd:
-    if (close(handle->fd)) {
-        pr_error_with_errno("Failed to close archive fd");
-    }
-    return -1;
-}
-
-int export_commit_prepare(
-    struct config const *const restrict config,
-    struct parsed_commit const *const restrict parsed_commit,
-    struct export_handle *archive_handle,
-    struct work_directory *const restrict workdir_archives,
-    struct export_handle *checkout_handle,
-    struct work_directory *const restrict workdir_checkouts
-) {
-    if (archive_handle->should_export || checkout_handle->should_export);
-    else {
-        pr_error("Commit '%s' should neither be archived or checked out\n",
-                    parsed_commit->id_hex_string);
-        return -1;
-    }
-    if (checkout_handle->should_export) {
-        if (export_handle_init_checkout(
-            checkout_handle, workdir_checkouts->dirfd,
-            parsed_commit->id_hex_string)) {
-            pr_error("Failed to init export handle for checkout\n");
-            return -1;
-        }
-        if (config->clean_checkouts) {
-            if (work_directory_add_keep(workdir_checkouts,
-                checkout_handle->path, checkout_handle->len_path)) {
-                pr_error("Failed to add keep checkout '%s'\n",
-                    checkout_handle->path);
-                goto close_checkout_fd;
-            }
-        }
-    }
-    if (archive_handle->should_export) {
-        if (export_handle_init_archive(
-            archive_handle, workdir_archives->dirfd,
-            parsed_commit->id_hex_string,
-            config->archive_suffix, config->len_archive_suffix,
-            config->archive_pipe_args, config->archive_pipe_args_count)) {
-            pr_error("Failed to init export handle for archive\n");
-            goto close_checkout_fd;
-        }
-        if (config->clean_archives) {
-            if (work_directory_add_keep(workdir_archives,
-                archive_handle->path, archive_handle->len_path)) {
-                pr_error("Failed to add keep archive '%s'\n",
-                    archive_handle->path);
-                goto close_archive_fd;
-            }
-        }
-    }
-    return 0;
-close_archive_fd:
-    if (close(archive_handle->fd)) {
-        pr_error_with_errno("Failed to close archive dirfd");
-    }
-
-close_checkout_fd:
-    if (checkout_handle->should_export) {
-        if (close(checkout_handle->fd)) {
-            pr_error_with_errno("Failed to close checkout dirfd");
-        }
-    }
-    return -1;
-}
-
-/* This should be only be called AFTER the repo is updated */
-/* Updating the repo might break the commits */
-int repo_lookup_all_parsed_commits(
-    struct repo const *const restrict repo
-) {
-    for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
-        struct parsed_commit *const restrict parsed_commit =
-            repo->parsed_commits + i;
-        if (parsed_commit->commit != NULL) {
-            pr_error("Commit '%s' already looked up, no commit should've been "
-                    "looked up when this func is called\n",
-                    parsed_commit->id_hex_string);
-            return -1;
-        }
-        int r = git_commit_lookup(
-            &parsed_commit->commit, repo->repository, &parsed_commit->id);
-        if (r) {
-            pr_error("Failed to lookup commit '%s' in repo '%s', libgit return "
-            "%d\n", parsed_commit->id_hex_string, repo->url, r);
-            for (unsigned long j = 0; j < i; ++j) {
-                git_commit_free(repo->parsed_commits[j].commit);
-                repo->parsed_commits[j].commit = NULL;
-            }
-            return -1;
-        }
-    }
-    return 0;
-}
-
-void *repo_lookup_all_parsed_commits_thread(void *arg) {
-    return (void *)(long)
-        repo_lookup_all_parsed_commits((struct repo const *)arg);
-}
-
-int repo_free_all_parsed_commits(
-    struct repo const *const restrict repo
-) {
-    for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
-        struct parsed_commit *const restrict parsed_commit =
-            repo->parsed_commits + i;
-        if (parsed_commit->commit) {
-            git_commit_free(parsed_commit->commit);
-            parsed_commit->commit = NULL;
-        }
-    }
-    return 0;
-}
-
-int export_commit_write(
-    struct config const *const restrict config,
-    struct repo const *const restrict repo,
-    struct parsed_commit const *const restrict parsed_commit,
-    struct export_handle const *const restrict archive_handle,
-    struct export_handle const *const restrict checkout_handle
-) {
-    git_commit *commit;
-    if (parsed_commit->commit) {
-        if (git_commit_dup(&commit, parsed_commit->commit)) {
-            pr_error("Failed to dup commit\n");
-            return -1;
-        }
-    } else {
-        if (git_commit_lookup(&commit, repo->repository, &parsed_commit->id)) {
-            pr_error("Failed to lookup commit\n");
-            return -1;
-        }
-    }
-    git_tree *tree;
-    if (git_commit_tree(&tree, commit)) {
-        pr_error("Failed to get the tree pointed by commit\n");
-        git_commit_free(commit);
-        return -1;
-    }
-    pr_info("Exporting: '%s': %s ...\n",
-        repo->url, parsed_commit->id_hex_string);
-    char submodule_path[PATH_MAX] = "";
-    unsigned short len_submodule_path = 0;
-    char archive_prefix[PATH_MAX] = "";
-    if (config->archive_gh_prefix) {
-        if (snprintf(archive_prefix, PATH_MAX, "%s-%s/", repo->short_name,
-        parsed_commit->id_hex_string) < 0) {
-            pr_error_with_errno("Failed to generate github-like prefix\n");
-            git_commit_free(commit);
-            return -1;
-        }
-        pr_debug("Will add github-like prefix '%s' to tar\n", archive_prefix);
-    }
-    char mtime[TAR_HEADER_MTIME_LEN] = "";
-    if (snprintf(
-        mtime, TAR_HEADER_MTIME_LEN, "%011lo", git_commit_time(commit)
-    ) < 0) {
-        pr_error("Failed to format mtime\n");
-        git_commit_free(commit);
-        return -1;
-    }
-    if (archive_handle->should_export) {
-        if (export_commit_add_global_comment_to_tar(archive_handle->fd,
-            repo->url, parsed_commit->id_hex_string, mtime)) {
-            pr_error("Failed to add pax global header comment\n");
-            git_commit_free(commit);
-            return -1;
-        }
-    }
-    struct export_commit_treewalk_payload export_commit_treewalk_payload = {
-        .config = config,
-        .repo = repo,
-        .parsed_commit = parsed_commit,
-        .submodule_path = submodule_path,
-        .len_submodule_path = len_submodule_path,
-        .archive = archive_handle->should_export,
-        .mtime = mtime, // second,
-        // there's also git_commit_time_offset(commit), one offset for a minute
-        .fd_archive = archive_handle->fd,
-        .archive_prefix = archive_prefix,
-        .checkout = checkout_handle->should_export,
-        .dirfd_checkout = checkout_handle->fd,
-    };
-    if (git_tree_walk(
-        tree, GIT_TREEWALK_PRE, export_commit_treewalk_callback,
-        (void *)&export_commit_treewalk_payload)) {
-        pr_error("Failed to walk through tree\n");
-        git_commit_free(commit);
-        return -1;
-    }
-    git_commit_free(commit);
-    pr_debug("Ended exporting repo '%s' commit %s\n",
-        repo->url, parsed_commit->id_hex_string);
-    return 0;
-}
-
-int export_commit_finish(
-    struct export_handle *archive_handle,
-    struct export_handle *checkout_handle,
-    int const dirfd_archives,
-    int const dirfd_checkouts,
-    bool const force
-) {
-    int r = 0;
-    if (archive_handle->should_export) {
-        if (close(archive_handle->fd)) {
-            pr_error_with_errno("Failed to clsoe archive fd");
-            r = -1;
-        }
-        if (archive_handle->child > 0) {
-            int status = 0;
-            pid_t child_waited = waitpid(
-                archive_handle->child, &status,
-                force ? WNOHANG : 0);
-            bool waited = false;
-            switch (child_waited) {
-            case -1:
-                pr_error("Failed to wait for child\n");
-                break;
-            case 0:
-                if (!force) {
-                    pr_warn("Waited child is 0 but we're not waiting nohang\n");
-                }
-                break;
-            default:
-                if (child_waited == archive_handle->child) {
-                    waited = true;
-                } else {
-                    pr_warn("Waited child %d is not what we expected %d\n",
-                            child_waited, archive_handle->child);
-                }
-                break;
-            }
-            if (!waited) {
-                pr_warn("Child not properly ended (yet), force to kill it");
-                if (kill(archive_handle->child, SIGKILL)) {
-                    pr_error_with_errno("Failed to force kill child %d",
-                        archive_handle->child);
-                }
-                r = -1;
-            }
-            if (status) {
-                pr_error("Piper child returned with %d\n", status);
-                r = -1;
-            }
-            archive_handle->child = -1;
-        }
-        if (!force &&
-            renameat(dirfd_archives, archive_handle->path_work,
-                    dirfd_archives, archive_handle->path)) {
-            pr_error_with_errno("Failed to move '%s' to '%s'",
-                archive_handle->path_work, archive_handle->path);
-            r = -1;
-        }
-    }
-    if (checkout_handle->should_export) {
-        if (close(checkout_handle->fd)) {
-            pr_error_with_errno("Failed to close checkout dirfd");
-            r = -1;
-        }
-        if (!force &&
-            renameat(dirfd_checkouts, checkout_handle->path_work,
-                dirfd_checkouts, checkout_handle->path)) {
-            pr_error_with_errno("Failed to move '%s' to '%s'",
-                checkout_handle->path_work, checkout_handle->path);
-            r = -1;
-        }
-    }
-    return r;
-}
-
-int export_commit_finish_force(
-    struct export_handle *archive_handle,
-    struct export_handle *checkout_handle
-) {
-    int r = 0;
-    if (archive_handle->should_export) {
-        if (close(archive_handle->fd)) {
-            pr_error_with_errno("Failed to clsoe archive fd");
-            r = -1;
-        }
-        if (archive_handle->child > 0) {
-            int status = 0;
-            pid_t child_waited = waitpid(archive_handle->child, &status, WNOHANG);
-            if (child_waited != archive_handle->child) {
-                pr_error_with_errno("Waited child is not the same");
-                r = -1;
-            }
-            if (status) {
-                pr_error("Piper returned with %d\n", status);
-                r = -1;
-            }
-        }
-        if (rename(archive_handle->path_work, archive_handle->path)) {
-            pr_error_with_errno("Failed to move '%s' to '%s'",
-                archive_handle->path_work, archive_handle->path);
-            r = -1;
-        }
-    }
-    if (checkout_handle->should_export) {
-        if (close(checkout_handle->fd)) {
-            pr_error_with_errno("Failed to close checkout dirfd");
-            r = -1;
-        }
-        if (rename(checkout_handle->path_work, checkout_handle->path)) {
-            pr_error_with_errno("Failed to move '%s' to '%s'",
-                checkout_handle->path_work, checkout_handle->path);
-            r = -1;
-        }
-    }
-    return r;
-}
-
-int export_commit_single_threaded(
-    struct config const *const restrict config,
-    struct repo const *const restrict repo,
-    struct parsed_commit const *const restrict parsed_commit,
-    bool const should_archive,
-    struct work_directory *const restrict workdir_archives,
-    bool const should_checkout,
-    struct work_directory *const restrict workdir_checkouts
-) {
-    struct export_handle archive_handle = {.should_export = should_archive};
-    struct export_handle checkout_handle = {.should_export = should_checkout};
-    if (export_commit_prepare(
-            config, parsed_commit,
-            &archive_handle, workdir_archives,
-            &checkout_handle, workdir_checkouts)) {
-        pr_error("Failed to preapre to export commit '%s'\n",
-                        parsed_commit->id_hex_string);
-        return -1;
-    }
-    if (archive_handle.should_export || checkout_handle.should_export);
-    else {
-        return 0;
-    }
-    if (export_commit_write(config, repo, parsed_commit,
-                    &archive_handle, &checkout_handle)) {
-        pr_error("Failed to write export commit '%s'\n",
-                    parsed_commit->id_hex_string);
-        export_commit_finish(&archive_handle, &checkout_handle,
-            workdir_archives->dirfd, workdir_checkouts->dirfd, true);
-        return -1;
-    }
-    if (export_commit_finish(&archive_handle, &checkout_handle,
-            workdir_archives->dirfd, workdir_checkouts->dirfd, false)) {
-        pr_error("Failed to finish exporting of commit\n");
-        return -1;
-    }
-    pr_info("Exported: '%s': %s\n",
-        repo->url, parsed_commit->id_hex_string);
-    return 0;
-}
-
-
-// Called should've done export_commit_prepare
-int export_commit_write_and_finish(
-    struct config const *const restrict config,
-    struct repo const *const restrict repo,
-    struct parsed_commit const *const restrict parsed_commit,
-    struct export_handle *const restrict archive_handle,
-    int const dirfd_archives,
-    struct export_handle *const restrict checkout_handle,
-    int const dirfd_checkouts
-) {
-    if (export_commit_write(config, repo, parsed_commit,
-                    archive_handle, checkout_handle)) {
-        pr_error("Failed to write export commit '%s'\n",
-                    parsed_commit->id_hex_string);
-        export_commit_finish(archive_handle, checkout_handle,
-            dirfd_archives, dirfd_checkouts, true);
-        return -1;
-    }
-    if (export_commit_finish(archive_handle, checkout_handle,
-            dirfd_archives, dirfd_checkouts, false)) {
-        pr_error("Failed to finish exporting of commit\n");
-        return -1;
-    }
-    pr_info("Exported: '%s': %s\n",
-        repo->url, parsed_commit->id_hex_string);
-    return 0;
-}
-
-struct export_commit_write_and_finish_arg {
-    struct config const *restrict config;
-    struct repo const *restrict repo;
-    struct parsed_commit const *restrict parsed_commit;
-    struct export_handle *restrict archive_handle;
-    int dirfd_archives;
-    struct export_handle *restrict checkout_handle;
-    int dirfd_checkouts;
-};
-
-void *export_commit_write_and_finish_thread(void *arg) {
-    struct export_commit_write_and_finish_arg *const restrict private_arg =
-        (struct export_commit_write_and_finish_arg *)arg;
-    return (void *)(long)export_commit_write_and_finish(
-        private_arg->config, private_arg->repo, private_arg->parsed_commit,
-        private_arg->archive_handle, private_arg->dirfd_archives,
-        private_arg->checkout_handle, private_arg->dirfd_checkouts
-    );
-}
-
-int export_wanted_object_with_symlinks_atomic_optional(
-    struct config const *const restrict config,
-    struct repo const *const restrict repo,
-    struct wanted_object const *const restrict wanted_object,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts
-) {
-    switch (wanted_object->type) {
-    case WANTED_TYPE_ALL_BRANCHES:
-    case WANTED_TYPE_ALL_TAGS:
-        return 0;
-    default:
-        break;
-    }
-    if (wanted_object->archive | wanted_object->checkout);
-    else return 0;
-    if (wanted_object_guarantee_symlinks(
-        wanted_object, repo,
-        config->archive_suffix, config->len_archive_suffix,
-        workdir_archives->links_dirfd,
-        workdir_checkouts->links_dirfd)) {
-        pr_error("Failed to guarantee symlinks for wanted object '%s' "
-            "of repo '%s'\n", wanted_object->name, repo->url);
-        return -1;
-    }
-    switch (wanted_object->type) {
-    case WANTED_TYPE_BRANCH:
-    case WANTED_TYPE_TAG:
-    case WANTED_TYPE_REFERENCE:
-        if (!((struct wanted_reference const *)wanted_object)
-            ->commit_resolved) {
-            pr_error("Reference '%s' is not resolved into commit\n",
-                    wanted_object->name);
-            return -1;
-        }
-        __attribute__((fallthrough));
-    case WANTED_TYPE_HEAD:
-        if (!((struct wanted_reference const *)wanted_object)
-            ->commit_resolved) {
-            pr_warn("Reference '%s' is not resolved into commit\n",
-                    wanted_object->name);
-            break;
-        }
-        __attribute__((fallthrough));
-    case WANTED_TYPE_COMMIT: {
-        if (wanted_object->parsed_commit_id == (unsigned long) -1) {
-            pr_error("Commit %s is not parsed yet\n",
-                wanted_object->hex_string);
-            return -1;
-        }
-        if (export_commit_single_threaded(config, repo,
-            repo->parsed_commits + wanted_object->parsed_commit_id,
-            wanted_object->archive, workdir_archives,
-            wanted_object->checkout, workdir_checkouts)) {
-            pr_error("Failed to export commit %s of repo '%s'\n",
-                wanted_object->hex_string, repo->url);
-            return -1;
-        }
-        break;
-    }
-    default:
-        pr_error("Impossible wanted type %d (%s)\n",
-            wanted_object->type, wanted_type_strings[wanted_object->type]);
-        return -1;
-    }
-    return 0;
-}
-
-int repo_guarantee_all_wanted_objects_symlinks(
-    struct repo const *const restrict repo,
-    char const *const restrict archive_suffix,
-    unsigned short const len_archive_suffix,
-    int const archives_links_dirfd,
-    int const checkouts_links_dirfd
-) {
-    for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
-        struct wanted_object const *const restrict wanted_object =
-            repo->wanted_objects + i;
-        if (wanted_object_guarantee_symlinks(
-            wanted_object, repo,
-            archive_suffix, len_archive_suffix,
-            archives_links_dirfd,
-            checkouts_links_dirfd)) {
-            pr_error("Failed to guarantee symlinks for wanted object '%s' "
-                "of repo '%s'\n", wanted_object->name, repo->url);
-            return -1;
-        }
-    }
-    return 0;
-}
-
-int export_all_repos_single_threaded(
-    struct config const *const restrict config,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts
-) {
-    pr_debug("Exporting all repos (single-threaded)...\n");
-    int r = -1;
-    unsigned long repo_free_count = config->repos_count;
-    for (unsigned long i = 0; i < config->repos_count; ++i) {
-        if (repo_lookup_all_parsed_commits(config->repos + i)) {
-            repo_free_count = i;
-            goto free_commits;
-        }
-    }
-    for (unsigned long i = 0; i < config->repos_count; ++i) {
-        struct repo const *const restrict repo = config->repos + i;
-        for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
-            struct wanted_object const *const restrict wanted_object =
-                repo->wanted_objects + j;
-            if (export_wanted_object_with_symlinks_atomic_optional(
-                    config, repo, wanted_object,
-                    workdir_archives, workdir_checkouts)) {
-                pr_error("Failed to export wanted object '%s'\n",
-                        wanted_object->name);
-                goto free_commits;
-            }
-        }
-    }
-    pr_debug("Exported all repos\n");
-    r = 0;
-free_commits:
-    for (unsigned long i = 0; i < repo_free_count; ++i) {
-        repo_free_all_parsed_commits(config->repos + i);
-    }
-    return r;
-}
-
-int guanrantee_all_repos_wanted_objects_symlinks(
-    struct config const *const restrict config,
-    int const archives_links_dirfd,
-    int const checkouts_links_dirfd
-) {
-    for (unsigned long i = 0; i < config->repos_count; ++i) {
-        struct repo const *const restrict repo = config->repos + i;
-        if (repo_guarantee_all_wanted_objects_symlinks(
-            repo, config->archive_suffix, config->len_archive_suffix,
-            archives_links_dirfd, checkouts_links_dirfd)) {
-            pr_error("Failed to guarantee symlinks for all wanted objects of "
-            "repo '%s'\n", repo->url);
-            return -1;
-        }
-    }
-    return 0;
-}
-struct guanrantee_all_repos_wanted_objects_symlinks_arg {
-    struct config const *restrict config;
-    int const archives_links_dirfd;
-    int const checkouts_links_dirfd;
-};
-
-void *guanrantee_all_repos_wanted_objects_symlinks_thread(void *arg) {
-    struct guanrantee_all_repos_wanted_objects_symlinks_arg *private_arg =
-        (struct guanrantee_all_repos_wanted_objects_symlinks_arg *)arg;
-    return (void *)(long)
-                guanrantee_all_repos_wanted_objects_symlinks(
-                    private_arg->config,
-                    private_arg->archives_links_dirfd,
-                    private_arg->checkouts_links_dirfd);
-}
-
-int export_all_repos_multi_threaded_lookup(
-    struct config const *const restrict config
-) {
-   struct prepare_thread_handle {
-        pthread_t thread;
-        struct repo const *repo;
-        bool active;
-    };
-    struct prepare_thread_handle *handles = calloc(
-        config->export_threads, sizeof *handles);
-    if (handles == NULL) {
-        pr_error("Failed to allocate memory for prepare threads\n");
-        return -1;
-    }
-    unsigned long repo_prepared_count = 0;
-    int r = -1;
-    long thread_ret;
-    for (; repo_prepared_count < config->repos_count;
-        ++repo_prepared_count) {
-        struct repo const *const restrict repo =
-            config->repos + repo_prepared_count;
-        bool thread_added = false;
-        for (;;) {
-            unsigned short threads_active_count = 0;
-            for (unsigned short i = 0; i < config->export_threads; ++i) {
-                struct prepare_thread_handle *handle = handles + i;
-                if (handle->active) {
-                    r = pthread_tryjoin_np(
-                        handle->thread, (void **)&thread_ret);
-                    switch (r) {
-                    case 0:
-                        handle->active = false;
-                        if (thread_ret) {
-                            pr_error("Thread %ld for preparing repo '%s' "
-                            "returned with %ld\n", handle->thread,
-                            handle->repo->url, thread_ret);
-                            r = -1;
-                            goto wait_threads;
-                        }
-                        break;
-                    case EBUSY:
-                        break;
-                    default:
-                        pr_error("Failed to nonblocking wait for thread %ld "
-                        "for preparing repo '%s', pthread return %d\n",
-                        handle->thread, handle->repo->url, r);
-                        r = -1;
-                        goto wait_threads;
-                    }
-                }
-                // If it's already running, ofc inc it;
-                // If it's not, then we put a thread to it, also inc it
-                ++threads_active_count;
-                if (!handle->active) {
-                    handle->repo = repo;
-                    r = pthread_create(&handle->thread, NULL,
-                        repo_lookup_all_parsed_commits_thread, (void *)repo);
-                    if (r) {
-                        pr_error("Failed to create thread to prepare repo "
-                        "'%s', pthread return '%d'\n", repo->url, r);
-                        r = -1;
-                        goto wait_threads;
-                    }
-                    handle->active = true;
-                    thread_added = true;
-                    break;
-                }
-            }
-            if (thread_added) break;
-            usleep(100);
-            if (threads_active_count == config->export_threads) {
-                pr_debug("Active threads reached max\n");
-            }
-            pr_debug("%hu threads running for looking up commits\n",
-                            threads_active_count);
-        }
-    }
-    r = 0;
-wait_threads:
-    if (r) pr_warn("Waiting for all exporting preparation threads to end...\n");
-    for (unsigned short i = 0; i < config->export_threads; ++i) {
-        struct prepare_thread_handle *handle = handles + i;
-        if (handle->active) {
-            int r2 = pthread_join(handle->thread, (void **)&thread_ret);
-            if (r2) {
-                pr_error("Failed to join thread %ld for preparing repo '%s', "
-                            "pthread return %d\n",
-                            handle->thread, handle->repo->url, r);
-                r = -1;
-            }
-            handle->active = false;
-            if (thread_ret) {
-                pr_error(
-                    "Thread %ld for preparing repo '%s' returned with %ld\n",
-                    handle->thread, handle->repo->url, thread_ret);
-                r = -1;
-            }
-        }
-    }
-    free(handles);
-    if (r) {
-        for (unsigned long i = 0; i < repo_prepared_count; ++i) {
-            if (repo_free_all_parsed_commits(config->repos + i)) {
-                pr_error("Failed to free all parsed commits in repo '%s'\n",
-                    config->repos[i].url);
-            }
-        }
-    }
-    return r;
-}
-struct commit_with_repo {
-    struct parsed_commit *commit;
-    struct repo *repo;
-};
-
-static inline
-void commit_with_repo_list_swap_item(
-    struct commit_with_repo *const restrict commits_with_repos,
-    unsigned long const i,
-    unsigned long const j
-) {
-    struct commit_with_repo buffer = commits_with_repos[i];
-    commits_with_repos[i] = commits_with_repos[j];
-    commits_with_repos[j] = buffer;
-}
-
-static inline
-unsigned long commit_with_repo_list_partition(
-    struct commit_with_repo *const restrict commits_with_repos,
-    unsigned long const low,
-    unsigned long const high
-) {
-    git_oid const *const restrict pivot = 
-        &commits_with_repos[high].commit->id;
-    unsigned long i = low - 1;
-    for (unsigned long j = low; j < high; ++j) {
-        // pr_debug("Comparing %s @ %p vs %s @ %p \n", 
-        //     commits[j]->id_hex_string, commits[j], 
-        //     pivot->id_hex_string, pivot);
-        if (git_oid_cmp(&commits_with_repos[j].commit->id, pivot) < 0)
-            commit_with_repo_list_swap_item(commits_with_repos, ++i, j);
-    }
-    commit_with_repo_list_swap_item(commits_with_repos, ++i, high);
-    return i;
-}
-
-void commit_with_repo_list_quick_sort(
-    struct commit_with_repo *const restrict commits_with_repos,
-    unsigned long const low,
-    unsigned long const high
-) {
-    if (low < high) {
-        unsigned long const pivot = commit_with_repo_list_partition(
-                                commits_with_repos, low, high);
-         // if pivot is 0, that will make the new high (ulong) -1
-        if (pivot) 
-            commit_with_repo_list_quick_sort(
-                    commits_with_repos, low, pivot - 1);
-        commit_with_repo_list_quick_sort(commits_with_repos, pivot + 1, high);
-    }
-}
-
-// To avoid race condition, i.e., same commit referenced by multiple
-// repos, which is usually caused by repos being clones/mirrors of each
-// other, we need to go through the whole repos and commits list first,
-// to create a sorted, non-duplicated list of all commits.
-// As a result of such iterating and sorting, single-thread exporting
-// could theoritically be better if we have too many commits
-long export_all_repos_get_unique_commits(
-    struct commit_with_repo **const restrict unique_commits,
-    struct config const *const restrict config
-) {
-    unsigned long commits_allocated = 0;
-    for (unsigned long i = 0; i < config->repos_count; ++i) {
-        commits_allocated += config->repos[i].parsed_commits_count;
-    }
-    // No commits at all, this shouldn't happen, but silent return
-    if (commits_allocated == 0) return 0;
-    struct commit_with_repo *restrict commits_with_repos = 
-        malloc(sizeof *commits_with_repos * commits_allocated);
-    if (commits_with_repos == NULL) {
-        pr_error("Failed to allocate memory for all commits\n");
-        return -1;
-    }
-    unsigned long commit_id = 0;
-    for (unsigned long i = 0; i < config->repos_count; ++i) {
-        struct repo *const restrict repo = config->repos + i;
-        for (unsigned long j = 0; j < repo->parsed_commits_count; ++j) {
-            struct parsed_commit *const restrict commit = 
-                repo->parsed_commits + j;
-            if (commit->archive || commit->checkout) {
-                struct commit_with_repo *commit_with_repo = 
-                    commits_with_repos + commit_id;
-                commit_with_repo->commit = commit;
-                commit_with_repo->repo = repo;
-                // This shouldn't happen
-                if (++commit_id > commits_allocated) {
-                    pr_error("Commits count overflow, %lu > %lu\n", 
-                                commit_id,  commits_allocated);
-                    goto free_commits;
-
-                }
-            }
-        }
-    }
-    unsigned long commits_count = commit_id;
-    commit_with_repo_list_quick_sort(commits_with_repos, 0, commits_count - 1);
-    commit_id = 0;
-    git_oid *commit_oid_last_unique = &commits_with_repos[0].commit->id;
-    for (unsigned long i = 1; i < commits_count; ++i) {
-        int r = git_oid_cmp(commit_oid_last_unique, 
-                        &commits_with_repos[i].commit->id);
-        if (r > 0) {
-            pr_error("Descending commits in commits list which should be "
-                        "ascending\n");
-            goto free_commits;
-        } else if (r < 0) {
-            if (++commit_id != i)
-                commits_with_repos[commit_id] = commits_with_repos[i];
-            commit_oid_last_unique = 
-                &commits_with_repos[commit_id].commit->id;
-        } else { // Same, remove dup
-            struct parsed_commit *const restrict commit_unique = 
-                commits_with_repos[commit_id].commit;
-            struct parsed_commit *const restrict commit_duplicated = 
-                commits_with_repos[i].commit;
-            if (commit_duplicated->archive) commit_unique->archive = true;
-            if (commit_duplicated->checkout) commit_unique->checkout = true;
-        }
-    }
-    struct commit_with_repo *commits_with_repos_new = 
-        realloc(commits_with_repos, 
-                sizeof *commits_with_repos_new * commits_count);
-    if (commits_with_repos_new) {
-        commits_with_repos = commits_with_repos_new;
-    } else {
-        pr_error("Failed to release memory occupied by duplicated commits\n");
-        goto free_commits;
-    }
-    // It's impossible to return 0 at this point
-    // No need to check and deallocate
-    commits_count = commit_id + 1;
-    *unique_commits = commits_with_repos;
-    return (long)commits_count;
-free_commits:
-    free(commits_with_repos);
-    *unique_commits = NULL;
-    return -1;
-}
-
-int export_all_unique_commits_multi_threaded(
-    struct commit_with_repo *const restrict commits,
-    unsigned long const commits_count,
-    struct config const *const restrict config,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts
-) {
-    if (!commits_count) return 0;
-    unsigned short const threads_count = 
-        config->export_threads > 2 ? config->export_threads : 2;
-    struct thread_handle {
-        pthread_t thread;
-        struct export_handle archive_handle;
-        struct export_handle checkout_handle;
-        struct export_commit_write_and_finish_arg arg;
-        bool active;
-    };
-    struct thread_handle *handles = calloc(threads_count, sizeof *handles);
-    if (handles == NULL) {
-        pr_error_with_errno("Failed to allocate memory for handles");
-        return -1;
-    }
-    int r = -1;
-    long thread_ret;
-    for (unsigned short i = 0; i < threads_count; ++i) {
-        struct export_commit_write_and_finish_arg *arg = &(handles + i)->arg;
-        arg->config = config;
-        arg->dirfd_archives = workdir_archives->dirfd;
-        arg->dirfd_checkouts = workdir_checkouts->dirfd;
-        arg->archive_handle = &handles[i].archive_handle;
-        arg->checkout_handle = &handles[i].checkout_handle;
-    }
-    for (unsigned long i = 0; i < commits_count; ++i) {
-        struct parsed_commit const *const restrict parsed_commit =
-                                        commits[i].commit;
-        if (parsed_commit->archive || parsed_commit->checkout);
-        else continue;
-        struct export_handle archive_handle = {
-            .should_export = parsed_commit->archive};
-        struct export_handle checkout_handle = {
-            .should_export = parsed_commit->checkout};
-        if (export_commit_prepare(config, parsed_commit,
-                        &archive_handle, workdir_archives,
-                        &checkout_handle, workdir_checkouts)) {
-            pr_error("Failed to prepare to export commit '%s'\n",
-                        parsed_commit->id_hex_string);
-            goto wait_threads;
-        }
-        if (archive_handle.should_export || checkout_handle.should_export);
-        else continue;
-        bool thread_added = false;
-        for (;;) {
-            unsigned short threads_active_count = 0;
-            for (unsigned short k = 0; k < config->export_threads; ++k) {
-                struct thread_handle *handle = handles + k;
-                if (handle->active) {
-                    r = pthread_tryjoin_np(handle->thread, (
-                                            void **)&thread_ret);
-                    switch (r) {
-                    case 0:
-                        handle->active = false;
-                        if (thread_ret) {
-                            pr_error(
-                                "Thread %ld for exporting commit %s return"
-                                "with %ld", handle->thread,
-                                            parsed_commit->id_hex_string,
-                                            thread_ret);
-                            goto wait_threads;
-                        }
-                        break;
-                    case EBUSY:
-                        break;
-                    default:
-                        pr_error("Failed to nonblocking wait for thread %ld"
-                        " for exporting commit %s, pthread return %d\n",
-                        handle->thread, parsed_commit->id_hex_string, r);
-                        goto wait_threads;
-                    }
-                }
-                ++threads_active_count;
-                if (!handle->active) {
-                    handle->archive_handle = archive_handle;
-                    handle->checkout_handle = checkout_handle;
-                    handle->arg.repo = commits[i].repo;
-                    handle->arg.parsed_commit = parsed_commit;
-                    r = pthread_create(&handle->thread, NULL,
-                            export_commit_write_and_finish_thread,
-                            &handle->arg);
-                    if (r) {
-                        pr_error("Failed to create thread to export commit "
-                                "%s, pthread return %d\n",
-                                parsed_commit->id_hex_string, r);
-                        goto wait_threads;
-                    }
-                    handle->active = true;
-                    thread_added = true;
-                    break;
-                }
-            }
-            if (thread_added) break;
-            usleep(100);
-        }
-    }
-    r = 0;
-wait_threads:
-    if (r) pr_warn("Waiting for all exporting work threads to end...\n");
-    for (unsigned short i = 0; i < threads_count; ++i) {
-        struct thread_handle *handle = handles + i;
-        if (handle->active) {
-            int r2 = pthread_join(handle->thread, (void **)&thread_ret);
-            if (r2) {
-                pr_error("Failed to join thread %ld for exporting commit %s , "
-                            "pthread return %d\n", handle->thread,
-                                handle->arg.parsed_commit->id_hex_string, r);
-                r = -1;
-            }
-            handle->active = false;
-            if (thread_ret) {
-                pr_error(
-                    "Thread %ld for exporting commit %s returned with %ld\n",
-                    handle->thread, handle->arg.parsed_commit->id_hex_string,
-                    thread_ret);
-                r = -1;
-            }
-        }
-    }
-    free(handles);
-    return r;
-}
-
-int export_all_repos_multi_threaded(
-    struct config const *const restrict config,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts
-) {
-    pr_debug("Exporting all repos (%hu threads + 1 for symlinks)\n",
-        config->export_threads);
-    struct guanrantee_all_repos_wanted_objects_symlinks_arg
-        symlinks_thread_arg = {
-            .config = config,
-            .archives_links_dirfd = workdir_archives->links_dirfd,
-            .checkouts_links_dirfd = workdir_checkouts->links_dirfd
-        };
-    pthread_t symlinks_thread;
-    int r = pthread_create(&symlinks_thread, NULL,
-                guanrantee_all_repos_wanted_objects_symlinks_thread,
-                &symlinks_thread_arg);
-    if (r) {
-        pr_error("Failed to create thread for generating symlinks, pthread "
-            "return %d\n", r);
-        return -1;
-    }
-    r = -1;
-    struct commit_with_repo *commits = NULL;
-    long commits_count = export_all_repos_get_unique_commits(
-                            &commits, config);
-    if (commits_count < 0) {
-        pr_error("Failed to get all unique commits\n");
-        goto free_commits;
-    } else if (commits_count == 0) {
-        pr_info("No commits to export\n");
-        r = 0;
-        goto free_commits;
-    } else {
-        r = export_all_unique_commits_multi_threaded(
-            commits, commits_count, config,
-            workdir_archives, workdir_checkouts);
-        free(commits);
-        commits = NULL;
-        if (r) {
-            pr_error("Failed to export repos (multi-threaded)\n");
-            goto free_commits;
-        }
-    }
-    r = 0;
-free_commits:
-    for (unsigned long i = 0; i < config->repos_count; ++i) {
-        repo_free_all_parsed_commits(config->repos + i);
-    }
-// wait_symlink_thread:
-    long thread_ret;
-    int r2 = pthread_join(symlinks_thread, (void **)&thread_ret);
-    if (r2) {
-        pr_error("Failed to join thread %ld for symlinks, pthread return %d\n",
-            symlinks_thread, r2);
-        r = -1;
-    }
-    if (thread_ret) {
-        pr_error("Thread %ld for guaranteeing symlinks returned with %ld\n",
-                symlinks_thread, thread_ret);
-        r = -1;
-    }
-    if (r) {
-        pr_warn("Failed to export all repos, but commits already exported "
-            "should not be affected\n");
-    } else {
-        pr_debug("Exported all repos\n");
-    }
-    return r;
-}
-
-int export_all_repos(
-    struct config const *const restrict config,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts
-) {
-    if (config->export_threads <= 1) {
-        return export_all_repos_single_threaded(config,
-            workdir_archives, workdir_checkouts);
-    } else {
-        return export_all_repos_multi_threaded(config,
-            workdir_archives, workdir_checkouts);
-    }
-}
-
-int raise_nofile_limit() {
-    struct rlimit rlimit;
-    if (getrlimit(RLIMIT_NOFILE, &rlimit)) {
-        pr_error_with_errno("Failed to get limit of opened files");
-        return -1;
-    }
-    if (rlimit.rlim_cur <= 1024) {
-        pr_warn(
-            "Current nofile limit too small (%lu), this may result in "
-            "unexpeceted behaviours as git-mirrorer caches all repos "
-            "with all of their fds kept open during the whole run. "
-            "~10 fds are needed per repo.\n",
-            rlimit.rlim_cur);
-    }
-    if (rlimit.rlim_cur == rlimit.rlim_max) return 0;
-    rlimit.rlim_cur = rlimit.rlim_max > 16384 ? 16384 : rlimit.rlim_max;
-    if (setrlimit(RLIMIT_NOFILE, &rlimit)) {
-        pr_error_with_errno("Failed to raise limit of opened files");
-        return -1;
-    }
-    pr_info("Raised limit of opened file descriptors to %lu\n",
-            rlimit.rlim_cur);
-    return 0;
-}
-
-int clean_all_dirs(
-    struct work_directory *const restrict workdir_repos,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts,
-    struct config const *const restrict config
-) {
-    int r = 0;
-    if (config->clean_repos && work_directory_clean(
-            workdir_repos, config->clean_links_pass, 
-            HASH_STRING_LEN > 5 ? HASH_STRING_LEN + 1 : 6)) {
-        pr_error("Failed to clean repos workdir '%s'\n", workdir_repos->path);
-        r = -1;
-    }
-    if (config->clean_archives && work_directory_clean(
-            workdir_archives, config->clean_links_pass, 
-            config->len_archive_suffix + (
-                GIT_OID_MAX_HEXSIZE > 5 ? GIT_OID_MAX_HEXSIZE + 1 : 6))) {
-        pr_error("Failed to clean archives workdir '%s'\n",
-                workdir_archives->path);
-        r = -1;
-    }
-    if (config->clean_checkouts && work_directory_clean(
-            workdir_checkouts, config->clean_links_pass,
-            GIT_OID_MAX_HEXSIZE > 5 ? GIT_OID_MAX_HEXSIZE + 1 : 6)) {
-        pr_error("Failed to clean checkouts workdir '%s'\n",
-                workdir_repos->path);
-        r = -1;
-    }
-    return r;
-}
-
-int work_oneshot(
-    struct config *const restrict config,
-    struct work_directory *const restrict workdir_repos,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts
-) {
-    if (mirror_all_repos(
-            config, workdir_repos, config->clean_repos)) {
-        pr_error("Failed to mirro all repos\n");
-        return -1;
-    }
-    if (export_all_repos(
-            config, workdir_archives, workdir_checkouts)) {
-        pr_error("Failed to export all repos (archives and checkouts)\n");
-        return -1;
-    }
-    if (clean_all_dirs(
-        workdir_repos, workdir_archives, workdir_checkouts, config)) {
-        pr_error("Failed to clean up all folders\n");
-        return -1;
-    }
-    return 0;
-}
-
-int work_daemon(
-    struct config *const restrict config,
-    char const *const restrict config_path,
-    struct work_directory *const restrict workdir_repos,
-    struct work_directory *const restrict workdir_archives,
-    struct work_directory *const restrict workdir_checkouts
-) {
-    bool watch_config = false;
-    struct stat stat_buffer = {0};
-    struct timespec config_mtime = {0};
-    if (config_path && strcmp(config_path, "-")) {
-        if (stat(config_path, &stat_buffer)) {
-            pr_warn("Failed to stat config '%s' to get its mtime, won't "
-                "watch config\n", config_path);
-        } else {
-            config_mtime = stat_buffer.st_mtim;
-            pr_info("Started watching config '%s'\n", config_path);
-            watch_config = true;
-        }
-    }
-    for (;;) {
-        if (mirror_all_repos(
-                config, workdir_repos, config->clean_repos)) {
-            pr_error("Failed to mirro all repos\n");
-            return -1;
-        }
-        if (export_all_repos(
-                config, workdir_archives, workdir_checkouts)) {
-            pr_error("Failed to export all repos (archives and checkouts)\n");
-            return -1;
-        }
-        if (clean_all_dirs(
-            workdir_repos, workdir_archives, workdir_checkouts, config)) {
-            pr_error("Failed to clean up all folders\n");
-            return -1;
-        }
-        // Cleanup
-        // Free all repos not in config
-        for (unsigned long i = config->repos_count_original; 
-            i < config->repos_count; ++i) {
-            repo_free(config->repos + i);
-        }
-        config->repos_count = config->repos_count_original;
-        // Free some memory
-        if (config->repos_allocated - config->repos_count > ALLOC_BASE) {
-            config->repos_allocated = 
-                (config->repos_count / ALLOC_BASE + 1) * ALLOC_BASE;
-            struct repo *const restrict repos_new = 
-                realloc(config->repos, 
-                    sizeof *config->repos * config->repos_allocated);
-            if (repos_new == NULL) {
-                pr_error_with_errno("Failed to shrink memory used on repos");
-                return -1;
-            }
-            config->repos = repos_new;
-        }
-        for (unsigned long i = 0; i < config->repos_count; ++i) {
-            struct repo *const restrict repo = config->repos + i;
-            if (repo->parsed_commits_allocated - repo->parsed_commits_count
-                 > ALLOC_BASE) {
-                repo->parsed_commits_allocated = 
-                    (repo->parsed_commits_count / ALLOC_BASE + 1) * ALLOC_BASE;
-                struct parsed_commit *const restrict parsed_commits_new =
-                    realloc(repo->parsed_commits,
-                        sizeof *repo->parsed_commits * 
-                            repo->parsed_commits_allocated);
-                if (parsed_commits_new == NULL) {
-                    pr_error_with_errno(
-                        "Failed to shrink memory used on parsed commits");
-                    return -1;
-                }
-                repo->parsed_commits = parsed_commits_new;
-            }
-            for (unsigned long j = 0; j < repo->parsed_commits_count; ++j) {
-                parsed_commit_free(repo->parsed_commits + j);
-            }
-            repo->parsed_commits_count = 0;
-            repo->wanted_objects_count = repo->wanted_objects_count_original;
-            if (repo->wanted_objects_allocated - repo->wanted_objects_count 
-                > ALLOC_BASE) {
-                repo->wanted_objects_allocated = 
-                    (repo->wanted_objects_count / ALLOC_BASE + 1) * ALLOC_BASE;
-                struct wanted_object *const restrict wanted_objects_new = 
-                    realloc(repo->wanted_objects, 
-                        sizeof *repo->wanted_objects * 
-                            repo->wanted_objects_allocated);
-                if (wanted_objects_new == NULL) {
-                    pr_error_with_errno(
-                        "Failed to shrink memory used on wanted objects");
-                    return -1;
-                }
-                repo->wanted_objects = wanted_objects_new;
-            }
-            repo->wanted_dynamic = false;
-            for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
-                struct wanted_object *const restrict wanted_object = 
-                    repo->wanted_objects + j;
-                switch (wanted_object->type) {
-                case WANTED_TYPE_BRANCH:
-                case WANTED_TYPE_TAG:
-                case WANTED_TYPE_REFERENCE:
-                case WANTED_TYPE_HEAD:
-                    wanted_object->commit_resolved = false;
-                    wanted_object->parsed_commit_id = (unsigned long) -1;
-                    wanted_object->hex_string[0] = '\0';
-                    memset(&wanted_object->oid, 0, sizeof wanted_object->oid);
-                    __attribute__((fallthrough));
-                case WANTED_TYPE_ALL_BRANCHES:
-                case WANTED_TYPE_ALL_TAGS:
-                    repo->wanted_dynamic = true;
-                    break;
-                case WANTED_TYPE_COMMIT:
-                    break;
-                case WANTED_TYPE_UNKNOWN:
-                    pr_error("Wanted object '%s' type still unknown?!", 
-                        wanted_object->name);
-                    return -1;
-                }
-                wanted_object->parsed_commit_id = (unsigned long) -1;
-            }
-            repo->updated = false;
-        }
-        if (config->clean_repos) {
-            workdir_repos->keeps_count = 1;
-            memcpy(workdir_repos->keeps, "links", 6);
-        }
-        if (config->clean_archives) {
-            workdir_archives->keeps_count = 1;
-            memcpy(workdir_archives->keeps, "links", 6);
-        }
-        if (config->clean_checkouts) {
-            workdir_checkouts->keeps_count = 1;
-            memcpy(workdir_checkouts->keeps, "links", 6);
-        }
-        if (watch_config) {
-            if (stat(config_path, &stat_buffer)) {
-                pr_warn("Failed to stat config '%s' to get its mtime, won't "
-                "update config\n", config_path);
-            } else if (
-                (stat_buffer.st_mode & S_IFMT) == S_IFREG &&
-                ((stat_buffer.st_mtim.tv_nsec != config_mtime.tv_nsec) ||
-                (stat_buffer.st_mtim.tv_sec != config_mtime.tv_sec))) {
-
-                config_mtime = stat_buffer.st_mtim;
-                pr_warn("Config '%s' updated, re-reading config\n", 
-                        config_path);
-                struct config config_new = CONFIG_INIT;
-                struct work_directory workdir_repos_new, workdir_archives_new, 
-                                        workdir_checkouts_new;
-                if (config_read(&config_new, config_path)) {
-                    pr_warn("Failed to read new config, "
-                            "keep using the old one\n");
-                    config_free(&config_new);
-                } else if (config_new.repos_count == 0) {
-                    pr_warn("New config has no repos defined, keep using the "
-                            "old one\n");
-                    config_free(&config_new);
-                } else if (work_directories_from_config(
-                    &workdir_repos_new, &workdir_archives_new, 
-                    &workdir_checkouts_new, &config_new
-                )) {
-                    pr_warn("Failed to open work directories for new config, "
-                            "keep using the old one\n");
-                    config_free(&config_new);
-                } else {
-                    if (git_libgit2_opts(GIT_OPT_SET_SERVER_CONNECT_TIMEOUT, 
-                        config_new.timeout_connect)) {
-                        pr_warn("Failed to update connect timeout config, "
-                        "error: %d (%s)\n",
-                            git_error_last()->klass, git_error_last()->message);
-                    }
-                    work_directories_free(
-                    workdir_repos, workdir_archives, workdir_checkouts);
-                    config_free(config);
-                    *config = config_new;
-                    *workdir_repos = workdir_repos_new;
-                    *workdir_archives = workdir_archives_new;
-                    *workdir_checkouts = workdir_checkouts_new;
+// int work_daemon(
+//     struct config *const restrict config,
+//     char const *const restrict config_path,
+//     struct work_directory *const restrict workdir_repos,
+//     struct work_directory *const restrict workdir_archives,
+//     struct work_directory *const restrict workdir_checkouts
+// ) {
+//     bool watch_config = false;
+//     struct stat stat_buffer = {0};
+//     struct timespec config_mtime = {0};
+//     if (config_path && strcmp(config_path, "-")) {
+//         if (stat(config_path, &stat_buffer)) {
+//             pr_warn("Failed to stat config '%s' to get its mtime, won't "
+//                 "watch config\n", config_path);
+//         } else {
+//             config_mtime = stat_buffer.st_mtim;
+//             pr_info("Started watching config '%s'\n", config_path);
+//             watch_config = true;
+//         }
+//     }
+//     for (;;) {
+//         if (mirror_all_repos(
+//                 config, workdir_repos, config->clean_repos)) {
+//             pr_error("Failed to mirro all repos\n");
+//             return -1;
+//         }
+//         if (export_all_repos(
+//                 config, workdir_archives, workdir_checkouts)) {
+//             pr_error("Failed to export all repos (archives and checkouts)\n");
+//             return -1;
+//         }
+//         if (clean_all_dirs(
+//             workdir_repos, workdir_archives, workdir_checkouts, config)) {
+//             pr_error("Failed to clean up all folders\n");
+//             return -1;
+//         }
+//         // Cleanup
+//         // Free all repos not in config
+//         for (unsigned long i = config->repos_count_original; 
+//             i < config->repos_count; ++i) {
+//             repo_free(config->repos + i);
+//         }
+//         config->repos_count = config->repos_count_original;
+//         // Free some memory
+//         if (config->repos_allocated - config->repos_count > ALLOC_BASE) {
+//             config->repos_allocated = 
+//                 (config->repos_count / ALLOC_BASE + 1) * ALLOC_BASE;
+//             struct repo *const restrict repos_new = 
+//                 realloc(config->repos, 
+//                     sizeof *config->repos * config->repos_allocated);
+//             if (repos_new == NULL) {
+//                 pr_error_with_errno("Failed to shrink memory used on repos");
+//                 return -1;
+//             }
+//             config->repos = repos_new;
+//         }
+//         for (unsigned long i = 0; i < config->repos_count; ++i) {
+//             struct repo *const restrict repo = config->repos + i;
+//             if (repo->parsed_commits_allocated - repo->parsed_commits_count
+//                  > ALLOC_BASE) {
+//                 repo->parsed_commits_allocated = 
+//                     (repo->parsed_commits_count / ALLOC_BASE + 1) * ALLOC_BASE;
+//                 struct parsed_commit *const restrict parsed_commits_new =
+//                     realloc(repo->parsed_commits,
+//                         sizeof *repo->parsed_commits * 
+//                             repo->parsed_commits_allocated);
+//                 if (parsed_commits_new == NULL) {
+//                     pr_error_with_errno(
+//                         "Failed to shrink memory used on parsed commits");
+//                     return -1;
+//                 }
+//                 repo->parsed_commits = parsed_commits_new;
+//             }
+//             for (unsigned long j = 0; j < repo->parsed_commits_count; ++j) {
+//                 parsed_commit_free(repo->parsed_commits + j);
+//             }
+//             repo->parsed_commits_count = 0;
+//             repo->wanted_objects_count = repo->wanted_objects_count_original;
+//             if (repo->wanted_objects_allocated - repo->wanted_objects_count 
+//                 > ALLOC_BASE) {
+//                 repo->wanted_objects_allocated = 
+//                     (repo->wanted_objects_count / ALLOC_BASE + 1) * ALLOC_BASE;
+//                 struct wanted_object *const restrict wanted_objects_new = 
+//                     realloc(repo->wanted_objects, 
+//                         sizeof *repo->wanted_objects * 
+//                             repo->wanted_objects_allocated);
+//                 if (wanted_objects_new == NULL) {
+//                     pr_error_with_errno(
+//                         "Failed to shrink memory used on wanted objects");
+//                     return -1;
+//                 }
+//                 repo->wanted_objects = wanted_objects_new;
+//             }
+//             repo->wanted_dynamic = false;
+//             for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
+//                 struct wanted_object *const restrict wanted_object = 
+//                     repo->wanted_objects + j;
+//                 switch (wanted_object->type) {
+//                 case WANTED_TYPE_BRANCH:
+//                 case WANTED_TYPE_TAG:
+//                 case WANTED_TYPE_REFERENCE:
+//                 case WANTED_TYPE_HEAD:
+//                     wanted_object->commit_resolved = false;
+//                     wanted_object->parsed_commit_id = (unsigned long) -1;
+//                     wanted_object->hex_string[0] = '\0';
+//                     memset(&wanted_object->oid, 0, sizeof wanted_object->oid);
+//                     __attribute__((fallthrough));
+//                 case WANTED_TYPE_ALL_BRANCHES:
+//                 case WANTED_TYPE_ALL_TAGS:
+//                     repo->wanted_dynamic = true;
+//                     break;
+//                 case WANTED_TYPE_COMMIT:
+//                     break;
+//                 case WANTED_TYPE_UNKNOWN:
+//                     pr_error("Wanted object '%s' type still unknown?!", 
+//                         wanted_object->name);
+//                     return -1;
+//                 }
+//                 wanted_object->parsed_commit_id = (unsigned long) -1;
+//             }
+//             repo->updated = false;
+//         }
+//         if (config->clean_repos) {
+//             workdir_repos->keeps_count = 1;
+//             memcpy(workdir_repos->keeps, "links", 6);
+//         }
+//         if (config->clean_archives) {
+//             workdir_archives->keeps_count = 1;
+//             memcpy(workdir_archives->keeps, "links", 6);
+//         }
+//         if (config->clean_checkouts) {
+//             workdir_checkouts->keeps_count = 1;
+//             memcpy(workdir_checkouts->keeps, "links", 6);
+//         }
+//         if (watch_config) {
+//             if (stat(config_path, &stat_buffer)) {
+//                 pr_warn("Failed to stat config '%s' to get its mtime, won't "
+//                 "update config\n", config_path);
+//             } else if (
+//                 (stat_buffer.st_mode & S_IFMT) == S_IFREG &&
+//                 ((stat_buffer.st_mtim.tv_nsec != config_mtime.tv_nsec) ||
+//                 (stat_buffer.st_mtim.tv_sec != config_mtime.tv_sec))) {
+
+//                 config_mtime = stat_buffer.st_mtim;
+//                 pr_warn("Config '%s' updated, re-reading config\n", 
+//                         config_path);
+//                 struct config config_new = CONFIG_INIT;
+//                 struct work_directory workdir_repos_new, workdir_archives_new, 
+//                                         workdir_checkouts_new;
+//                 if (config_read(&config_new, config_path)) {
+//                     pr_warn("Failed to read new config, "
+//                             "keep using the old one\n");
+//                     config_free(&config_new);
+//                 } else if (config_new.repos_count == 0) {
+//                     pr_warn("New config has no repos defined, keep using the "
+//                             "old one\n");
+//                     config_free(&config_new);
+//                 } else if (work_directories_from_config(
+//                     &workdir_repos_new, &workdir_archives_new, 
+//                     &workdir_checkouts_new, &config_new
+//                 )) {
+//                     pr_warn("Failed to open work directories for new config, "
+//                             "keep using the old one\n");
+//                     config_free(&config_new);
+//                 } else {
+//                     if (git_libgit2_opts(GIT_OPT_SET_SERVER_CONNECT_TIMEOUT, 
+//                         config_new.timeout_connect)) {
+//                         pr_warn("Failed to update connect timeout config, "
+//                         "error: %d (%s)\n",
+//                             git_error_last()->klass, git_error_last()->message);
+//                     }
+//                     work_directories_free(
+//                     workdir_repos, workdir_archives, workdir_checkouts);
+//                     config_free(config);
+//                     *config = config_new;
+//                     *workdir_repos = workdir_repos_new;
+//                     *workdir_archives = workdir_archives_new;
+//                     *workdir_checkouts = workdir_checkouts_new;
                     
-                    pr_info("Starting using new config\n");
+//                     pr_info("Starting using new config\n");
 
-                }
-            }
-        }
-        sleep(config->daemon_interval);
-    }
-    return -1;
-}
+//                 }
+//             }
+//         }
+//         sleep(config->daemon_interval);
+//     }
+//     return -1;
+// }
 
 int main(int const argc, char *argv[]) {
     char *config_path = NULL;
