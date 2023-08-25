@@ -282,7 +282,6 @@ struct wanted_reference const WANTED_HEAD_INIT = {
     STRING_DECLARE(url); \
     STRING_DECLARE(long_name); \
     STRING_DECLARE(short_name); \
-    STRING_DECLARE(path); \
     hash_type   hash_url, \
                 hash_long_name, \
                 hash_short_name, \
@@ -400,6 +399,9 @@ struct work_handle {
     struct work_directory dir_repos,
                           dir_archives,
                           dir_checkouts;
+    git_transport_message_cb cb_sideband;
+    git_indexer_progress_cb cb_fetch;
+    int cwd; // File decriptor of the current work directory, to quick return
     union {
         struct config_static _static;
         struct CONFIG_STATIC_DECLARE;
@@ -2215,7 +2217,7 @@ int repo_config_finish(
     if (!repo->wanted_objects_count && 
         config->empty_wanted_objects_count
     ) {
-        pr_warn("Repo '%s' does not have wanted objects defined, adding global "
+        pr_info("Repo '%s' does not have wanted objects defined, adding global "
                 "wanted objects (when empty) to it as wanted\n", 
                 config_get_string(repo->url));
         if (repo->wanted_objects) {
@@ -2254,20 +2256,6 @@ int repo_config_finish(
                 sizeof *repo->wanted_objects * 
                     config->always_wanted_objects_count);
         repo->wanted_objects_count = new_wanted_objects_count;
-    }
-    char path[PATH_MAX];
-    memcpy(path, config_get_string(config->dir_repos), config->len_dir_repos);
-    path[config->len_dir_repos] = '/';
-    memcpy(path + config->len_dir_repos + 1, 
-           repo->hash_url_string, 
-           HASH_STRING_LEN);
-    if (string_buffer_add(&config->string_buffer, 
-                          path, 
-                          repo->len_path = 
-                            config->len_dir_repos + HASH_STRING_LEN + 1)
-    ) {
-        pr_error("Failed to add string to buffer\n");
-        return -1;
     }
     return 0;
 }
@@ -2425,6 +2413,72 @@ void config_free(
     free_if_allocated(config->always_wanted_objects);
     free_if_allocated(config->archive_pipe_args);
     *config = CONFIG_INIT;
+}
+
+
+void config_print_repo_wanted(
+    struct config const *const restrict config,
+    struct repo_config const *const restrict repo
+) {
+    for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
+        struct wanted_base const *const restrict wanted_object
+            = repo->wanted_objects + i;
+        printf(
+            "|        - %s:\n"
+            "|            type: %d (%s)\n"
+            "|            archive: %s\n"
+            "|            checkout: %s\n",
+            config_get_string(wanted_object->name),
+            wanted_object->type,
+            wanted_type_strings[wanted_object->type],
+            wanted_object->archive ? "yes" : "no",
+            wanted_object->checkout ? "yes" : "no"
+        );
+    }
+}
+
+void config_print_repo(
+    struct config const *const restrict config,
+    struct repo_config const *const restrict repo
+) {
+    printf(
+        "|  - %s:\n"
+        "|      hash: %016lx\n"
+        "|      long_name: %s (depth %hu)\n"
+        "|      short_name: %s\n",
+        config_get_string(repo->url),
+        repo->hash_url,
+        config_get_string(repo->long_name),
+        repo->depth_long_name,
+        config_get_string(repo->short_name));
+    if (repo->wanted_objects_count) {
+        printf(
+        "|      wanted (%lu):\n",
+            repo->wanted_objects_count);
+        config_print_repo_wanted(config, repo);
+    }
+}
+
+void config_print(
+    struct config const *const restrict config
+) {
+    printf(
+        "| proxy: %s\n"
+        "| proxy_after: %hu\n"
+        "| dir_repos: %s\n"
+        "| dir_archives: %s\n"
+        "| dir_checkouts: %s\n",
+        config_get_string(config->proxy_url),
+        config->proxy_after,
+        config_get_string(config->dir_repos),
+        config_get_string(config->dir_archives),
+        config_get_string(config->dir_checkouts));
+    if (config->repos_count) {
+        printf("| repos (%lu): \n", config->repos_count);
+        for (unsigned long i = 0; i < config->repos_count; ++i) {
+            config_print_repo(config, config->repos + i);
+        }
+    }
 }
 
 static inline
@@ -2770,16 +2824,18 @@ int repo_work_from_config(
             pr_error("Failed to allocate memory for wanted obejcts\n");;
             return -1;
         }
-        for (unsigned long j = 0; 
-            j < repo_config->wanted_objects_count; 
-            ++j) {
+        for (unsigned long i = 0; 
+            i < repo_config->wanted_objects_count; 
+            ++i) {
             if (wanted_object_work_from_config(
-                repo_work->wanted_objects + j,
-                repo_config->wanted_objects + j,
+                repo_work->wanted_objects + i,
+                repo_config->wanted_objects + i,
                 sbuffer)) {
                 pr_error("Failed to create work wanted object from config\n");
                 return -1;
             }
+            if ((repo_work->wanted_objects + i)->type != WANTED_TYPE_COMMIT)
+                repo_work->wanted_dynamic = true;
         }
         repo_work->wanted_objects_count = repo_config->wanted_objects_count;
     } else {
@@ -2792,7 +2848,6 @@ int repo_work_from_config(
     repo_work->commits_count = 0;
     repo_work->commits_allocated = 0;
     repo_work->git_repository = NULL;
-    repo_work->wanted_dynamic = false;
     repo_work->updated = false;
     repo_work->common = repo_config->common;
     repo_work->from_config = true;
@@ -2842,37 +2897,21 @@ free_objects:
     return -1;
 }
 
-int work_handle_init_from_config(
+static inline
+int work_handle_cwd_open_or_dup(
     struct work_handle *const restrict work_handle,
-    struct config const *const restrict config
+    int const cwd
 ) {
-    if (string_buffer_clone(
-            &work_handle->string_buffer, 
-            &config->string_buffer)) {
-        pr_error("Failed to clone string buffer from config\n");
+    if (cwd < 0) {
+        work_handle->cwd = open(".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    } else {
+        work_handle->cwd = dup(cwd);
     }
-    work_handle->_static = config->_static;
-    if (work_handle_repos_init_from_config(work_handle, config)) {
-        pr_error("Failed to init repos\n");
-        goto free_string_buffer;
+    if (work_handle->cwd < 0) {
+        pr_error_with_errno("Failed to open/dup cwd");
+        return -1;
     }
-    if (work_handle_work_directories_init(work_handle)) {
-        pr_error("Failed to init work directories\n");
-        goto free_repos;
-    }
-
     return 0;
-free_repos:
-    if (work_handle->repos) {
-        for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-            free_if_allocated_to_null(work_handle->repos[i].wanted_objects);
-        }
-        free(work_handle->repos);
-        work_handle->repos = NULL;
-    }
-free_string_buffer:
-    free_if_allocated_to_null(work_handle->string_buffer.buffer);
-    return -1;
 }
 
 int gcb_sideband_progress(char const *string, int len, void *payload) {
@@ -2935,6 +2974,59 @@ static inline void gcb_print_progress(
 int gcb_fetch_progress(git_indexer_progress const *stats, void *payload) {
 	gcb_print_progress(stats, (char const *)payload);
 	return 0;
+}
+
+int work_handle_init_from_config(
+    struct work_handle *const restrict work_handle,
+    struct config const *const restrict config,
+    int const cwd
+) {
+    if (work_handle_cwd_open_or_dup(work_handle, cwd)) {
+        pr_error("Failed to open/dup cwd\n");
+        return -1;
+    }
+    if (string_buffer_clone(
+            &work_handle->string_buffer, 
+            &config->string_buffer)) {
+        pr_error("Failed to clone string buffer from config\n");
+        goto free_cwd;
+    }
+    work_handle->_static = config->_static;
+    if (work_handle_repos_init_from_config(work_handle, config)) {
+        pr_error("Failed to init repos\n");
+        goto free_string_buffer;
+    }
+    if (work_handle_work_directories_init(work_handle)) {
+        pr_error("Failed to init work directories\n");
+        goto free_repos;
+    }
+    if (isatty(STDOUT_FILENO)) {
+        work_handle->cb_sideband = gcb_sideband_progress;
+        work_handle->cb_fetch = gcb_fetch_progress;
+    } else {
+        work_handle->cb_sideband = NULL;
+        work_handle->cb_fetch = NULL;
+    }
+    return 0;
+free_repos:
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        free_if_allocated_to_null(work_handle->repos[i].wanted_objects);
+    }
+    free_if_allocated_to_null(work_handle->repos);
+free_string_buffer:
+    free_if_allocated_to_null(work_handle->string_buffer.buffer);
+free_cwd:
+    if (close(work_handle->cwd))
+        pr_error_with_errno("Failed to clsoe opened/duped cwd");
+    return -1;
+}
+
+int work_handle_free(
+    struct work_handle *const restrict work_handle
+) {
+
+
+    return 0;
 }
 
 // int mkdir_allow_existing_at(
@@ -3741,104 +3833,6 @@ int gcb_fetch_progress(git_indexer_progress const *stats, void *payload) {
 // }
 
 
-// void print_config_repo_wanted(
-//     struct repo const *const restrict repo) {
-//     for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
-//         struct wanted_object const *const restrict wanted_object
-//             = repo->wanted_objects + i;
-//         printf(
-//             "|        - %s:\n"
-//             "|            type: %d (%s)\n"
-//             "|            archive: %s\n"
-//             "|            checkout: %s\n",
-//             wanted_object->name,
-//             wanted_object->type,
-//             wanted_type_strings[wanted_object->type],
-//             wanted_object->archive ? "yes" : "no",
-//             wanted_object->checkout ? "yes" : "no"
-//         );
-//         switch (wanted_object->type) {
-//         case WANTED_TYPE_BRANCH:
-//         case WANTED_TYPE_TAG:
-//         case WANTED_TYPE_REFERENCE:
-//         case WANTED_TYPE_HEAD:
-//             if (wanted_object->commit_resolved) {
-//                 printf(
-//                     "|            commit: %s\n",
-//                     wanted_object->commit.hex_string);
-//             }
-//             __attribute__((fallthrough));
-//         case WANTED_TYPE_COMMIT:
-//             if (wanted_object->parsed_commit_id == (unsigned long) -1)
-//                 break;
-//             struct parsed_commit *parsed_commit =
-//                 repo->parsed_commits + wanted_object->parsed_commit_id;
-//             if (parsed_commit->submodules_count) {
-//                 printf(
-//                     "|            submodules:\n");
-//             }
-//             for (unsigned long i = 0;
-//                 i < parsed_commit->submodules_count;
-//                 ++i) {
-//                 struct parsed_commit_submodule * parsed_commit_submodule =
-//                     parsed_commit->submodules + i;
-//                 printf(
-//                     "|              - path: %s\n"
-//                     "|                url: %s\n"
-//                     "|                repo_id: %lu\n"
-//                     "|                commit: %s\n",
-//                     parsed_commit_submodule->path,
-//                     parsed_commit_submodule->url,
-//                     parsed_commit_submodule->target_repo_id,
-//                     parsed_commit_submodule->id_hex_string);
-//             }
-//             // break;
-//         default:
-//             break;
-//         }
-//     }
-
-// }
-
-// void print_config_repo(struct repo const *const restrict repo) {
-//     printf(
-//         "|  - %s%s:\n"
-//         "|      hash: %016lx\n"
-//         "|      dir: %s\n"
-//         "|      sanitized: %s\n",
-//         repo->url,
-//         repo->added_from ? " (added from submodule)" : "",
-//         repo->url_hash,
-//         repo->dir_path,
-//         repo->url_no_scheme_sanitized);
-//     if (repo->wanted_objects_count) {
-//         printf(
-//         "|      wanted (%lu, %s):\n",
-//             repo->wanted_objects_count,
-//             repo->wanted_dynamic ? "dynamic" : "static");
-//         print_config_repo_wanted(repo);
-//     }
-// }
-
-// void print_config(struct config const *const restrict config) {
-//     printf(
-//         "| proxy: %s\n"
-//         "| proxy_after: %hu\n"
-//         "| dir_repos: %s\n"
-//         "| dir_archives: %s\n"
-//         "| dir_checkouts: %s\n",
-//         config->proxy_url,
-//         config->proxy_after,
-//         config->dir_repos,
-//         config->dir_archives,
-//         config->dir_checkouts);
-//     if (config->repos_count) {
-//         printf("| repos (%lu): \n", config->repos_count);
-//         for (unsigned long i = 0; i < config->repos_count; ++i) {
-//             print_config_repo(config->repos + i);
-//         }
-//     }
-// }
 
 
 
@@ -8256,35 +8250,8 @@ int gcb_fetch_progress(git_indexer_progress const *stats, void *payload) {
 //     return -1;
 // }
 
-int main(int const argc, char *argv[]) {
-    char *config_path = NULL;
-    struct option const long_options[] = {
-        {"config",          required_argument,  NULL,   'c'},
-        {"help",            no_argument,        NULL,   'h'},
-        {"version",         no_argument,        NULL,   'v'},
-        {0},
-    };
-    int c, option_index = 0;
-    while ((c = getopt_long(argc, argv, "c:hv",
-        long_options, &option_index)) != -1) {
-        switch (c) {
-        case 'c':
-            config_path = optarg;
-            break;
-        case 'v':
-            version();
-            return 0;
-        case 'h':
-            version();
-            fputc('\n', stderr);
-            help();
-            return 0;
-        default:
-            pr_error(
-                "Unexpected argument, %d (-%c) '%s'\n", c, c, argv[optind - 1]);
-            return -1;
-        }
-    }
+static inline
+int gmr_work(char const *const restrict config_path) {
     int r = setvbuf(stdout, NULL, _IOLBF, 0);
     if (r) {
         pr_error_with_errno(
@@ -8296,13 +8263,14 @@ int main(int const argc, char *argv[]) {
         pr_error("Failed to read config\n");
         return -1;
     }
+    config_print(&config);
     if (config.repos_count == 0) {
         pr_warn("No repos defined, early quit\n");
         r = 0;
         goto free_config;
     }
     struct work_handle work_handle;
-    if (work_handle_init_from_config(&work_handle, &config)) {
+    if (work_handle_init_from_config(&work_handle, &config, -1)) {
         r = -1;
         goto free_config;
     }
@@ -8336,4 +8304,36 @@ shutdown:
 free_config:
     config_free(&config);
     return r;
+}
+
+int main(int const argc, char *argv[]) {
+    char *config_path = NULL;
+    struct option const long_options[] = {
+        {"config",          required_argument,  NULL,   'c'},
+        {"help",            no_argument,        NULL,   'h'},
+        {"version",         no_argument,        NULL,   'v'},
+        {0},
+    };
+    int c, option_index = 0;
+    while ((c = getopt_long(argc, argv, "c:hv",
+        long_options, &option_index)) != -1) {
+        switch (c) {
+        case 'c':
+            config_path = optarg;
+            break;
+        case 'v':
+            version();
+            return 0;
+        case 'h':
+            version();
+            fputc('\n', stderr);
+            help();
+            return 0;
+        default:
+            pr_error(
+                "Unexpected argument, %d (-%c) '%s'\n", c, c, argv[optind - 1]);
+            return -1;
+        }
+    }
+    return gmr_work(config_path);
 }
