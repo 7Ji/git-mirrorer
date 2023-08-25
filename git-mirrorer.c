@@ -718,6 +718,22 @@ int string_buffer_add(
     return 0;
 }
 
+#define free_if_allocated(name) if (name) free(name)
+#define free_if_allocated_to_null(name) if (name) { free(name); name = NULL; }
+
+int string_buffer_free(
+    struct string_buffer *const restrict sbuffer
+) {
+    if (!sbuffer) {
+        pr_error("Internal: called passed NULL pointer to us\n");
+        return -1;
+    }
+    free_if_allocated_to_null(sbuffer->buffer);
+    sbuffer->size = 0;
+    sbuffer->used = 0;
+}
+
+
 int string_buffer_partial_free(
     struct string_buffer *const restrict sbuffer
 ) {
@@ -727,8 +743,7 @@ int string_buffer_partial_free(
         return -1;
     }
     if (!sbuffer->used) {
-        if (sbuffer->buffer) free(sbuffer->buffer);
-        sbuffer->buffer = NULL;
+        free_if_allocated_to_null(sbuffer->buffer);
         sbuffer->size = 0;
         return 0;
     }
@@ -823,8 +838,7 @@ int dynamic_array_partial_free(
         return -1;
     }
     if (!count) {
-        if (*array) free(*array);
-        *array = NULL;
+        free_if_allocated_to_null(*array);
         *alloc = 0;
         return 0;
     }
@@ -916,7 +930,7 @@ size_t buffer_read_from_fd(
     }
     return size_total;
 on_error:
-    if (*buffer) free(*buffer);
+    free_if_allocated_to_null(*buffer);
     return (size_t)-1;
 }
 
@@ -1234,7 +1248,7 @@ int yamlconf_parse_archive_pipe(
     handle->status = YAMLCONF_PARSING_STATUS_ARCHIVE_SECTION;
     r = 0;
 free_args_buffer:
-    if (args_buffer_heap) free(args_buffer_heap);
+    free_if_allocated(args_buffer_heap);
     return r;
 }
 
@@ -1722,7 +1736,7 @@ int repo_common_init_from_url(
     repo->hash_short_name = hash_calculate(short_name, repo->len_short_name);
     r = 0;
 free_long_name_heap:
-    if (long_name_heap) free(long_name_heap);
+    free_if_allocated(long_name_heap);
     return r;
 }
 
@@ -2376,6 +2390,7 @@ int config_read(
         pr_error("Failed to read config into buffer\n");
         goto close_config_fd;
     }
+    *config = CONFIG_INIT;
     if (config_from_yaml(config, config_buffer, config_size)) {
         pr_error("Failed to read config from YAML\n");
         goto free_config_buffer;
@@ -2390,10 +2405,21 @@ int config_read(
     }
     r = 0;
 free_config_buffer:
-    if (config_buffer) free(config_buffer);
+    free_if_allocated(config_buffer);
 close_config_fd:
     if (config_fd != STDIN_FILENO) close (config_fd);
     return r;
+}
+
+
+
+int config_free(
+    struct config *const restrict config
+) {
+    free_if_allocated(config->always_wanted_objects);
+    free_if_allocated(config->empty_wanted_objects);
+    free_if_allocated(config->string_buffer.buffer);
+    *config = CONFIG_INIT;
 }
 
 static inline
@@ -2489,7 +2515,7 @@ from_left:
     }
     r = 0;
 free_path_heap:
-    if (path_heap) free(path_heap);
+    free_if_allocated(path_heap);
     return r;
 }
 
@@ -2613,10 +2639,7 @@ void work_directory_free(
         }
         workdir->linkfd = -1;
     }
-    if (workdir->keeps) {
-        free(workdir->keeps);
-        workdir->keeps = NULL;
-    }
+    free_if_allocated_to_null(workdir->keeps);
 }
 
 #define work_directory_init_from_handle(NAME) \
@@ -2808,12 +2831,9 @@ int work_handle_repos_init_from_config(
     return 0;
 free_objects:
     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-        if (work_handle->repos[i].wanted_objects) {
-            free (work_handle->repos[i].wanted_objects);
-            work_handle->repos[i].wanted_objects = NULL;
-        }
+        free_if_allocated_to_null(work_handle->repos[i].wanted_objects);
     }
-    free(work_handle->repos);
+    free_if_allocated_to_null(work_handle->repos);
     return -1;
 }
 
@@ -2840,15 +2860,13 @@ int work_handle_init_from_config(
 free_repos:
     if (work_handle->repos) {
         for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-            if (work_handle->repos[i].wanted_objects) {
-                free(work_handle->repos[i].wanted_objects);
-            }
+            free_if_allocated_to_null(work_handle->repos[i].wanted_objects);
         }
         free(work_handle->repos);
+        work_handle->repos = NULL;
     }
 free_string_buffer:
-    if (work_handle->string_buffer.buffer) 
-        free(work_handle->string_buffer.buffer);
+    free_if_allocated_to_null(work_handle->string_buffer.buffer);
     return -1;
 }
 
@@ -8268,25 +8286,19 @@ int main(int const argc, char *argv[]) {
             "Failed to set stdout to line-buffered, return %d", r);
         return -1;
     }
-    struct config config = CONFIG_INIT;
+    struct config config;
     if (config_read(&config, config_path)) {
         pr_error("Failed to read config\n");
-        goto free_config;
+        return -1;
     }
     if (config.repos_count == 0) {
         pr_warn("No repos defined, early quit\n");
         r = 0;
         goto free_config;
     }
-    if (raise_nofile_limit()) {
-        pr_error("Failed to raise limit of opened file descriptors\n");
-        goto free_config;
+    struct work_handle work_handle;
+    if (work_handle_init_from_config(&work_handle, &config)) {
         r = -1;
-    }
-    struct work_directory workdir_repos, workdir_archives, workdir_checkouts;
-    if (work_directories_from_config(
-        &workdir_repos, &workdir_archives, &workdir_checkouts, &config)) {
-        pr_error("Failed to open work directories\n");
         goto free_config;
     }
     pr_info("Initializing libgit2\n");
@@ -8297,31 +8309,25 @@ int main(int const argc, char *argv[]) {
             git_error_last()->klass, git_error_last()->message);
         goto free_config;
     }
-    if (config.daemon) {
-        if (work_daemon(&config, config_path, &workdir_repos, &workdir_archives,
-        &workdir_checkouts)) {
-            pr_error("Daemon work failed\n");
-            r = -1;
-            goto shutdown;
-        }
-    } else {
-        if (work_oneshot(&config, &workdir_repos, &workdir_archives,
-        &workdir_checkouts)) {
-            pr_error("One shot work failed\n");
-            r = -1;
-            goto shutdown;
-        }
-    }
+    // if (config.daemon) {
+    //     if (work_daemon(&config, config_path, &workdir_repos, &workdir_archives,
+    //     &workdir_checkouts)) {
+    //         pr_error("Daemon work failed\n");
+    //         r = -1;
+    //         goto shutdown;
+    //     }
+    // } else {
+    //     if (work_oneshot(&config, &workdir_repos, &workdir_archives,
+    //     &workdir_checkouts)) {
+    //         pr_error("One shot work failed\n");
+    //         r = -1;
+    //         goto shutdown;
+    //     }
+    // }
     r = 0;
 shutdown:
-#ifdef DEBUGGING
-    pr_info("Current config before shutting down:\n");
-    print_config(&config);
-#endif
     pr_info("Shutting down libgit2\n");
     git_libgit2_shutdown();
-    work_directories_free(
-        &workdir_repos, &workdir_archives, &workdir_checkouts);
 free_config:
     config_free(&config);
     return r;
