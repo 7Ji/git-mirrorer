@@ -731,6 +731,7 @@ int string_buffer_free(
     free_if_allocated_to_null(sbuffer->buffer);
     sbuffer->size = 0;
     sbuffer->used = 0;
+    return 0;
 }
 
 
@@ -1447,6 +1448,7 @@ struct wanted_base *yamlconf_get_last_wanted_object(
             = get_last(config->repos);
         return get_last(repo->wanted_objects);
     }
+    return NULL;
 }
 
 static inline
@@ -2411,14 +2413,17 @@ close_config_fd:
     return r;
 }
 
-
-
-int config_free(
+void config_free(
     struct config *const restrict config
 ) {
-    free_if_allocated(config->always_wanted_objects);
-    free_if_allocated(config->empty_wanted_objects);
     free_if_allocated(config->string_buffer.buffer);
+    for (unsigned long i = 0; i < config->repos_count; ++i) {
+        free_if_allocated(config->repos[i].wanted_objects);
+    }
+    free_if_allocated(config->repos);
+    free_if_allocated(config->empty_wanted_objects);
+    free_if_allocated(config->always_wanted_objects);
+    free_if_allocated(config->archive_pipe_args);
     *config = CONFIG_INIT;
 }
 
