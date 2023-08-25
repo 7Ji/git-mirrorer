@@ -352,6 +352,7 @@ struct config {
 #define config_get_string(name) \
     get_string_from(config, name)
 
+#define DIR_DATA    "data"
 #define DIR_LINKS   "links"
 #define DIR_REPOS_DEFAULT   "repos"
 #define DIR_ARCHIVES_DEFAULT    "archives"
@@ -379,12 +380,12 @@ struct work_keep {
 
 struct work_directory {
     STRING_DECLARE(path);
-    int fd;
+    int datafd;
     int linkfd;
     DYNAMIC_ARRAY_DECLARE(struct work_keep, keep);
 };
 
-#define WORK_DIRECTORY_INIT_ASSIGN .fd = -1, .linkfd = -1
+#define WORK_DIRECTORY_INIT_ASSIGN .datafd = -1, .linkfd = -1
 struct work_directory const WORK_DIRECTORY_INIT = {
     WORK_DIRECTORY_INIT_ASSIGN};
 
@@ -2487,29 +2488,19 @@ free_path_heap:
     return r;
 }
 
-int work_directory_init_from_path(
-    struct work_directory *const restrict workdir,
-    struct string_buffer *const restrict sbuffer,
+int open_or_create_dir_recursively(
     char const *const restrict path,
-    unsigned short const len_path,
-    struct work_keep const *const restrict links_keep
+    unsigned short const len_path
 ) {
-    workdir->path_offset = sbuffer->used;
-    if (string_buffer_add(sbuffer, path, len_path)) {
-        pr_error("Failed to add path '%s' to string buffer\n", path);
-        return -1;
-    }
-    workdir->len_path = len_path;
-
-    if ((workdir->fd =
-        open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+    int dir_fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dir_fd < 0) {
         switch (errno) {
         case ENOENT:
             if (mkdir_recursively(path, len_path)) {
                 pr_error("Failed to create folder '%s'\n", path);
                 return -1;
             }
-            if ((workdir->fd =
+            if ((dir_fd =
                 open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
                 pr_error_with_errno("Still failed to open '%s' as directory\n",
                                     path);
@@ -2521,54 +2512,106 @@ int work_directory_init_from_path(
             return -1;
         }
     }
+    return dir_fd;
+}
 
-    if ((workdir->linkfd = openat(
-                workdir->fd, DIR_LINKS,
-                O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+int open_or_create_subdir(
+    int const atfd,
+    char const *const restrict path
+) {
+    int fd = openat(atfd, path,
+                O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) {
         switch (errno) {
         case ENOENT:
-            if (mkdirat(workdir->fd, DIR_LINKS, 0755) < 0) {
+            if (mkdirat(atfd, path, 0755) < 0) {
                 pr_error_with_errno(
                     "Failed to create links subdir under '%s'", path);
-                goto close_dirfd;
+                return -1;
             }
-            if ((workdir->linkfd = openat(
-                        workdir->fd, DIR_LINKS,
+            if ((fd = openat(atfd, path,
                         O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
                 pr_error_with_errno(
                     "Failed to open links subdir under '%s' as directory after "
                     "creating it", path);
-                goto close_dirfd;
+                return -1;
             }
             break;
         default:
             pr_error_with_errno(
                 "Failed to open links subdir under '%s' as directory", path);
-            goto close_dirfd;
+            return -1;
         }
     }
+    return fd;
+}
 
-    if (links_keep) {
-        if (!(workdir->keeps = malloc(sizeof *workdir->keeps * ALLOC_BASE))) {
-            pr_error_with_errno("Failed to allocae memory for keeps");
-            goto close_linkfd;
-        }
-        *workdir->keeps = *links_keep;
-        workdir->keeps_allocated = ALLOC_BASE;
-        workdir->keeps_count = 1;
-    } else {
-        workdir->keeps = NULL;
-        workdir->keeps_allocated = 0;
-        workdir->keeps_count = 0;
+int work_directory_init_from_path(
+    struct work_directory *const restrict workdir,
+    struct string_buffer *const restrict sbuffer,
+    char const *const restrict path,
+    unsigned short const len_path
+) {
+    workdir->path_offset = sbuffer->used;
+    if (string_buffer_add(sbuffer, path, len_path)) {
+        pr_error("Failed to add path '%s' to string buffer\n", path);
+        return -1;
     }
+    workdir->len_path = len_path;
+
+    int dir_fd = open_or_create_dir_recursively(path, len_path);
+    if (dir_fd < 0) {
+        pr_error("Failed to create work dir '%s' recursively\n", path);
+        return -1;
+    }
+    if ((workdir->datafd = open_or_create_subdir(dir_fd, DIR_DATA)) < 0) {
+        pr_error("Failed to open data subdir for '%s'\n", path);
+        goto close_dirfd;
+    }
+    if ((workdir->linkfd = open_or_create_subdir(dir_fd, DIR_LINKS)) < 0) {
+        pr_error("Failed to open link subdir for '%s'\n", path);
+        goto close_datafd;
+    }    
+    if (close(dir_fd)) {
+        pr_error("Failed to close workdir fd when finishing '%s'\n", path);
+        goto close_linkfd;
+    }
+    workdir->keeps = NULL;
+    workdir->keeps_allocated = 0;
+    workdir->keeps_count = 0;
     return 0;
 close_linkfd:
     if (close(workdir->linkfd))
         pr_error_with_errno("Failed to close links fd for work directory");
+close_datafd:
+    if (close(workdir->datafd))
+        pr_error_with_errno("Failed to close data fd for work directory");
 close_dirfd:
-    if (close(workdir->fd))
+    if (close(dir_fd))
         pr_error_with_errno("Failed to close dir fd for work directory");
     return -1;
+}
+
+static inline
+void work_directory_free(
+    struct work_directory *const restrict workdir
+) {
+    if (workdir->datafd > 0) {
+        if (close(workdir->datafd)) {
+            pr_error_with_errno("Failed to close data dirfd for workdir");
+        }
+        workdir->datafd = -1;
+    }
+    if (workdir->linkfd > 0) {
+        if (close(workdir->linkfd)) {
+            pr_error_with_errno("Failed to close links dirfd for workdir");
+        }
+        workdir->linkfd = -1;
+    }
+    if (workdir->keeps) {
+        free(workdir->keeps);
+        workdir->keeps = NULL;
+    }
 }
 
 #define work_directory_init_from_handle(NAME) \
@@ -2576,20 +2619,16 @@ close_dirfd:
         &work_handle->dir_##NAME##s,  \
         &work_handle->string_buffer, \
         work_handle_get_string(work_handle->dir_##NAME##s), \
-        work_handle->len_dir_##NAME##s, \
-        work_handle->clean_##NAME##s ? &links_keep : NULL)
-
+        work_handle->len_dir_##NAME##s)
 
 static inline
 int work_handle_work_directories_init(
     struct work_handle *const restrict work_handle
 ) {
-    struct work_keep links_keep = {0};
     if (work_handle->clean_repos || 
         work_handle->clean_archives || 
         work_handle->clean_checkouts) 
     {
-        links_keep.offset = work_handle->string_buffer.used;
         if (string_buffer_add(
                 &work_handle->string_buffer, 
                 DIR_LINKS, 
@@ -2616,39 +2655,12 @@ int work_handle_work_directories_init(
     }
     return 0;
 free_workdir_archives:
-    if (close(work_handle->dir_archives.fd))
-        pr_error_with_errno("Failed to close dirfd for archives workdir");
-    if (work_handle->dir_archives.keeps) 
-        free(work_handle->dir_archives.keeps);
+    work_directory_free(&work_handle->dir_archives);
 free_workdir_repos:
-    if (close(work_handle->dir_repos.fd))
-        pr_error_with_errno("Failed to close dirfd for repos workdir");
-    if (work_handle->dir_repos.keeps)
-        free(work_handle->dir_repos.keeps);
+    work_directory_free(&work_handle->dir_repos);
     return -1;
 }
 
-static inline
-void work_directory_free(
-    struct work_directory *const restrict workdir
-) {
-    if (workdir->fd > 0) {
-        if (close(workdir->fd)) {
-            pr_error_with_errno("Failed to close dirfd for workdir");
-        }
-        workdir->fd = -1;
-    }
-    if (workdir->linkfd > 0) {
-        if (close(workdir->linkfd)) {
-            pr_error_with_errno("Failed to close links dirfd for workdir");
-        }
-        workdir->linkfd = -1;
-    }
-    if (workdir->keeps) {
-        free(workdir->keeps);
-        workdir->keeps = NULL;
-    }
-}
 
 static inline
 void work_handle_work_directories_free(
@@ -2834,8 +2846,6 @@ free_string_buffer:
         free(work_handle->string_buffer.buffer);
     return -1;
 }
-
-
 
 int gcb_sideband_progress(char const *string, int len, void *payload) {
     pr_info("Repo '%s': Remote: %.*s",
