@@ -122,6 +122,11 @@ struct string_buffer {
 
 #define ALLOC_BASE          10
 #define ALLOC_MULTIPLIER    2
+#ifdef  CHUNK_SIZE
+#define CHUNK_SIZE  PAGE_SIZE
+#else
+#define CHUNK_SIZE  4096
+#endif
 
 #define get_last(x) x + x##_count - 1
 
@@ -683,7 +688,7 @@ int string_buffer_add(
     unsigned int used_new;
     char *buffer_new;
     if (!sbuffer->buffer) {
-        if (!(sbuffer->buffer = malloc(sbuffer->size = PAGE_SIZE))) {
+        if (!(sbuffer->buffer = malloc(sbuffer->size = CHUNK_SIZE))) {
             pr_error_with_errno(
                 "Failed to allocate memory for string buffer");
             return -1;
@@ -754,7 +759,7 @@ int string_buffer_clone(
         pr_error("Internal: called passed NULL pointer to us\n");
         return -1;
     }
-    target->size = (source->used + PAGE_SIZE - 1) / PAGE_SIZE  * PAGE_SIZE;
+    target->size = (source->used + CHUNK_SIZE - 1) / CHUNK_SIZE  * CHUNK_SIZE;
     if (!(target->buffer = malloc(target->size))) {
         pr_error_with_errno("Failed to allocate memory for new string buffer");
         return -1;
@@ -844,7 +849,7 @@ int dynamic_array_partial_free(
 #define dynamic_array_partial_free_to(name) \
     dynamic_array_partial_free((void **)&name, sizeof *name, name##_count, &name##_allocated)
 
-#define BUFFER_READ_CHUNK PAGE_SIZE * 64
+#define BUFFER_READ_CHUNK CHUNK_SIZE * 64
 
 /* Return -1 for error */
 size_t buffer_read_from_fd(
@@ -902,7 +907,7 @@ size_t buffer_read_from_fd(
         }
         size_total += size_current;
     }
-    if (size_alloc - size_total >= PAGE_SIZE) {
+    if (size_alloc - size_total >= CHUNK_SIZE) {
         if (!(buffer_new = realloc(*buffer, size_total))) {
             pr_error_with_errno("Failed to release memory");
             goto on_error;
