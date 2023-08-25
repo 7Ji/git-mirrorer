@@ -3010,7 +3010,7 @@ int work_handle_init_from_config(
     return 0;
 free_repos:
     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-        free_if_allocated_to_null(work_handle->repos[i].wanted_objects);
+        free_if_allocated(work_handle->repos[i].wanted_objects);
     }
     free_if_allocated_to_null(work_handle->repos);
 free_string_buffer:
@@ -3021,12 +3021,28 @@ free_cwd:
     return -1;
 }
 
-int work_handle_free(
+static inline
+void repo_work_free(
+    struct repo_work *const restrict repo_work
+) {
+    free_if_allocated_to_null(repo_work->commits);
+    free_if_allocated_to_null(repo_work->wanted_objects);
+    if (repo_work->git_repository) {
+        git_repository_free(repo_work->git_repository);
+        repo_work->git_repository = NULL;
+    }
+}
+
+void work_handle_free(
     struct work_handle *const restrict work_handle
 ) {
-
-
-    return 0;
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        repo_work_free(work_handle->repos + i);
+    }
+    free_if_allocated_to_null(work_handle->repos);
+    free_if_allocated_to_null(work_handle->string_buffer.buffer);
+    if (close(work_handle->cwd))
+        pr_error_with_errno("Failed to clsoe opened/duped cwd");
 }
 
 // int mkdir_allow_existing_at(
@@ -8280,7 +8296,7 @@ int gmr_work(char const *const restrict config_path) {
         GIT_OPT_SET_SERVER_CONNECT_TIMEOUT, config.timeout_connect)) {
         pr_error("Failed to set timeout, %d (%s)\n", 
             git_error_last()->klass, git_error_last()->message);
-        goto free_config;
+        goto free_work_handle;
     }
     // if (config.daemon) {
     //     if (work_daemon(&config, config_path, &workdir_repos, &workdir_archives,
@@ -8301,6 +8317,8 @@ int gmr_work(char const *const restrict config_path) {
 shutdown:
     pr_info("Shutting down libgit2\n");
     git_libgit2_shutdown();
+free_work_handle:
+    work_handle_free(&work_handle);
 free_config:
     config_free(&config);
     return r;
