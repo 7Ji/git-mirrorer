@@ -2570,7 +2570,7 @@ int mkdir_recursively(
         }
     }
 from_left:
-    for (unsigned short i = from_left; i < len_path; ++i) {
+    for (unsigned short i = from_left; i < len_path + 1; ++i) {
         bool revert_slash = false;
         switch (path_dup[i]) {
         case '/':
@@ -2608,7 +2608,7 @@ int open_or_create_dir_recursively(
             }
             if ((dir_fd =
                 open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
-                pr_error_with_errno("Still failed to open '%s' as directory\n",
+                pr_error_with_errno("Still failed to open '%s' as directory",
                                     path);
                 return -1;
             }
