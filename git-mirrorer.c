@@ -64,7 +64,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
     pr_with_prefix_and_source("ERROR", format, ##arg)
 #define pr_error_with_errno(format, arg...) \
     pr_error(format", errno: %d, error: %s\n", ##arg, errno, strerror(errno))
-
+#define pr_error_with_libgit_error(format, r, arg...) \
+    pr_error(format", libgit return %d (%d: %s)\n", ##arg, r, git_error_last()->klass, git_error_last()->message)
 
 #define fpr_with_prefix_and_source(file, prefix, format, arg...) \
     fprintf(file, "["prefix"] %s:%d: "format, __FUNCTION__, __LINE__, ##arg)
@@ -308,7 +309,7 @@ struct repo_work {
     DYNAMIC_ARRAY_DECLARE_SAME(wanted_object);
     DYNAMIC_ARRAY_DECLARE_SAME(commit);
     git_repository *git_repository;
-    bool from_config, wanted_dynamic, updated;
+    bool from_config, wanted_dynamic, need_update, updated;
 };
 
 /* Config */
@@ -653,6 +654,21 @@ char const *yamlconf_parsing_status_strings[] = {
 struct yamlconf_parsing_handle {
     enum yamlconf_parsing_status status;
     enum yamlconf_wanted_type wanted_type;
+};
+
+/* Git mirror */
+#define GMR_REMOTE "origin"
+#define GMR_FETCHSPEC "+refs/*:refs/*"
+#define GMR_CONFIG "remote."GMR_REMOTE".mirror"
+
+char const *gmr_refspecs_strings[] = {
+    GMR_FETCHSPEC,
+    NULL
+};
+
+static git_strarray const gmr_refspecs = {
+    .count = 1, 
+    .strings = (char **)gmr_refspecs_strings
 };
 
 /* Functions */
@@ -2848,6 +2864,7 @@ int repo_work_from_config(
     repo_work->commits_count = 0;
     repo_work->commits_allocated = 0;
     repo_work->git_repository = NULL;
+    repo_work->need_update = false;
     repo_work->updated = false;
     repo_work->common = repo_config->common;
     repo_work->from_config = true;
@@ -3043,6 +3060,187 @@ void work_handle_free(
     free_if_allocated_to_null(work_handle->string_buffer.buffer);
     if (close(work_handle->cwd))
         pr_error_with_errno("Failed to clsoe opened/duped cwd");
+}
+
+// 0 existing and opened, 1 does not exist but created, -1 error
+int repo_open_or_create(
+    git_repository **const restrict repo,
+    char const *const restrict url,
+    char const *const restrict name
+) {
+    int r;
+    switch ((r = git_repository_open_bare(repo, name))) {
+    case GIT_OK:
+        return 0;
+    case GIT_ENOTFOUND:
+        if ((r = git_repository_init(repo, name, 1))) {
+            pr_error_with_libgit_error("Failed to create repo '%s' at '%s'", r, url, name);
+            return -1;
+        }
+        git_remote *remote;
+        if ((r = git_remote_create_with_fetchspec(&remote, *repo, GMR_REMOTE, url, GMR_FETCHSPEC))) {
+            pr_error_with_libgit_error("Failed to create remote '"GMR_REMOTE"' with url '%s'", r, url);
+            goto free_repo;
+        }
+        git_remote_free(remote);
+        git_config *config;
+        if ((r = git_repository_config(&config, *repo))) {
+            pr_error_with_libgit_error("Failed to open config for repo '%s' at '%s'", r, url, name);
+            goto free_repo;
+        }
+        r = git_config_set_bool(config, GMR_CONFIG, true);
+        git_config_free(config);
+        if (r) {
+            pr_error_with_libgit_error("Failed to set config '"GMR_CONFIG"' to true for repo '%s' at '%s'",
+                r, url, name);
+            goto free_repo;
+        }
+        return 1;
+    default:
+        pr_error_with_libgit_error("Failed to open repo '%s' at '%s'", r, url, name);
+        return -1;
+    }
+
+free_repo:
+    git_repository_free(*repo);
+    return -1;
+}
+
+int repo_work_open_common(
+    struct repo_work *const restrict repo_work,
+    char const *const url,
+    char const *const name
+) {
+    int r;
+    switch ((r = repo_open_or_create(&repo_work->git_repository, url, name))) {
+    case 1:
+        repo_work->need_update = true;
+        return 0;
+    case 0:
+        switch ((r = git_repository_head_unborn(repo_work->git_repository))) {
+        case 1:
+            repo_work->need_update = true;
+        case 0:
+            break;
+        default:
+            pr_error_with_libgit_error("Failed to check if repo '%s' at '%s's HEAD is unborn", r, url, name);
+            return -1;
+        }
+        return 0;
+    case -1:
+        pr_error("Failed to open or create repo '%s' at '%s'\n", url, name);
+        return -1;
+    default:
+        pr_error("Impossible return %d\n", r);
+        return -1;
+    }
+}
+
+
+int repo_work_open_one(
+    struct repo_work *const restrict repo_work,
+    char const *const restrict sbuffer,
+    int const fd_repos,
+    int const fd_cwd
+) {
+    char const *const url = sbuffer + repo_work->url_offset;
+    char const *const name = repo_work->hash_url_string;
+    if (repo_work->git_repository) {
+        pr_error("Repo '%s' already opened\n", url);
+        return -1;
+    }
+    if (fchdir(fd_repos)) {
+        pr_error_with_errno("Failed to chdir to repos");
+        return -1;
+    }
+    int r;
+    if (repo_work_open_common(repo_work, url, name)) {
+        pr_error("Failed to open repo '%s' at '%s'\n", url, name);
+        r = -1;
+        goto return_cwd;
+    }
+    r = 0;
+return_cwd:
+    if (fchdir(fd_cwd)) {
+        pr_error_with_errno("Failed to chdir back to cwd");
+        r = -1;
+    }
+    return r;
+}
+
+int repo_work_open_many(
+    struct repo_work **const restrict repos,
+    char const *const restrict sbuffer,
+    int const fd_repos,
+    int const fd_cwd
+) {
+    if (fchdir(fd_repos)) {
+        pr_error_with_errno("Failed to chdir to repos");
+        return -1;
+    }
+    int r;
+    unsigned short free_count = 0;
+    for (unsigned short i = 0; ; ++i) {
+        struct repo_work *const restrict repo_work = repos[i];
+        if (!repo_work) break;
+        if (repo_work->git_repository) {
+            pr_error("Repo already opened\n");
+            free_count = i + 1;
+            r = -1;
+            goto free_repos;
+        }
+        char const *const url = sbuffer + repo_work->url_offset;
+        char const *const name = repo_work->hash_url_string;
+        if (repo_work_open_common(repo_work, url, name)) {
+            pr_error("Failed to open repo '%s' at '%s'\n", url, name);
+            free_count = i;
+            r = -1;
+            goto free_repos;
+        }
+    }
+    r = 0;
+free_repos:
+    for (unsigned short i = 0; i < free_count; ++i) {
+        git_repository_free(repos[i]->git_repository);
+        repos[i]->git_repository = NULL;
+    }
+// return_cwd:
+    if (fchdir(fd_cwd)) {
+        pr_error_with_errno("Failed to chdir back to cwd");
+        r = -1;
+    }
+    return r;
+}
+
+int work_handle_open_all_repos(struct work_handle const *const restrict work_handle) {
+    switch (work_handle->repos_count) {
+    case 0:
+        pr_warn("No repos defined, early quit\n");
+        return 0;
+    case 1:
+        return repo_work_open_one(work_handle->repos, work_handle->string_buffer.buffer, work_handle->dir_repos.datafd, work_handle->cwd);
+    default:
+        break;
+    }
+    struct repo_work *repos_stack[10];
+    struct repo_work **repos_heap = NULL;
+    struct repo_work **repos = NULL;
+    if (work_handle->repos_count > 9) {
+        if (!(repos_heap = malloc(sizeof *repos_heap * (work_handle->repos_count + 1)))) {
+            pr_error_with_errno("Failed to allocate memory for repos' pointers");
+            return -1;
+        }
+        repos = repos_heap;
+    } else {
+        repos = repos_stack;
+    }
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        repos[i] = work_handle->repos + i;
+    }
+    repos[work_handle->repos_count] = NULL;
+    int r = repo_work_open_many(repos, work_handle->string_buffer.buffer, work_handle->dir_repos.datafd, work_handle->cwd);
+    free_if_allocated(repos_heap);
+    return r;
 }
 
 // int mkdir_allow_existing_at(
