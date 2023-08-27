@@ -2444,7 +2444,7 @@ void config_print_repo_wanted(
             "|            type: %d (%s)\n"
             "|            archive: %s\n"
             "|            checkout: %s\n",
-            config_get_string(wanted_object->name),
+            wanted_object->len_name ? config_get_string(wanted_object->name) : "(unnamed)",
             wanted_object->type,
             wanted_type_strings[wanted_object->type],
             wanted_object->archive ? "yes" : "no",
