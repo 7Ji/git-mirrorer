@@ -3520,32 +3520,6 @@ int work_handle_open_all_repos(struct work_handle const *const restrict work_han
 //     return width;
 // }
 
-// static inline unsigned int
-//     tar_header_checksum(struct tar_header *header) {
-//     unsigned int checksum = 0;
-//     for (unsigned i = 0; i < sizeof *header; ++i) {
-//         switch (i) {
-//         case 148 ... 155:
-//             checksum += ' ';
-//             break;
-//         default:
-//             checksum += ((unsigned char *)header)[i];
-//             break;
-//         }
-//     }
-//     return checksum;
-// }
-
-// int tar_header_checksum_self(struct tar_header *header) {
-//     if (snprintf(header->chksum, sizeof header->chksum - 1, "%06o",
-//         tar_header_checksum(header)) < 0) {
-//         pr_error_with_errno("Failed to format header checksum");
-//         return -1;
-//     }
-//     header->chksum[sizeof header->chksum - 1] = ' ';
-//     return 0;
-// }
-
 // // Read from fd until EOF,
 // // return the size being read, or -1 if failed,
 // // the pointer should be free'd by caller
@@ -3564,107 +3538,6 @@ int work_handle_open_all_repos(struct work_handle const *const restrict work_han
 // //     }
     
 // // }
-
-
-// // int wanted_object_guess_type_self_optional(
-// //     struct wanted_object *wanted_object
-// // ) {
-// //     if (wanted_object->type != WANTED_TYPE_UNKNOWN) return 0;
-// //     if ((wanted_object->type = wanted_type_guess_from_name(
-// //         wanted_object->name, wanted_object->len_name
-// //     )) == WANTED_TYPE_UNKNOWN) {
-// //         pr_error("Failed to guess type\n");
-// //         return -1;
-// //     }
-// //     return 0;
-// // }
-
-// // int wanted_object_fill_type_from_string(
-// //     struct wanted_object *wanted_object,
-// //     char const *const restrict type
-// // ) {
-// //     for (enum wanted_type i = 1; i <= WANTED_TYPE_MAX; ++i) {
-// //         if (!strcmp(type, wanted_type_strings[i])) {
-// //             wanted_object->type = i;
-// //             return 0;
-// //         }
-// //     }
-// //     return -1;
-// // }
-
-// // int wanted_object_complete_commit(
-// //     struct wanted_commit *wanted_object
-// // ) {
-// //     if (git_oid_fromstr(&wanted_object->oid, wanted_object->name)) {
-// //         pr_error("Failed to resolve '%s' to a git object id\n",
-// //             wanted_object->name);
-// //         return -1;
-// //     }
-// //     if (git_oid_tostr(
-// //             wanted_object->hex_string,
-// //             sizeof wanted_object->hex_string,
-// //             &wanted_object->oid
-// //         )[0] == '\0') {
-// //         pr_error("Failed to format git oid hex string\n");
-// //         return -1;
-// //     }
-// //     return 0;
-// // }
-
-// // int wanted_object_complete(
-// //     struct wanted_object *wanted_object
-// // ) {
-// //     if (wanted_object_guess_type_self_optional(wanted_object)) {
-// //         pr_error("Failed to guess type of object with unknown type\n");
-// //         return -1;
-// //     }
-// //     switch (wanted_object->type) {
-// //     case WANTED_TYPE_UNKNOWN:
-// //         pr_error("Impossible to complete an object with unknown type\n");
-// //         return -1;
-// //     case WANTED_TYPE_ALL_BRANCHES: // These two does not need to be upgraded
-// //     case WANTED_TYPE_ALL_TAGS:
-// //     case WANTED_TYPE_REFERENCE:
-// //     case WANTED_TYPE_BRANCH:
-// //     case WANTED_TYPE_TAG:
-// //     case WANTED_TYPE_HEAD:
-// //         return 0;
-// //     case WANTED_TYPE_COMMIT:
-// //         return wanted_object_complete_commit(
-// //             (struct wanted_commit *)wanted_object);
-// //     default:
-// //         pr_error("Impossible routine\n");
-// //         return -1;
-// //     }
-// //     return 0;
-// // }
-
-// // void wanted_object_init_with_name(
-// //     struct wanted_object *wanted_object,
-// //     char const *const restrict name,
-// //     unsigned short const len_name
-// // ) {
-// //     *wanted_object = WANTED_OBJECT_INIT;
-// //     memcpy(wanted_object->name, name, len_name);
-// //     wanted_object->name[len_name] = '\0';
-// //     wanted_object->len_name = len_name;
-// // }
-
-// // int wanted_object_init_with_name_and_type_and_complete(
-// //     struct wanted_object *wanted_object,
-// //     char const *const restrict name,
-// //     unsigned short const len_name,
-// //     enum wanted_type const wanted_type
-// // ) {
-// //     wanted_object_init_with_name(wanted_object, name, len_name);
-// //     wanted_object->type = wanted_type;
-// //     if (wanted_object_complete(wanted_object)) {
-// //         pr_error("Failed to complete object\n");
-// //         return -1;
-// //     }
-// //     return 0;
-// // }
-
 
 // int opendir_create_if_non_exist_at(
 //     int const dir_fd,
@@ -4539,96 +4412,6 @@ int work_handle_open_all_repos(struct work_handle const *const restrict work_han
 //     return r;
 // }
 
-// // 0 existing and opened, 1 does not exist but created, -1 error
-// int repo_open_or_init_bare(
-//     struct repo *const restrict repo
-// ) {
-//     if (repo == NULL || repo->url[0] == '\0' ||
-//         repo->dir_path[0] == '\0') {
-//         pr_error("Internal: invalid argument\n");
-//         return -1;
-//     }
-//     if (repo->repository != NULL) {
-//         pr_error("Repository already opened for repo '%s'\n", repo->url);
-//         return -1;
-//     }
-//     int r = git_repository_open_bare(&repo->repository, repo->dir_path);
-//     switch (r) {
-//     case GIT_OK:
-//         pr_debug(
-//             "Opened existing bare repository '%s' for repo '%s'\n",
-//             repo->dir_path, repo->url);
-//         return 0;
-//     case GIT_ENOTFOUND:
-//         pr_warn(
-//             "Dir '%s' for repo '%s' does not exist yet, trying to create it\n",
-//             repo->dir_path, repo->url);
-//         r = git_repository_init(&repo->repository, repo->dir_path, 1);
-//         if (r < 0) {
-//             pr_error(
-//                 "Failed to initialize a bare repostitory at '%s' "
-//                 "for repo '%s', "
-//                 "libgit return %d\n",
-//                 repo->dir_path, repo->url, r);
-//             return -1;
-//         } else {
-//             git_remote *remote;
-//             r = git_remote_create_with_fetchspec(
-//                 &remote, repo->repository, MIRROR_REMOTE,
-//                 repo->url, MIRROR_FETCHSPEC);
-//             if (r < 0) {
-//                 pr_error(
-//                     "Failed to create remote '"MIRROR_REMOTE"' "
-//                     "with fetch spec '"MIRROR_FETCHSPEC"' for url '%s', "
-//                     "libgit returns %d\n",
-//                     repo->url, r);
-//                 git_repository_free(repo->repository);
-//                 return -1;
-//             }
-//             git_config *config;
-//             r = git_repository_config(&config, repo->repository);
-//             if (r < 0) {
-//                 pr_error(
-//                     "Failed to get config for repo for url '%s', "
-//                     "libgit return %d\n", repo->url, r);
-//                 git_remote_free(remote);
-//                 git_repository_free(repo->repository);
-//                 return -1;
-//             }
-//             r = git_config_set_bool(config, MIRROR_CONFIG, true);
-//             if (r < 0) {
-//                 pr_error(
-//                     "Failed to set config '"MIRROR_CONFIG"' to true for "
-//                     "repo for url '%s, libgit return %d\n", repo->url, r);
-//                 git_config_free(config);
-//                 git_remote_free(remote);
-//                 git_repository_free(repo->repository);
-//                 return -1;
-//             }
-//             git_config_free(config);
-//             git_remote_free(remote);
-//             return 1;
-//         }
-//     default:
-//         pr_error(
-//             "Failed to open bare repository at '%s' for repo '%s' "
-//             "and cannot fix libgit return %d\n", repo->dir_path, repo->url, r);
-//         return -1;
-//     }
-
-//     return 0;
-// }
-
-// char const *mirror_refspecs_strings[] = {
-//     MIRROR_FETCHSPEC,
-//     NULL
-// };
-
-// static git_strarray const mirror_refspecs = {
-//     .count = 1, 
-//     .strings = (char **)mirror_refspecs_strings
-// };
-
 // int repo_update(
 //     struct repo *const restrict repo,
 //     git_fetch_options const *const restrict fetch_options,
@@ -4821,24 +4604,6 @@ int work_handle_open_all_repos(struct work_handle const *const restrict work_han
 //         git_repository_free(repo->repository);
 //     }
 //     *repo = REPO_INIT;
-// }
-
-// void config_free(
-//     struct config *const restrict config
-// ) {
-//     if (config->repos) {
-//         for (unsigned long i = 0; i < config->repos_count; ++i) {
-//             repo_free(config->repos + i);
-//         }
-//         free (config->repos);
-//     }
-//     if (config->always_wanted_objects) {
-//         free(config->always_wanted_objects);
-//     }
-//     if (config->empty_wanted_objects) {
-//         free(config->empty_wanted_objects);
-//     }
-//     *config = CONFIG_INIT;
 // }
 
 // int parsed_commit_add_submodule_and_init_with_path_and_url(
@@ -6192,290 +5957,316 @@ int work_handle_open_all_repos(struct work_handle const *const restrict work_han
 //     return 0;
 // }
 
-// int tar_write_and_pad_to_512_block(
-//     int const tar_fd,
-//     void const *const restrict data,
-//     size_t const size
-// ) {
-// #ifdef TAR_WRITE_CHECK_OFFSET
-//     if (lseek(tar_fd, 0, SEEK_CUR) % 512) {
-//         pr_error("Tar not at 512 offset\n");
-//         return -1;
-//     }
-// #endif
-//     size_t size_written = 0;
-//     while (size_written < size) {
-//         ssize_t size_written_this = write(
-//             tar_fd, data + size_written, size - size_written);
-//         if (size_written_this < 0) {
-//              switch (errno) {
-//             case EAGAIN:
-// #if (EAGAIN != EWOULDBLOCK)
-//             case EWOULDBLOCK:
-// #endif
-//             case EINTR:
-//                 break;
-//             default:
-//                 pr_error_with_errno(
-//                     "Failed to write %lu bytes to tar", size - size_written);
-//                 return -1;
-//             }
-//         } else {
-//             size_written += size_written_this;
-//         }
-//     }
-//     size_t lone_bytes = size % 512;
-//     if (lone_bytes) {
-//         size_t padding = 512 - lone_bytes;
-//         size_written = 0;
-//         while (size_written < padding) {
-//             ssize_t size_written_this = write(
-//                 tar_fd, EMPTY_512_BLOCK, padding - size_written);
-//             if (size_written_this < 0) {
-//                 switch (errno) {
-//                 case EAGAIN:
-// #if (EAGAIN != EWOULDBLOCK)
-//                 case EWOULDBLOCK:
-// #endif
-//                 case EINTR:
-//                     break;
-//                 default:
-//                     pr_error_with_errno(
-//                         "Failed to pad %lu bytes to tar", size - size_written);
-//                     return -1;
-//                 }
-//             } else {
-//                 size_written += size_written_this;
-//             }
-//         }
-//     }
-// #ifdef TAR_WRITE_CHECK_OFFSET
-//     if (lseek(tar_fd, 0, SEEK_CUR) % 512) {
-//         pr_error("Tar not at 512 offset\n");
-//         return -1;
-//     }
-// #endif
-//     return 0;
-// }
+static inline unsigned int
+    tar_header_checksum(struct tar_header *header) {
+    unsigned int checksum = 0;
+    for (unsigned i = 0; i < sizeof *header; ++i) {
+        switch (i) {
+        case 148 ... 155:
+            checksum += ' ';
+            break;
+        default:
+            checksum += ((unsigned char *)header)[i];
+            break;
+        }
+    }
+    return checksum;
+}
 
-// int tar_add_global_header(
-//     int const tar_fd,
-//     char const *const restrict mtime,
-//     void const *const restrict content,
-//     unsigned short const len_content
-// ) {
-//     struct tar_header global_header =
-//         TAR_HEADER_PAX_GLOBAL_HEADER_INIT;
-//     if (snprintf(global_header.size, sizeof global_header.size,
-//                     "%011o", len_content) < 0) {
-//         pr_error("Failed to format global header size\n");
-//         return -1;
-//     }
-//     memcpy(global_header.mtime, mtime, sizeof global_header.mtime);
-//     if (tar_header_checksum_self(&global_header)) {
-//         pr_error("Failed to calculate header checksum\n");
-//         return -1;
-//     }
-//     if (tar_write_and_pad_to_512_block(
-//         tar_fd, &global_header, sizeof global_header)) {
-//         pr_error("Failed to write pax global header to tar\n");
-//         return -1;
-//     }
-//     if (tar_write_and_pad_to_512_block(tar_fd, content, len_content)) {
-//         pr_error("Failed to write file data to tar\n");
-//         return -1;
-//     }
-//     return 0;
-// }
+int tar_header_checksum_self(struct tar_header *header) {
+    if (snprintf(header->chksum, sizeof header->chksum - 1, "%06o",
+        tar_header_checksum(header)) < 0) {
+        pr_error_with_errno("Failed to format header checksum");
+        return -1;
+    }
+    header->chksum[sizeof header->chksum - 1] = ' ';
+    return 0;
+}
 
-// int tar_append_longlink_optional(
-//     int const tar_fd,
-//     char const *const restrict link,
-//     unsigned short const len_link
-// ) {
-//     struct tar_header longlink_header;
-//     if (len_link < sizeof longlink_header.linkname) return 0;
-//     longlink_header = TAR_HEADER_GNU_LONGLINK_INIT;
-//     if (snprintf(longlink_header.size, sizeof longlink_header.size,
-//                     "%011o", len_link + 1) < 0) {
-//         pr_error("Failed to format long link size\n");
-//         return -1;
-//     }
-//     if (tar_header_checksum_self(&longlink_header)) {
-//         pr_error("Failed to calculate header checksum\n");
-//         return -1;
-//     }
-//     if (tar_write_and_pad_to_512_block(
-//         tar_fd, &longlink_header, sizeof longlink_header)) {
-//         pr_error("Failed to write data to tar\n");
-//         return -1;
-//     }
-//     if (tar_write_and_pad_to_512_block(tar_fd, link, len_link + 1)) {
-//         pr_error("Failed to write longlink to tar\n");
-//         return -1;
-//     }
-//     return 0;
-// }
+int tar_write_and_pad_to_512_block(
+    int const tar_fd,
+    void const *const restrict data,
+    size_t const size
+) {
+#ifdef TAR_WRITE_CHECK_OFFSET
+    if (lseek(tar_fd, 0, SEEK_CUR) % 512) {
+        pr_error("Tar not at 512 offset\n");
+        return -1;
+    }
+#endif
+    size_t size_written = 0;
+    while (size_written < size) {
+        ssize_t size_written_this = write(
+            tar_fd, data + size_written, size - size_written);
+        if (size_written_this < 0) {
+             switch (errno) {
+            case EAGAIN:
+#if (EAGAIN != EWOULDBLOCK)
+            case EWOULDBLOCK:
+#endif
+            case EINTR:
+                break;
+            default:
+                pr_error_with_errno(
+                    "Failed to write %lu bytes to tar", size - size_written);
+                return -1;
+            }
+        } else {
+            size_written += size_written_this;
+        }
+    }
+    size_t lone_bytes = size % 512;
+    if (lone_bytes) {
+        size_t padding = 512 - lone_bytes;
+        size_written = 0;
+        while (size_written < padding) {
+            ssize_t size_written_this = write(
+                tar_fd, EMPTY_512_BLOCK, padding - size_written);
+            if (size_written_this < 0) {
+                switch (errno) {
+                case EAGAIN:
+#if (EAGAIN != EWOULDBLOCK)
+                case EWOULDBLOCK:
+#endif
+                case EINTR:
+                    break;
+                default:
+                    pr_error_with_errno(
+                        "Failed to pad %lu bytes to tar", size - size_written);
+                    return -1;
+                }
+            } else {
+                size_written += size_written_this;
+            }
+        }
+    }
+#ifdef TAR_WRITE_CHECK_OFFSET
+    if (lseek(tar_fd, 0, SEEK_CUR) % 512) {
+        pr_error("Tar not at 512 offset\n");
+        return -1;
+    }
+#endif
+    return 0;
+}
 
-// int tar_append_longname_optional(
-//     int const tar_fd,
-//     char const *const restrict name,
-//     unsigned short const len_name
-// ) {
-//     struct tar_header longname_header;
-//     if (len_name < sizeof longname_header.name) return 0;
-//     longname_header = TAR_HEADER_GNU_LONGNAME_INIT;
-//     if (snprintf(longname_header.size, sizeof longname_header.size,
-//                     "%011o", len_name + 1) < 0) {
-//         pr_error("Failed to format long name size\n");
-//         return -1;
-//     }
-//     if (tar_header_checksum_self(&longname_header)) {
-//         pr_error("Failed to calculate header checksum\n");
-//         return -1;
-//     }
-//     if (tar_write_and_pad_to_512_block(
-//         tar_fd, &longname_header, sizeof longname_header)) {
-//         pr_error("Failed to write data to tar\n");
-//         return -1;
-//     }
-//     if (tar_write_and_pad_to_512_block(tar_fd, name, len_name + 1)) {
-//         pr_error("Failed to write longname to tar\n");
-//         return -1;
-//     }
-//     return 0;
-// }
+int tar_add_global_header(
+    int const tar_fd,
+    char const *const restrict mtime,
+    void const *const restrict content,
+    unsigned short const len_content
+) {
+    struct tar_header global_header =
+        TAR_HEADER_PAX_GLOBAL_HEADER_INIT;
+    if (snprintf(global_header.size, sizeof global_header.size,
+                    "%011o", len_content) < 0) {
+        pr_error("Failed to format global header size\n");
+        return -1;
+    }
+    memcpy(global_header.mtime, mtime, sizeof global_header.mtime);
+    if (tar_header_checksum_self(&global_header)) {
+        pr_error("Failed to calculate header checksum\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(
+        tar_fd, &global_header, sizeof global_header)) {
+        pr_error("Failed to write pax global header to tar\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(tar_fd, content, len_content)) {
+        pr_error("Failed to write file data to tar\n");
+        return -1;
+    }
+    return 0;
+}
 
-// int tar_append_symlink(
-//     int const tar_fd,
-//     char const *const restrict mtime,
-//     char const *const restrict name,
-//     unsigned short const len_name,
-//     char const *const restrict link,
-//     unsigned short const len_link
-// ) {
-//     if (tar_append_longlink_optional(tar_fd, link, len_link)) {
-//         pr_error("Failed to create longlink\n");
-//         return -1;
-//     }
-//     if (tar_append_longname_optional(tar_fd, name, len_name)) {
-//         pr_error("Failed to create longname\n");
-//         return -1;
-//     }
-//     struct tar_header symlink_header =
-//         TAR_HEADER_SYMLINK_INIT;
-//     memcpy(symlink_header.mtime, mtime, sizeof symlink_header.mtime);
-//     memcpy(symlink_header.name, name,
-//         len_name > sizeof symlink_header.name ?
-//             sizeof symlink_header.name : len_name);
-//     memcpy(symlink_header.linkname, link,
-//         len_link > sizeof symlink_header.linkname ?
-//             sizeof symlink_header.linkname : len_link);
-//     if (tar_header_checksum_self(&symlink_header)) {
-//         pr_error("Failed to calculate header checksum\n");
-//         return -1;
-//     }
-//     if (tar_write_and_pad_to_512_block(
-//         tar_fd, &symlink_header, sizeof symlink_header)) {
-//         pr_error("Failed to write data to tar\n");
-//         return -1;
-//     }
-//     return 0;
-// }
+int tar_append_longlink_optional(
+    int const tar_fd,
+    char const *const restrict link,
+    unsigned short const len_link
+) {
+    struct tar_header longlink_header;
+    if (len_link < sizeof longlink_header.linkname) return 0;
+    longlink_header = TAR_HEADER_GNU_LONGLINK_INIT;
+    if (snprintf(longlink_header.size, sizeof longlink_header.size,
+                    "%011o", len_link + 1) < 0) {
+        pr_error("Failed to format long link size\n");
+        return -1;
+    }
+    if (tar_header_checksum_self(&longlink_header)) {
+        pr_error("Failed to calculate header checksum\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(
+        tar_fd, &longlink_header, sizeof longlink_header)) {
+        pr_error("Failed to write data to tar\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(tar_fd, link, len_link + 1)) {
+        pr_error("Failed to write longlink to tar\n");
+        return -1;
+    }
+    return 0;
+}
 
-// int tar_append_regular_file(
-//     int const tar_fd,
-//     void const *const restrict ro_buffer,
-//     git_object_size_t size,
-//     char const *const restrict mtime,
-//     char const *const restrict name,
-//     unsigned short const len_name,
-//     mode_t mode
-// ) {
-//     if (tar_append_longname_optional(tar_fd, name, len_name)) {
-//         pr_error("Failed to create longname\n");
-//         return -1;
-//     }
-//     struct tar_header regular_file_header;
-//     switch (mode) {
-//     case 0644:
-//         regular_file_header = TAR_HEADER_FILE_REG_INIT;
-//         break;
-//     case 0755:
-//         regular_file_header = TAR_HEADER_FILE_EXE_INIT;
-//         break;
-//     default:
-//         pr_warn("%03o mode is not expected, but we accept it for now\n", mode);
-//         regular_file_header = TAR_HEADER_FILE_REG_INIT;
-//         if (snprintf(regular_file_header.mode, sizeof regular_file_header.mode,
-//             "%07o", mode) < 0) {
-//             pr_error("Failed to format mode string\n");
-//             return -1;
-//         }
-//         break;
-//     };
-//     if (snprintf(regular_file_header.size, sizeof regular_file_header.size,
-//                     "%011lo", size) < 0) {
-//         pr_error("Failed to format long name size\n");
-//         return -1;
-//     }
-//     memcpy(regular_file_header.mtime, mtime, sizeof regular_file_header.mtime);
-//     memcpy(regular_file_header.name, name,
-//         len_name > sizeof regular_file_header.name ?
-//          sizeof regular_file_header.name : len_name);
-//     if (tar_header_checksum_self(&regular_file_header)) {
-//         pr_error("Failed to calculate header checksum\n");
-//         return -1;
-//     }
-//     if (tar_write_and_pad_to_512_block(
-//         tar_fd, &regular_file_header, sizeof regular_file_header)) {
-//         pr_error("Failed to write regular file header to tar\n");
-//         return -1;
-//     }
-//     if (tar_write_and_pad_to_512_block(tar_fd, ro_buffer, size)) {
-//         pr_error("Failed to write file data to tar\n");
-//         return -1;
-//     }
-//     return 0;
-// }
+int tar_append_longname_optional(
+    int const tar_fd,
+    char const *const restrict name,
+    unsigned short const len_name
+) {
+    struct tar_header longname_header;
+    if (len_name < sizeof longname_header.name) return 0;
+    longname_header = TAR_HEADER_GNU_LONGNAME_INIT;
+    if (snprintf(longname_header.size, sizeof longname_header.size,
+                    "%011o", len_name + 1) < 0) {
+        pr_error("Failed to format long name size\n");
+        return -1;
+    }
+    if (tar_header_checksum_self(&longname_header)) {
+        pr_error("Failed to calculate header checksum\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(
+        tar_fd, &longname_header, sizeof longname_header)) {
+        pr_error("Failed to write data to tar\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(tar_fd, name, len_name + 1)) {
+        pr_error("Failed to write longname to tar\n");
+        return -1;
+    }
+    return 0;
+}
 
-// int tar_append_folder(
-//     int const tar_fd,
-//     char const *const restrict mtime,
-//     char const *const restrict name,
-//     unsigned short const len_name
-// ) {
-//     if (tar_append_longname_optional(tar_fd, name, len_name)) {
-//         pr_error("Failed to create longname\n");
-//         return -1;
-//     }
-//     struct tar_header folder_header = TAR_HEADER_FOLDER_INIT;
-//     memcpy(folder_header.mtime, mtime, sizeof folder_header.mtime);
-//     memcpy(folder_header.name, name,
-//         len_name > sizeof folder_header.name ?
-//          sizeof folder_header.name : len_name);
-//     if (tar_header_checksum_self(&folder_header)) {
-//         pr_error("Failed to calculate header checksum\n");
-//         return -1;
-//     }
-//     if (tar_write_and_pad_to_512_block(
-//         tar_fd, &folder_header, sizeof folder_header)) {
-//         pr_error("Failed to write folder header to tar\n");
-//         return -1;
-//     }
-//     return 0;
-// }
+int tar_append_symlink(
+    int const tar_fd,
+    char const *const restrict mtime,
+    char const *const restrict name,
+    unsigned short const len_name,
+    char const *const restrict link,
+    unsigned short const len_link
+) {
+    if (tar_append_longlink_optional(tar_fd, link, len_link)) {
+        pr_error("Failed to create longlink\n");
+        return -1;
+    }
+    if (tar_append_longname_optional(tar_fd, name, len_name)) {
+        pr_error("Failed to create longname\n");
+        return -1;
+    }
+    struct tar_header symlink_header =
+        TAR_HEADER_SYMLINK_INIT;
+    memcpy(symlink_header.mtime, mtime, sizeof symlink_header.mtime);
+    memcpy(symlink_header.name, name,
+        len_name > sizeof symlink_header.name ?
+            sizeof symlink_header.name : len_name);
+    memcpy(symlink_header.linkname, link,
+        len_link > sizeof symlink_header.linkname ?
+            sizeof symlink_header.linkname : len_link);
+    if (tar_header_checksum_self(&symlink_header)) {
+        pr_error("Failed to calculate header checksum\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(
+        tar_fd, &symlink_header, sizeof symlink_header)) {
+        pr_error("Failed to write data to tar\n");
+        return -1;
+    }
+    return 0;
+}
 
-// int tar_finish(
-//     int const tar_fd
-// ) {
-//     unsigned char const eof_marker[512 * 2] = {0};
-//     if (tar_write_and_pad_to_512_block(tar_fd, eof_marker, 512 * 2)) {
-//         pr_error("Failed to write EOF mark to tar file\n");
-//         return -1;
-//     }
-//     return 0;
-// }
+int tar_append_regular_file(
+    int const tar_fd,
+    void const *const restrict ro_buffer,
+    git_object_size_t size,
+    char const *const restrict mtime,
+    char const *const restrict name,
+    unsigned short const len_name,
+    mode_t mode
+) {
+    if (tar_append_longname_optional(tar_fd, name, len_name)) {
+        pr_error("Failed to create longname\n");
+        return -1;
+    }
+    struct tar_header regular_file_header;
+    switch (mode) {
+    case 0644:
+        regular_file_header = TAR_HEADER_FILE_REG_INIT;
+        break;
+    case 0755:
+        regular_file_header = TAR_HEADER_FILE_EXE_INIT;
+        break;
+    default:
+        pr_warn("%03o mode is not expected, but we accept it for now\n", mode);
+        regular_file_header = TAR_HEADER_FILE_REG_INIT;
+        if (snprintf(regular_file_header.mode, sizeof regular_file_header.mode,
+            "%07o", mode) < 0) {
+            pr_error("Failed to format mode string\n");
+            return -1;
+        }
+        break;
+    };
+    if (snprintf(regular_file_header.size, sizeof regular_file_header.size,
+                    "%011lo", size) < 0) {
+        pr_error("Failed to format long name size\n");
+        return -1;
+    }
+    memcpy(regular_file_header.mtime, mtime, sizeof regular_file_header.mtime);
+    memcpy(regular_file_header.name, name,
+        len_name > sizeof regular_file_header.name ?
+         sizeof regular_file_header.name : len_name);
+    if (tar_header_checksum_self(&regular_file_header)) {
+        pr_error("Failed to calculate header checksum\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(
+        tar_fd, &regular_file_header, sizeof regular_file_header)) {
+        pr_error("Failed to write regular file header to tar\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(tar_fd, ro_buffer, size)) {
+        pr_error("Failed to write file data to tar\n");
+        return -1;
+    }
+    return 0;
+}
+
+int tar_append_folder(
+    int const tar_fd,
+    char const *const restrict mtime,
+    char const *const restrict name,
+    unsigned short const len_name
+) {
+    if (tar_append_longname_optional(tar_fd, name, len_name)) {
+        pr_error("Failed to create longname\n");
+        return -1;
+    }
+    struct tar_header folder_header = TAR_HEADER_FOLDER_INIT;
+    memcpy(folder_header.mtime, mtime, sizeof folder_header.mtime);
+    memcpy(folder_header.name, name,
+        len_name > sizeof folder_header.name ?
+         sizeof folder_header.name : len_name);
+    if (tar_header_checksum_self(&folder_header)) {
+        pr_error("Failed to calculate header checksum\n");
+        return -1;
+    }
+    if (tar_write_and_pad_to_512_block(
+        tar_fd, &folder_header, sizeof folder_header)) {
+        pr_error("Failed to write folder header to tar\n");
+        return -1;
+    }
+    return 0;
+}
+
+int tar_finish(
+    int const tar_fd
+) {
+    unsigned char const eof_marker[512 * 2] = {0};
+    if (tar_write_and_pad_to_512_block(tar_fd, eof_marker, 512 * 2)) {
+        pr_error("Failed to write EOF mark to tar file\n");
+        return -1;
+    }
+    return 0;
+}
 
 // int export_commit_tree_entry_blob_file_regular_to_archive(
 //     void const *const restrict ro_buffer,
