@@ -3225,7 +3225,7 @@ int work_handle_open_all_repos(struct work_handle const *const restrict work_han
     struct repo_work **repos_heap = NULL;
     struct repo_work *repos_stack[0x100 / sizeof *repos_heap];
     struct repo_work **repos = NULL;
-    if (work_handle->repos_count > 9) {
+    if (work_handle->repos_count > 0x100 / sizeof *repos_heap - 1) {
         if (!(repos_heap = malloc(sizeof *repos_heap * (work_handle->repos_count + 1)))) {
             pr_error_with_errno("Failed to allocate memory for repos' pointers");
             return -1;
