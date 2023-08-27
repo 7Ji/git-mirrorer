@@ -3222,8 +3222,8 @@ int work_handle_open_all_repos(struct work_handle const *const restrict work_han
     default:
         break;
     }
-    struct repo_work *repos_stack[10];
     struct repo_work **repos_heap = NULL;
+    struct repo_work *repos_stack[0x100 / sizeof *repos_heap];
     struct repo_work **repos = NULL;
     if (work_handle->repos_count > 9) {
         if (!(repos_heap = malloc(sizeof *repos_heap * (work_handle->repos_count + 1)))) {
@@ -8489,13 +8489,21 @@ int gmr_work(char const *const restrict config_path) {
         goto free_config;
     }
     pr_info("Initializing libgit2\n");
-    git_libgit2_init();
+    if ((r = git_libgit2_init()) != 1) {
+        pr_error_with_libgit_error("Failed to init libgit2", r);
+        if (r > 0) {
+            r = -1;
+            goto shutdown;
+        }
+        goto free_work_handle;
+    }
     if (config.timeout_connect && git_libgit2_opts(
         GIT_OPT_SET_SERVER_CONNECT_TIMEOUT, config.timeout_connect)) {
         pr_error("Failed to set timeout, %d (%s)\n", 
             git_error_last()->klass, git_error_last()->message);
         goto free_work_handle;
     }
+    r = work_handle_open_all_repos(&work_handle);
     // if (config.daemon) {
     //     if (work_daemon(&config, config_path, &workdir_repos, &workdir_archives,
     //     &workdir_checkouts)) {
