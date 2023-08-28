@@ -23,14 +23,14 @@ pile them into individual object files then linking them together? Not to say
 it's several thousands LOC! How could you even get a comprehensive understanding
 of how the program works by yourself?"
 
-Look, I've written a lot of programs with the multiple source files: ampart, 
+Look, I've written a lot of programs with the multiple source files: ampart,
 eemount, YAopenVFD, nvrust, etc. Keeping the source splited and decoupled is
 good, but burnt me out as an invidual develeoper: all these programs were com-
 pletely written by myself, and then turnt out each to be several thousands LOC,
 which made it harder and harder to jump back and forward among all those diffe-
-rent source files. 
+rent source files.
 
-As such, the whole program was written in a single .c file as an experiment at 
+As such, the whole program was written in a single .c file as an experiment at
 first, but then at the point where I would split it up I decided to keep it as
 a whole this time: splitting the source is not a cure but really an excuse to
 pile a lot of boilerplate codes and the source of the evilness of overly abstra-
@@ -106,9 +106,9 @@ multi-source programs to go through and get an idea of what is done.
 
 /* String */
 
-/* 
+/*
  Packed data structure so we don't need to have A LOT of
- different pointers for all of the strings we need that 
+ different pointers for all of the strings we need that
  each need to be free'd seperately
 
  The other struct that allocates string inside this buffer
@@ -432,7 +432,7 @@ struct work_handle {
 };
 
 #define work_handle_get_string(name) \
-    get_string_from(work_handle, name)    
+    get_string_from(work_handle, name)
 
 struct work_handle const WORK_HANDLE_INIT = {
     .dir_repos = {WORK_DIRECTORY_INIT_ASSIGN},
@@ -689,7 +689,7 @@ char const *gmr_refspecs_strings[] = {
 };
 
 static git_strarray const gmr_refspecs = {
-    .count = 1, 
+    .count = 1,
     .strings = (char **)gmr_refspecs_strings
 };
 
@@ -826,9 +826,9 @@ int string_buffer_clone(
 }
 
 int dynamic_array_add(
-    void **const restrict array, 
-    size_t const size, // Size of an array member 
-    unsigned long *const restrict count, 
+    void **const restrict array,
+    size_t const size, // Size of an array member
+    unsigned long *const restrict count,
     unsigned long *const restrict alloc
 ) {
     void *array_new;
@@ -868,9 +868,9 @@ int dynamic_array_add(
         &name##_count, &name##_allocated)
 
 int dynamic_array_partial_free(
-    void **const restrict array, 
-    size_t const size, // Size of an array member 
-    unsigned long const count, 
+    void **const restrict array,
+    size_t const size, // Size of an array member
+    unsigned long const count,
     unsigned long *const restrict alloc
 ) {
     void *array_new;
@@ -910,7 +910,7 @@ int dynamic_array_partial_free(
 
 /* Return -1 for error */
 size_t buffer_read_from_fd(
-    unsigned char **const restrict buffer, 
+    unsigned char **const restrict buffer,
     int const fd
 ) {
     size_t size_alloc = BUFFER_READ_CHUNK,
@@ -1024,7 +1024,7 @@ int yamlconf_parse_section(
     YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS("dir_checkouts", DIR_CHECKOUTS);
     YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS("export_threads", EXPORT_THREADS);
     YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS_TWO(
-        "daemon_interval", DAEMON_INTERVAL, 
+        "daemon_interval", DAEMON_INTERVAL,
         "connect_timeout", CONNECT_TIMEOUT);
     YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS(
         "connections_per_server", CONNECTIONS_PER_SERVER);
@@ -1075,7 +1075,7 @@ int yamlconf_parse_string(
     }
     *offset = config->string_buffer.used;
     if (yamlconf_add_string(config, event)) {
-        pr_error("Failed to add '%s' to string buffer\n", 
+        pr_error("Failed to add '%s' to string buffer\n",
             event->data.scalar.value);
         *offset = 0;
         return -1;
@@ -1230,7 +1230,7 @@ int yamlconf_parse_archive_pipe(
     }
     bool need_alloc;
     if (config->archive_pipe_args) {
-        if (config->archive_pipe_args_count > 
+        if (config->archive_pipe_args_count >
                 config->archive_pipe_args_allocated) {
             free(config->archive_pipe_args);
             need_alloc = true;
@@ -1260,9 +1260,9 @@ int yamlconf_parse_archive_pipe(
             if (!args_buffer[i]) {
                 arg_parsing = false;
                 if (string_buffer_add(
-                        &config->string_buffer, 
-                        args_buffer + start, 
-                        (config->archive_pipe_args[id].len = 
+                        &config->string_buffer,
+                        args_buffer + start,
+                        (config->archive_pipe_args[id].len =
                             i - start))) {
                     pr_error("Failed to add arg to string buffer\n");
                     r = -1;
@@ -1278,7 +1278,7 @@ int yamlconf_parse_archive_pipe(
             if (args_buffer[i]) {
                 arg_parsing = true;
                 start = i;
-                config->archive_pipe_args[id].offset = 
+                config->archive_pipe_args[id].offset =
                     config->string_buffer.used;
             }
         }
@@ -1414,12 +1414,12 @@ int yamlconf_parse_wanted_list_add_object(
         break;
     case YAMLCONF_WANTED_REPO:
         struct repo_config *repo = get_last(config->repos);
-        wanted_objects = &repo->wanted_objects; 
-        count = &repo->wanted_objects_count; 
+        wanted_objects = &repo->wanted_objects;
+        count = &repo->wanted_objects_count;
         alloc = &repo->wanted_objects_allocated;
         break;
     }
-    if (dynamic_array_add((void **)wanted_objects, sizeof **wanted_objects, 
+    if (dynamic_array_add((void **)wanted_objects, sizeof **wanted_objects,
                         count, alloc)) {
         pr_error("Failed to add wanted object to array\n");
         return -1;
@@ -1486,7 +1486,7 @@ struct wanted_base *yamlconf_get_last_wanted_object(
     case YAMLCONF_WANTED_GLOBAL_ALWAYS:
         return get_last(config->always_wanted_objects);
     case YAMLCONF_WANTED_REPO:
-        struct repo_config const *const restrict repo 
+        struct repo_config const *const restrict repo
             = get_last(config->repos);
         return get_last(repo->wanted_objects);
     }
@@ -1498,7 +1498,7 @@ int yamlconf_parse_wanted_object_end(
     struct config *const restrict config,
     struct yamlconf_parsing_handle *const restrict handle
 ) {
-    struct wanted_base *const restrict wanted_object = 
+    struct wanted_base *const restrict wanted_object =
         yamlconf_get_last_wanted_object(config, handle->wanted_type);
     if (wanted_object == NULL) {
         pr_error("Failed to get last wanted object\n");
@@ -1506,7 +1506,7 @@ int yamlconf_parse_wanted_object_end(
     }
     if (!wanted_object->type) {
         if (!(wanted_object->type = wanted_type_guess_from_name(
-            config_get_string(wanted_object->name), 
+            config_get_string(wanted_object->name),
             wanted_object->len_name))) {
             pr_error("Failed to guess type\n");
             return -1;
@@ -1549,7 +1549,7 @@ int yamlconf_parse_wanted_object_type(
     char const *const type_string =
         (char const *)event->data.scalar.value;
     wanted_object->type = WANTED_TYPE_UNKNOWN;
-    for (enum wanted_type type_cmp = WANTED_TYPE_UNKNOWN; 
+    for (enum wanted_type type_cmp = WANTED_TYPE_UNKNOWN;
         type_cmp < WANTED_TYPE_MAX; ++type_cmp) {
         if (!strcasecmp(wanted_type_strings[type_cmp], type_string)) {
             wanted_object->type = type_cmp;
@@ -1564,7 +1564,7 @@ int yamlconf_parse_wanted_object_type(
     case WANTED_TYPE_ALL_TAGS:
     case WANTED_TYPE_HEAD:
         pr_error("Not allowed to manually set type %d ('%s' =~ '%s')\n",
-            wanted_object->type, 
+            wanted_object->type,
             wanted_type_strings[wanted_object->type],
             type_string);
         return -1;
@@ -1650,9 +1650,9 @@ int repo_common_init_from_url(
         pr_error("Failed to add URL to string buffer\n");
         return -1;
     }
-    if ((snprintf(repo->hash_url_string, 
-                  HASH_STRING_LEN + 1, 
-                  HASH_FORMAT, 
+    if ((snprintf(repo->hash_url_string,
+                  HASH_STRING_LEN + 1,
+                  HASH_FORMAT,
                   repo->hash_url = hash_calculate(url, len_url)
                   ) != HASH_STRING_LEN)) {
         pr_error_with_errno("Failed to format hash string");
@@ -1680,9 +1680,9 @@ int repo_common_init_from_url(
     // https://github.com/xxx/yyy.git -> github.com/xxx/yyy
     // file:///what/ever.git/ -> what/ever
 
-    // Long name always ends with .git 
+    // Long name always ends with .git
         // (mainly used for local path)
-    // Short name always ends without .git 
+    // Short name always ends without .git
         // (mainly used for gh-like archive prefix)
     char long_name_stack[0x100];
     char *long_name_heap = NULL;
@@ -1734,7 +1734,7 @@ int repo_common_init_from_url(
         long_name[repo->len_long_name++] = url[i];
     }
     if (!repo->len_long_name) {
-        pr_error("Long name for url '%s' is empty\n", 
+        pr_error("Long name for url '%s' is empty\n",
                     sbuffer->buffer + repo->url_offset);
         r = -1;
         goto free_long_name_heap;
@@ -1752,19 +1752,19 @@ int repo_common_init_from_url(
         goto free_long_name_heap;
     }
     repo->hash_long_name = hash_calculate(long_name, repo->len_long_name);
-    
+
 
     // user/repo.git
     //      ^~~ short_name_offset is here, len_url is 13, offset 5, len 8
     // user/.git
     //      ^~~ the extreme case, len_url is 9, offset is 5, diff is 4
     if ((repo->len_short_name = len_url - short_name_offset) >= 4 &&
-        !strncmp(".git", url + len_url - 4, 4)) 
+        !strncmp(".git", url + len_url - 4, 4))
     {
         repo->len_short_name -= 4;
     }
     if (!repo->len_short_name) {
-        pr_error("Short name for repo '%s' is empty\n", 
+        pr_error("Short name for repo '%s' is empty\n",
                     sbuffer->buffer + repo->url_offset);
         r = -1;
         goto free_long_name_heap;
@@ -1812,10 +1812,10 @@ int yamlconf_parse_repos_list_add(
         return -1;
     }
     for (unsigned long i = 0; i < config->repos_count; ++i) {
-        struct repo_config const *const restrict repo_cmp = 
+        struct repo_config const *const restrict repo_cmp =
             config->repos + i;
         if (repo_cmp->hash_url == repo.hash_url) {
-            pr_error("Repo '%s' already defined\n", 
+            pr_error("Repo '%s' already defined\n",
                 config_get_string(repo.url));
             return -1;
         }
@@ -1880,8 +1880,8 @@ int bool_from_string(
     if (string == NULL || string[0] == '\0') {
         return -1;
     }
-    if (strcasecmp(string, "yes") && 
-        strcasecmp(string, "true") && 
+    if (strcasecmp(string, "yes") &&
+        strcasecmp(string, "true") &&
         strcasecmp(string, "enabled"));
     else {
         return 1;
@@ -1947,7 +1947,7 @@ int yamlconf_parse_boolean(
     }
     switch (handle->status) {
     case YAMLCONF_PARSING_STATUS_DAEMON:
-        handle->status = 
+        handle->status =
             YAMLCONF_PARSING_STATUS_SECTION;
         break;
     case YAMLCONF_PARSING_STATUS_WANTED_OBJECT_ARCHIVE:
@@ -2050,7 +2050,7 @@ int config_update_from_yaml_event(
         break;
     case YAMLCONF_PARSING_STATUS_ARCHIVE_PIPE_LIST:
         switch (event->type) {
-        case YAML_SCALAR_EVENT: 
+        case YAML_SCALAR_EVENT:
             return yamlconf_parse_archive_pipe_list(config, event);
         YAMLCONF_EVENT_TO_STATUS(SEQUENCE_END, ARCHIVE_SECTION);
         default: goto unexpected_event_type;
@@ -2150,7 +2150,7 @@ int config_update_from_yaml_event(
         break;
     case YAMLCONF_PARSING_STATUS_REPOS_LIST:
         switch (event->type) {
-        case YAML_SCALAR_EVENT: 
+        case YAML_SCALAR_EVENT:
             return yamlconf_parse_repos_list_add(config, event);
         YAMLCONF_EVENT_TO_STATUS(SEQUENCE_END, SECTION);
         YAMLCONF_EVENT_TO_STATUS(MAPPING_START, REPO_URL);
@@ -2188,7 +2188,7 @@ int config_update_from_yaml_event(
     case YAMLCONF_PARSING_STATUS_CLEAN_CHECKOUTS:
     case YAMLCONF_PARSING_STATUS_ARCHIVE_GHPREFIX:
         switch (event->type) {
-        case YAML_SCALAR_EVENT: 
+        case YAML_SCALAR_EVENT:
             return yamlconf_parse_boolean(config, event, handle);
         default: goto unexpected_event_type;
         }
@@ -2254,18 +2254,18 @@ int repo_config_finish(
     struct repo_config *const restrict repo,
     struct config *const restrict config
 ) {
-    if (!repo->wanted_objects_count && 
+    if (!repo->wanted_objects_count &&
         config->empty_wanted_objects_count
     ) {
         pr_info("Repo '%s' does not have wanted objects defined, adding global "
-                "wanted objects (when empty) to it as wanted\n", 
+                "wanted objects (when empty) to it as wanted\n",
                 config_get_string(repo->url));
         if (repo->wanted_objects) {
             pr_warn("Wanted objects already allocated? "
                     "This should not happen\n");
             free(repo->wanted_objects);
         }
-        size_t const size = 
+        size_t const size =
             sizeof *repo->wanted_objects * config->empty_wanted_objects_count;
         if (!(repo->wanted_objects = malloc(size))) {
             pr_error("Failed to allocate memory\n");
@@ -2276,7 +2276,7 @@ int repo_config_finish(
         repo->wanted_objects_allocated = config->empty_wanted_objects_count;
     }
     if (config->always_wanted_objects_count) {
-        pr_info("Add always wanted objects to repo '%s'\n", 
+        pr_info("Add always wanted objects to repo '%s'\n",
                     config_get_string(repo->url));
         unsigned long const new_wanted_objects_count =
             repo->wanted_objects_count + config->always_wanted_objects_count;
@@ -2293,7 +2293,7 @@ int repo_config_finish(
         }
         memcpy(repo->wanted_objects + repo->wanted_objects_count,
                 config->always_wanted_objects,
-                sizeof *repo->wanted_objects * 
+                sizeof *repo->wanted_objects *
                     config->always_wanted_objects_count);
         repo->wanted_objects_count = new_wanted_objects_count;
     }
@@ -2468,7 +2468,7 @@ void config_print_repo_wanted(
             "|            type: %d (%s)\n"
             "|            archive: %s\n"
             "|            checkout: %s\n",
-            wanted_object->len_name ? 
+            wanted_object->len_name ?
                 config_get_string(wanted_object->name) : "(unnamed)",
             wanted_object->type,
             wanted_type_strings[wanted_object->type],
@@ -2702,7 +2702,7 @@ int work_directory_init_from_path(
     if ((workdir->linkfd = open_or_create_subdir(dir_fd, DIR_LINKS)) < 0) {
         pr_error("Failed to open link subdir for '%s'\n", path);
         goto close_datafd;
-    }    
+    }
     if (close(dir_fd)) {
         pr_error("Failed to close workdir fd when finishing '%s'\n", path);
         goto close_linkfd;
@@ -2753,14 +2753,14 @@ static inline
 int work_handle_work_directories_init(
     struct work_handle *const restrict work_handle
 ) {
-    if (work_handle->clean_repos || 
-        work_handle->clean_archives || 
-        work_handle->clean_checkouts) 
+    if (work_handle->clean_repos ||
+        work_handle->clean_archives ||
+        work_handle->clean_checkouts)
     {
         if (string_buffer_add(
-                &work_handle->string_buffer, 
-                DIR_LINKS, 
-                sizeof DIR_LINKS - 1)) 
+                &work_handle->string_buffer,
+                DIR_LINKS,
+                sizeof DIR_LINKS - 1))
         {
             pr_error("Failed to add links to string buffer\n");
             return -1;
@@ -2804,10 +2804,10 @@ int wanted_object_complete_from_base(
     struct wanted_object *const restrict wanted_object,
     struct string_buffer const *const restrict sbuffer
 ) {
-    char const *const restrict name = 
+    char const *const restrict name =
         buffer_get_string(sbuffer, wanted_object->name);
-    if (!wanted_object->type && 
-        !(wanted_object->type = 
+    if (!wanted_object->type &&
+        !(wanted_object->type =
             wanted_type_guess_from_name(
                 name, wanted_object->len_name))) {
         pr_error("Failed to guess type of wanted object\n");
@@ -2859,14 +2859,14 @@ int repo_work_from_config(
         }
         if (!(repo_work->wanted_objects = malloc(
                 sizeof *repo_work->wanted_objects *
-                    (repo_work->wanted_objects_allocated = 
+                    (repo_work->wanted_objects_allocated =
                         repo_config->wanted_objects_count))))
         {
             pr_error("Failed to allocate memory for wanted obejcts\n");;
             return -1;
         }
-        for (unsigned long i = 0; 
-            i < repo_config->wanted_objects_count; 
+        for (unsigned long i = 0;
+            i < repo_config->wanted_objects_count;
             ++i) {
             if (wanted_object_work_from_config(
                 repo_work->wanted_objects + i,
@@ -2912,11 +2912,11 @@ int work_handle_repos_init_from_config(
         pr_error("Internal: config repos is NULL pointer\n");
         return -1;
     }
-    work_handle->repos_allocated = 
+    work_handle->repos_allocated =
         (config->repos_count + ALLOC_BASE - 1) / ALLOC_BASE * ALLOC_BASE;
     if (!(work_handle->repos = malloc(
-            sizeof *work_handle->repos * 
-                work_handle->repos_allocated))) 
+            sizeof *work_handle->repos *
+                work_handle->repos_allocated)))
     {
         pr_error("Failed to allocate memory for work repos\n");
         return -1;
@@ -3028,7 +3028,7 @@ int work_handle_init_from_config(
         return -1;
     }
     if (string_buffer_clone(
-            &work_handle->string_buffer, 
+            &work_handle->string_buffer,
             &config->string_buffer)) {
         pr_error("Failed to clone string buffer from config\n");
         goto free_cwd;
@@ -3111,7 +3111,7 @@ int repo_open_or_create(
             goto free_repo;
         }
         git_remote_free(remote);
-        /* 
+        /*
           The following part is optional, the remote.*.mirror config
           is only for note and reference by users, it does not define
           the actual mirroing behaviour for either us, libgit, or git.
@@ -3163,7 +3163,7 @@ int repo_work_open_common(
             break;
         default:
             pr_error_with_libgit_error(
-                "Failed to check if repo '%s' at '%s's HEAD is unborn", 
+                "Failed to check if repo '%s' at '%s's HEAD is unborn",
                 r, url, name);
             return -1;
         }
@@ -3262,9 +3262,9 @@ int work_handle_open_all_repos(
         return 0;
     case 1:
         return repo_work_open_one(
-                    work_handle->repos, 
-                    work_handle->string_buffer.buffer, 
-                    work_handle->dir_repos.datafd, 
+                    work_handle->repos,
+                    work_handle->string_buffer.buffer,
+                    work_handle->dir_repos.datafd,
                     work_handle->cwd);
     default:
         break;
@@ -3287,9 +3287,9 @@ int work_handle_open_all_repos(
         repos[i] = work_handle->repos + i;
     }
     repos[work_handle->repos_count] = NULL;
-    int r = repo_work_open_many(repos, 
-                work_handle->string_buffer.buffer, 
-                work_handle->dir_repos.datafd, 
+    int r = repo_work_open_many(repos,
+                work_handle->string_buffer.buffer,
+                work_handle->dir_repos.datafd,
                 work_handle->cwd);
     free_if_allocated(repos_heap);
     return r;
@@ -3302,7 +3302,7 @@ git_fetch_options gmr_fetch_options_init(
 ) {
     bool const tty = isatty(STDOUT_FILENO);
     git_fetch_options fetch_opts = {
-        .version = GIT_FETCH_OPTIONS_VERSION, 
+        .version = GIT_FETCH_OPTIONS_VERSION,
         .callbacks = {
             .version = GIT_REMOTE_CALLBACKS_VERSION,
             .sideband_progress = tty ? gcb_sideband_progress : NULL,
@@ -3313,7 +3313,7 @@ git_fetch_options gmr_fetch_options_init(
         .download_tags = GIT_REMOTE_DOWNLOAD_TAGS_ALL,
         .proxy_opts = {
             .version = GIT_PROXY_OPTIONS_VERSION,
-            .type = (proxy && !proxy_after) ? 
+            .type = (proxy && !proxy_after) ?
                         GIT_PROXY_SPECIFIED : GIT_PROXY_NONE,
             .url = proxy,
         },
@@ -3348,7 +3348,7 @@ int gmr_repo_update(
                     url, proxy_after);
             fetch_opts.proxy_opts.type = GIT_PROXY_SPECIFIED;
         }
-        r = git_remote_connect(remote, GIT_DIRECTION_FETCH, 
+        r = git_remote_connect(remote, GIT_DIRECTION_FETCH,
             &fetch_opts.callbacks, &fetch_opts.proxy_opts, NULL);
         if (r) {
             error = git_error_last();
@@ -3365,7 +3365,7 @@ int gmr_repo_update(
             if (r) {
                 error = git_error_last();
                 pr_error("Failed to disconnect from remote '%s' after failed "
-                "download, libgit return %d: %d (%s)\n", 
+                "download, libgit return %d: %d (%s)\n",
                     url, r, error->klass, error->message);
             } else {
                 r = -1;
@@ -3376,16 +3376,16 @@ int gmr_repo_update(
         if (r) {
             error = git_error_last();
             pr_error("Failed to disconnect from remote '%s', "
-                    "libgit return %d: %d (%s)\n", 
+                    "libgit return %d: %d (%s)\n",
                     url, r, error->klass, error->message);
             continue;
         }
-        r = git_remote_update_tips(remote, &fetch_opts.callbacks, 0, 
+        r = git_remote_update_tips(remote, &fetch_opts.callbacks, 0,
                             GIT_REMOTE_DOWNLOAD_TAGS_AUTO, NULL);
         if (r) {
             error = git_error_last();
             pr_error("Failed to update tips for remote '%s', "
-                "libgit return %d: %d (%s)\n", 
+                "libgit return %d: %d (%s)\n",
                     url, r, error->klass, error->message);
             continue;
         }
@@ -3451,7 +3451,7 @@ int work_handle_update_all_repos(
 
     char const *restrict proxy_url;
     if (work_handle->proxy_url_offset) {
-        proxy_url = 
+        proxy_url =
             work_handle->string_buffer.buffer + work_handle->proxy_url_offset;
     } else {
         proxy_url = NULL;
@@ -3753,7 +3753,7 @@ int work_handle_update_all_repos(
 // //         pr_error("Internal: invalid argument\n");
 // //         return -1;
 // //     }
-    
+
 // // }
 
 // int opendir_create_if_non_exist_at(
@@ -4412,7 +4412,7 @@ int work_handle_update_all_repos(
 //                 int const link_fd = openat(
 //                     dir_fd, entry->d_name, O_RDONLY | O_DIRECTORY);
 //                 if (link_fd < 0) {
-//                     pr_error_with_errno("Failed to open subdir '%s'", 
+//                     pr_error_with_errno("Failed to open subdir '%s'",
 //                                         entry->d_name);
 //                     r = -1;
 //                     goto close_dir;
@@ -4453,7 +4453,7 @@ int work_handle_update_all_repos(
 //                 }
 //                 path[len_path] = '\0';
 //                 struct stat stat_buffer;
-//                 if (fstatat(dir_fd, path, &stat_buffer, 
+//                 if (fstatat(dir_fd, path, &stat_buffer,
 //                     AT_SYMLINK_NOFOLLOW) == 0) break;
 //                 errno = 0;
 //                 if (unlinkat(dir_fd, entry->d_name, 0)) {
@@ -4621,7 +4621,7 @@ int work_handle_update_all_repos(
 //     if (closedir(dir_p)) {
 //         pr_error_with_errno("Failed to close dir");
 //     }
-//     if (clean_links_pass && 
+//     if (clean_links_pass &&
 //             remove_dead_symlinks_recursively_at(
 //                 workdir->links_dirfd, clean_links_pass) < 0)  {
 //         pr_error("Failed to remove dead links under '%s'\n", workdir->path);
@@ -7747,12 +7747,12 @@ int tar_finish(
 //     unsigned long const low,
 //     unsigned long const high
 // ) {
-//     git_oid const *const restrict pivot = 
+//     git_oid const *const restrict pivot =
 //         &commits_with_repos[high].commit->id;
 //     unsigned long i = low - 1;
 //     for (unsigned long j = low; j < high; ++j) {
-//         // pr_debug("Comparing %s @ %p vs %s @ %p \n", 
-//         //     commits[j]->id_hex_string, commits[j], 
+//         // pr_debug("Comparing %s @ %p vs %s @ %p \n",
+//         //     commits[j]->id_hex_string, commits[j],
 //         //     pivot->id_hex_string, pivot);
 //         if (git_oid_cmp(&commits_with_repos[j].commit->id, pivot) < 0)
 //             commit_with_repo_list_swap_item(commits_with_repos, ++i, j);
@@ -7770,7 +7770,7 @@ int tar_finish(
 //         unsigned long const pivot = commit_with_repo_list_partition(
 //                                 commits_with_repos, low, high);
 //          // if pivot is 0, that will make the new high (ulong) -1
-//         if (pivot) 
+//         if (pivot)
 //             commit_with_repo_list_quick_sort(
 //                     commits_with_repos, low, pivot - 1);
 //         commit_with_repo_list_quick_sort(commits_with_repos, pivot + 1, high);
@@ -7793,7 +7793,7 @@ int tar_finish(
 //     }
 //     // No commits at all, this shouldn't happen, but silent return
 //     if (commits_allocated == 0) return 0;
-//     struct commit_with_repo *restrict commits_with_repos = 
+//     struct commit_with_repo *restrict commits_with_repos =
 //         malloc(sizeof *commits_with_repos * commits_allocated);
 //     if (commits_with_repos == NULL) {
 //         pr_error("Failed to allocate memory for all commits\n");
@@ -7803,16 +7803,16 @@ int tar_finish(
 //     for (unsigned long i = 0; i < config->repos_count; ++i) {
 //         struct repo *const restrict repo = config->repos + i;
 //         for (unsigned long j = 0; j < repo->parsed_commits_count; ++j) {
-//             struct parsed_commit *const restrict commit = 
+//             struct parsed_commit *const restrict commit =
 //                 repo->parsed_commits + j;
 //             if (commit->archive || commit->checkout) {
-//                 struct commit_with_repo *commit_with_repo = 
+//                 struct commit_with_repo *commit_with_repo =
 //                     commits_with_repos + commit_id;
 //                 commit_with_repo->commit = commit;
 //                 commit_with_repo->repo = repo;
 //                 // This shouldn't happen
 //                 if (++commit_id > commits_allocated) {
-//                     pr_error("Commits count overflow, %lu > %lu\n", 
+//                     pr_error("Commits count overflow, %lu > %lu\n",
 //                                 commit_id,  commits_allocated);
 //                     goto free_commits;
 
@@ -7825,7 +7825,7 @@ int tar_finish(
 //     commit_id = 0;
 //     git_oid *commit_oid_last_unique = &commits_with_repos[0].commit->id;
 //     for (unsigned long i = 1; i < commits_count; ++i) {
-//         int r = git_oid_cmp(commit_oid_last_unique, 
+//         int r = git_oid_cmp(commit_oid_last_unique,
 //                         &commits_with_repos[i].commit->id);
 //         if (r > 0) {
 //             pr_error("Descending commits in commits list which should be "
@@ -7834,19 +7834,19 @@ int tar_finish(
 //         } else if (r < 0) {
 //             if (++commit_id != i)
 //                 commits_with_repos[commit_id] = commits_with_repos[i];
-//             commit_oid_last_unique = 
+//             commit_oid_last_unique =
 //                 &commits_with_repos[commit_id].commit->id;
 //         } else { // Same, remove dup
-//             struct parsed_commit *const restrict commit_unique = 
+//             struct parsed_commit *const restrict commit_unique =
 //                 commits_with_repos[commit_id].commit;
-//             struct parsed_commit *const restrict commit_duplicated = 
+//             struct parsed_commit *const restrict commit_duplicated =
 //                 commits_with_repos[i].commit;
 //             if (commit_duplicated->archive) commit_unique->archive = true;
 //             if (commit_duplicated->checkout) commit_unique->checkout = true;
 //         }
 //     }
-//     struct commit_with_repo *commits_with_repos_new = 
-//         realloc(commits_with_repos, 
+//     struct commit_with_repo *commits_with_repos_new =
+//         realloc(commits_with_repos,
 //                 sizeof *commits_with_repos_new * commits_count);
 //     if (commits_with_repos_new) {
 //         commits_with_repos = commits_with_repos_new;
@@ -7873,7 +7873,7 @@ int tar_finish(
 //     struct work_directory *const restrict workdir_checkouts
 // ) {
 //     if (!commits_count) return 0;
-//     unsigned short const threads_count = 
+//     unsigned short const threads_count =
 //         config->export_threads > 2 ? config->export_threads : 2;
 //     struct thread_handle {
 //         pthread_t thread;
@@ -8113,13 +8113,13 @@ int tar_finish(
 // ) {
 //     int r = 0;
 //     if (config->clean_repos && work_directory_clean(
-//             workdir_repos, config->clean_links_pass, 
+//             workdir_repos, config->clean_links_pass,
 //             HASH_STRING_LEN > 5 ? HASH_STRING_LEN + 1 : 6)) {
 //         pr_error("Failed to clean repos workdir '%s'\n", workdir_repos->path);
 //         r = -1;
 //     }
 //     if (config->clean_archives && work_directory_clean(
-//             workdir_archives, config->clean_links_pass, 
+//             workdir_archives, config->clean_links_pass,
 //             config->len_archive_suffix + (
 //                 GIT_OID_MAX_HEXSIZE > 5 ? GIT_OID_MAX_HEXSIZE + 1 : 6))) {
 //         pr_error("Failed to clean archives workdir '%s'\n",
@@ -8198,17 +8198,17 @@ int tar_finish(
 //         }
 //         // Cleanup
 //         // Free all repos not in config
-//         for (unsigned long i = config->repos_count_original; 
+//         for (unsigned long i = config->repos_count_original;
 //             i < config->repos_count; ++i) {
 //             repo_free(config->repos + i);
 //         }
 //         config->repos_count = config->repos_count_original;
 //         // Free some memory
 //         if (config->repos_allocated - config->repos_count > ALLOC_BASE) {
-//             config->repos_allocated = 
+//             config->repos_allocated =
 //                 (config->repos_count / ALLOC_BASE + 1) * ALLOC_BASE;
-//             struct repo *const restrict repos_new = 
-//                 realloc(config->repos, 
+//             struct repo *const restrict repos_new =
+//                 realloc(config->repos,
 //                     sizeof *config->repos * config->repos_allocated);
 //             if (repos_new == NULL) {
 //                 pr_error_with_errno("Failed to shrink memory used on repos");
@@ -8220,11 +8220,11 @@ int tar_finish(
 //             struct repo *const restrict repo = config->repos + i;
 //             if (repo->parsed_commits_allocated - repo->parsed_commits_count
 //                  > ALLOC_BASE) {
-//                 repo->parsed_commits_allocated = 
+//                 repo->parsed_commits_allocated =
 //                     (repo->parsed_commits_count / ALLOC_BASE + 1) * ALLOC_BASE;
 //                 struct parsed_commit *const restrict parsed_commits_new =
 //                     realloc(repo->parsed_commits,
-//                         sizeof *repo->parsed_commits * 
+//                         sizeof *repo->parsed_commits *
 //                             repo->parsed_commits_allocated);
 //                 if (parsed_commits_new == NULL) {
 //                     pr_error_with_errno(
@@ -8238,13 +8238,13 @@ int tar_finish(
 //             }
 //             repo->parsed_commits_count = 0;
 //             repo->wanted_objects_count = repo->wanted_objects_count_original;
-//             if (repo->wanted_objects_allocated - repo->wanted_objects_count 
+//             if (repo->wanted_objects_allocated - repo->wanted_objects_count
 //                 > ALLOC_BASE) {
-//                 repo->wanted_objects_allocated = 
+//                 repo->wanted_objects_allocated =
 //                     (repo->wanted_objects_count / ALLOC_BASE + 1) * ALLOC_BASE;
-//                 struct wanted_object *const restrict wanted_objects_new = 
-//                     realloc(repo->wanted_objects, 
-//                         sizeof *repo->wanted_objects * 
+//                 struct wanted_object *const restrict wanted_objects_new =
+//                     realloc(repo->wanted_objects,
+//                         sizeof *repo->wanted_objects *
 //                             repo->wanted_objects_allocated);
 //                 if (wanted_objects_new == NULL) {
 //                     pr_error_with_errno(
@@ -8255,7 +8255,7 @@ int tar_finish(
 //             }
 //             repo->wanted_dynamic = false;
 //             for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
-//                 struct wanted_object *const restrict wanted_object = 
+//                 struct wanted_object *const restrict wanted_object =
 //                     repo->wanted_objects + j;
 //                 switch (wanted_object->type) {
 //                 case WANTED_TYPE_BRANCH:
@@ -8274,7 +8274,7 @@ int tar_finish(
 //                 case WANTED_TYPE_COMMIT:
 //                     break;
 //                 case WANTED_TYPE_UNKNOWN:
-//                     pr_error("Wanted object '%s' type still unknown?!", 
+//                     pr_error("Wanted object '%s' type still unknown?!",
 //                         wanted_object->name);
 //                     return -1;
 //                 }
@@ -8304,10 +8304,10 @@ int tar_finish(
 //                 (stat_buffer.st_mtim.tv_sec != config_mtime.tv_sec))) {
 
 //                 config_mtime = stat_buffer.st_mtim;
-//                 pr_warn("Config '%s' updated, re-reading config\n", 
+//                 pr_warn("Config '%s' updated, re-reading config\n",
 //                         config_path);
 //                 struct config config_new = CONFIG_INIT;
-//                 struct work_directory workdir_repos_new, workdir_archives_new, 
+//                 struct work_directory workdir_repos_new, workdir_archives_new,
 //                                         workdir_checkouts_new;
 //                 if (config_read(&config_new, config_path)) {
 //                     pr_warn("Failed to read new config, "
@@ -8318,14 +8318,14 @@ int tar_finish(
 //                             "old one\n");
 //                     config_free(&config_new);
 //                 } else if (work_directories_from_config(
-//                     &workdir_repos_new, &workdir_archives_new, 
+//                     &workdir_repos_new, &workdir_archives_new,
 //                     &workdir_checkouts_new, &config_new
 //                 )) {
 //                     pr_warn("Failed to open work directories for new config, "
 //                             "keep using the old one\n");
 //                     config_free(&config_new);
 //                 } else {
-//                     if (git_libgit2_opts(GIT_OPT_SET_SERVER_CONNECT_TIMEOUT, 
+//                     if (git_libgit2_opts(GIT_OPT_SET_SERVER_CONNECT_TIMEOUT,
 //                         config_new.timeout_connect)) {
 //                         pr_warn("Failed to update connect timeout config, "
 //                         "error: %d (%s)\n",
@@ -8338,7 +8338,7 @@ int tar_finish(
 //                     *workdir_repos = workdir_repos_new;
 //                     *workdir_archives = workdir_archives_new;
 //                     *workdir_checkouts = workdir_checkouts_new;
-                    
+
 //                     pr_info("Starting using new config\n");
 
 //                 }
@@ -8353,7 +8353,7 @@ static inline
 int gmr_set_timeout(int const timeout) {
     if (timeout && git_libgit2_opts(
         GIT_OPT_SET_SERVER_CONNECT_TIMEOUT, timeout)) {
-        pr_error("Failed to set timeout, %d (%s)\n", 
+        pr_error("Failed to set timeout, %d (%s)\n",
             git_error_last()->klass, git_error_last()->message);
         return -1;
     }
