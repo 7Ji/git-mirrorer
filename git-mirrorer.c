@@ -3461,11 +3461,13 @@ int work_handle_update_all_repos(
         struct repo_work *const restrict repo_work = work_handle->repos + i;
         char const *const restrict url = 
             work_handle->string_buffer.buffer + repo_work->url_offset;
+        pr_info("Updating '%s'...\n", url);
         if (gmr_repo_update(repo_work->git_repository, url, &fetch_opts, 
             work_handle->proxy_after)) {
             pr_error("Failed to update repo '%s'\n", url);
             return -1;
         }
+        pr_info("Updated '%s'\n", url);
     }
     return 0;
 }
