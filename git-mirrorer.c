@@ -16,6 +16,28 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+/*
+I know you would want to say: "Hold the fk up, why is this program written in a
+single .c file? Don't you know you could write it in multiple .c files and com-
+pile them into individual object files then linking them together? Not to say
+it's several thousands LOC! How could you even get a comprehensive understanding
+of how the program works by yourself?"
+
+Look, I've written a lot of programs with the multiple source files: ampart, 
+eemount, YAopenVFD, nvrust, etc. Keeping the source splited and decoupled is
+good, but burnt me out as an invidual develeoper: all these programs were com-
+pletely written by myself, and then turnt out each to be several thousands LOC,
+which made it harder and harder to jump back and forward among all those diffe-
+rent source files. 
+
+As such, the whole program was written in a single .c file as an experiment at 
+first, but then at the point where I would split it up I decided to keep it as
+a whole this time: splitting the source is not a cure but really an excuse to
+pile a lot of boilerplate codes and the source of the evilness of overly abstra-
+ction. I want to keep this always as a single file, but much easier than those
+multi-source programs to go through and get an idea of what is done.
+*/
+
 #define _GNU_SOURCE
 
 /* C */
