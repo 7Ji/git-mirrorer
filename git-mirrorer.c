@@ -3379,6 +3379,7 @@ int gmr_repo_update(
     }
     unsigned short max_try = proxy_after + 3;
     git_fetch_options fetch_opts = *fetch_opts_orig;
+    fetch_opts.callbacks.payload = (void *)url;
     for (unsigned short try = 0; try < max_try; ++try) {
         if (try == proxy_after) {
             if (try)
