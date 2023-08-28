@@ -8410,6 +8410,9 @@ int gmr_work(char const *const restrict config_path) {
     if ((r = work_handle_open_all_repos(&work_handle))) {
         goto shutdown;
     }
+    if ((r = work_handle_update_all_repos(&work_handle))) {
+        goto shutdown;
+    }
     r = 0;
 shutdown:
     pr_info("Shutting down libgit2\n");
