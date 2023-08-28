@@ -3327,6 +3327,41 @@ int gmr_remote_update(
     return 0;
 }
 
+static inline
+int gmr_repo_sync_head_to_remote(
+    git_repository *const restrict repo,
+    git_remote *const restrict remote
+) {
+    git_remote_head const **heads;
+    size_t heads_count;
+    if (git_remote_ls(&heads, &heads_count, remote)) {
+        pr_error("Failed to ls remote\n");
+        return -1;
+    }
+    char const *head_ref = NULL;
+    for (size_t i = 0; i < heads_count; ++i) {
+        git_remote_head const *const head = heads[i];
+        if (!strcmp(head->name, "HEAD")) {
+            head_ref = head->symref_target;
+            break;
+        }
+    }
+    if (!head_ref) {
+        pr_warn("Remote does not have HEAD or HEAD does not point to any "
+                "branch, keeping local\n");
+        return 0;
+    }
+    int r;
+    /* Always set head, as reading local HEAD first takes more time than 
+       just writing*/
+    if ((r = git_repository_set_head(repo, head_ref))) {
+        pr_error_with_libgit_error(
+            "Failed to update repo HEAD to '%s'\n", head_ref);
+        return -1;
+    }
+    return 0;
+}
+
 int gmr_repo_update(
     git_repository *const restrict repo,
     char const *const restrict url,
@@ -3340,7 +3375,6 @@ int gmr_repo_update(
             "Failed to create anonymous remote for '%s'", url);
         return -1;
     }
-    pr_debug("Beginning fetching from '%s'\n", url);
     unsigned short max_try = proxy_after + 3;
     git_fetch_options fetch_opts = *fetch_opts_orig;
     for (unsigned short try = 0; try < max_try; ++try) {
@@ -3359,34 +3393,9 @@ int gmr_repo_update(
         r = -1;
         goto free_remote;
     }
-    git_remote_head const **heads;
-    size_t heads_count;
-    if (git_remote_ls(&heads, &heads_count, remote)) {
-        pr_error("Failed to ls remote\n");
+    if (gmr_repo_sync_head_to_remote(repo, remote)) {
         r = -1;
         goto free_remote;
-    } else {
-        for (size_t i = 0; i < heads_count; ++i) {
-            git_remote_head const *const head = heads[i];
-            if (!strcmp(head->name, "HEAD")) {
-                if (head->symref_target == NULL) {
-                    pr_warn("Remote HEAD points to no branch\n");
-                    break;
-                }
-                pr_debug("Remote HEAD points to '%s' now\n",
-                        head->symref_target);
-                if ((r = git_repository_set_head(
-                        repo, head->symref_target))) {
-                    pr_error("Failed to update repo '%s' HEAD to '%s'\n",
-                        url, head->symref_target);
-                    r = -1;
-                    goto free_remote;
-                }
-                pr_debug("Set local HEAD of repo '%s' to '%s'\n",
-                    url, head->symref_target);
-                break;
-            }
-        }
     }
     pr_info("Updated repo '%s'\n", url);
     r = 0;
