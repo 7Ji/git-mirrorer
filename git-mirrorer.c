@@ -86,8 +86,9 @@ multi-source programs to go through and get an idea of what is done.
     pr_with_prefix_and_source("ERROR", format, ##arg)
 #define pr_error_with_errno(format, arg...) \
     pr_error(format", errno: %d, error: %s\n", ##arg, errno, strerror(errno))
-#define pr_error_with_libgit_error(format, r, arg...) \
-    pr_error(format", libgit return %d (%d: %s)\n", ##arg, r, git_error_last()->klass, git_error_last()->message)
+#define pr_error_with_libgit_error(format, arg...) \
+    pr_error(format", libgit return %d (%d: %s)\n", ##arg, \
+        r, git_error_last()->klass, git_error_last()->message)
 
 #define fpr_with_prefix_and_source(file, prefix, format, arg...) \
     fprintf(file, "["prefix"] %s:%d: "format, __FUNCTION__, __LINE__, ##arg)
@@ -3100,14 +3101,14 @@ int repo_open_or_create(
     case GIT_ENOTFOUND:
         if ((r = git_repository_init(repo, name, 1))) {
             pr_error_with_libgit_error(
-                "Failed to create repo '%s' at '%s'", r, url, name);
+                "Failed to create repo '%s' at '%s'", url, name);
             return -1;
         }
         git_remote *remote;
         if ((r = git_remote_create_with_fetchspec(
                 &remote, *repo, GMR_REMOTE, url, GMR_FETCHSPEC))) {
             pr_error_with_libgit_error(
-                "Failed to create remote '"GMR_REMOTE"' with url '%s'", r, url);
+                "Failed to create remote '"GMR_REMOTE"' with url '%s'", url);
             goto free_repo;
         }
         git_remote_free(remote);
@@ -3120,7 +3121,7 @@ int repo_open_or_create(
         git_config *config;
         if ((r = git_repository_config(&config, *repo))) {
             pr_error_with_libgit_error(
-                "Failed to open config for repo '%s' at '%s'", r, url, name);
+                "Failed to open config for repo '%s' at '%s'", url, name);
             goto free_repo;
         }
         r = git_config_set_bool(config, GMR_CONFIG, true);
@@ -3129,14 +3130,14 @@ int repo_open_or_create(
             pr_error_with_libgit_error(
                 "Failed to set config '"GMR_CONFIG"' to true "
                 "for repo '%s' at '%s'",
-                    r, url, name);
+                    url, name);
             goto free_repo;
         }
 #endif
         return 1;
     default:
         pr_error_with_libgit_error(
-            "Failed to open repo '%s' at '%s'", r, url, name);
+            "Failed to open repo '%s' at '%s'", url, name);
         return -1;
     }
 
@@ -3164,7 +3165,7 @@ int repo_work_open_common(
         default:
             pr_error_with_libgit_error(
                 "Failed to check if repo '%s' at '%s's HEAD is unborn",
-                r, url, name);
+                url, name);
             return -1;
         }
         return 0;
@@ -3333,7 +3334,7 @@ int gmr_repo_update(
     int r = git_remote_create_anonymous(&remote, repo, url);
     if (r) {
         pr_error_with_libgit_error(
-            "Failed to create anonymous remote for '%s'", r, url);
+            "Failed to create anonymous remote for '%s'", url);
         return -1;
     }
     pr_debug("Beginning fetching from '%s'\n", url);
@@ -8386,7 +8387,7 @@ int gmr_work(char const *const restrict config_path) {
     }
     pr_info("Initializing libgit2\n");
     if ((r = git_libgit2_init()) != 1) {
-        pr_error_with_libgit_error("Failed to init libgit2", r);
+        pr_error_with_libgit_error("Failed to init libgit2");
         if (r > 0) {
             r = -1;
             goto shutdown;
