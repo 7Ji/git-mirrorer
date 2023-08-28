@@ -3447,7 +3447,7 @@ int work_handle_update_all_repos(
     if (!need_updates) return 0;
 
     char const *restrict proxy_url;
-    if (work_handle->proxy_url_offset) {
+    if (work_handle->len_proxy_url) {
         proxy_url =
             work_handle->string_buffer.buffer + work_handle->proxy_url_offset;
     } else {
