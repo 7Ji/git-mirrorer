@@ -3250,20 +3250,11 @@ int work_handle_open_all_repos(struct work_handle const *const restrict work_han
     return r;
 }
 
-int gmr_repo_update(
-    git_repository *const restrict repo,
-    char const *const restrict url,
+static inline
+git_fetch_options gmr_fetch_options_init(
     char const *const restrict proxy,
     unsigned short const proxy_after
 ) {
-    git_remote *remote;
-    int r = git_remote_create_anonymous(&remote, repo, url);
-    if (r) {
-        pr_error_with_libgit_error(
-            "Failed to create anonymous remote for '%s'", r, url);
-        return -1;
-    }
-    pr_debug("Beginning fetching from '%s'\n", url);
     bool const tty = isatty(STDOUT_FILENO);
     git_fetch_options fetch_opts = {
         .version = GIT_FETCH_OPTIONS_VERSION, 
@@ -3284,6 +3275,24 @@ int gmr_repo_update(
         .depth = GIT_FETCH_DEPTH_FULL,
         .follow_redirects = GIT_REMOTE_REDIRECT_INITIAL,
     };
+    return fetch_opts;
+}
+
+int gmr_repo_update(
+    git_repository *const restrict repo,
+    char const *const restrict url,
+    char const *const restrict proxy,
+    unsigned short const proxy_after
+) {
+    git_remote *remote;
+    int r = git_remote_create_anonymous(&remote, repo, url);
+    if (r) {
+        pr_error_with_libgit_error(
+            "Failed to create anonymous remote for '%s'", r, url);
+        return -1;
+    }
+    pr_debug("Beginning fetching from '%s'\n", url);
+    git_fetch_options fetch_opts = gmr_fetch_options_init(proxy, proxy_after);
     unsigned short max_try = proxy_after + 3;
     git_error const *error = NULL;
     for (unsigned short try = 0; try < max_try; ++try) {
