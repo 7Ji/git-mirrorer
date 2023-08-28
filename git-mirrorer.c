@@ -2892,7 +2892,7 @@ int repo_work_from_config(
     repo_work->commits_count = 0;
     repo_work->commits_allocated = 0;
     repo_work->git_repository = NULL;
-    repo_work->need_update = false;
+    repo_work->need_update = repo_work->wanted_dynamic;
     repo_work->updated = false;
     repo_work->common = repo_config->common;
     repo_work->from_config = true;
