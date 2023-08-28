@@ -3296,38 +3296,10 @@ int work_handle_open_all_repos(
     return r;
 }
 
-static inline
-git_fetch_options gmr_fetch_options_init(
-    char const *const restrict proxy,
-    unsigned short const proxy_after
-) {
-    bool const tty = isatty(STDOUT_FILENO);
-    git_fetch_options fetch_opts = {
-        .version = GIT_FETCH_OPTIONS_VERSION,
-        .callbacks = {
-            .version = GIT_REMOTE_CALLBACKS_VERSION,
-            .sideband_progress = tty ? gcb_sideband_progress : NULL,
-            .transfer_progress = tty ? gcb_fetch_progress : NULL,
-        },
-        .prune = GIT_FETCH_PRUNE,
-        .update_fetchhead = true,
-        .download_tags = GIT_REMOTE_DOWNLOAD_TAGS_ALL,
-        .proxy_opts = {
-            .version = GIT_PROXY_OPTIONS_VERSION,
-            .type = (proxy && !proxy_after) ?
-                        GIT_PROXY_SPECIFIED : GIT_PROXY_NONE,
-            .url = proxy,
-        },
-        .depth = GIT_FETCH_DEPTH_FULL,
-        .follow_redirects = GIT_REMOTE_REDIRECT_INITIAL,
-    };
-    return fetch_opts;
-}
-
 int gmr_repo_update(
     git_repository *const restrict repo,
     char const *const restrict url,
-    char const *const restrict proxy,
+    git_fetch_options const *const restrict fetch_opts_orig,
     unsigned short const proxy_after
 ) {
     git_remote *remote;
@@ -3338,9 +3310,9 @@ int gmr_repo_update(
         return -1;
     }
     pr_debug("Beginning fetching from '%s'\n", url);
-    git_fetch_options fetch_opts = gmr_fetch_options_init(proxy, proxy_after);
     unsigned short max_try = proxy_after + 3;
     git_error const *error = NULL;
+    git_fetch_options fetch_opts = *fetch_opts_orig;
     for (unsigned short try = 0; try < max_try; ++try) {
         if (try == proxy_after) {
             if (try)
@@ -3441,6 +3413,35 @@ free_remote:
 
 }
 
+static inline
+git_fetch_options gmr_fetch_options_init(
+    git_transport_message_cb cb_sideband,
+    git_indexer_progress_cb cb_fetch,
+    char const *const restrict proxy,
+    unsigned short const proxy_after
+) {
+    git_fetch_options fetch_opts = {
+        .version = GIT_FETCH_OPTIONS_VERSION,
+        .callbacks = {
+            .version = GIT_REMOTE_CALLBACKS_VERSION,
+            .sideband_progress = cb_sideband,
+            .transfer_progress = cb_fetch,
+        },
+        .prune = GIT_FETCH_PRUNE,
+        .update_fetchhead = true,
+        .download_tags = GIT_REMOTE_DOWNLOAD_TAGS_ALL,
+        .proxy_opts = {
+            .version = GIT_PROXY_OPTIONS_VERSION,
+            .type = (proxy && !proxy_after) ?
+                        GIT_PROXY_SPECIFIED : GIT_PROXY_NONE,
+            .url = proxy,
+        },
+        .depth = GIT_FETCH_DEPTH_FULL,
+        .follow_redirects = GIT_REMOTE_REDIRECT_INITIAL,
+    };
+    return fetch_opts;
+}
+
 int work_handle_update_all_repos(
     struct work_handle *const restrict work_handle
 ) {
@@ -3457,9 +3458,21 @@ int work_handle_update_all_repos(
     } else {
         proxy_url = NULL;
     }
-
-
-
+    git_fetch_options fetch_opts = gmr_fetch_options_init(
+        work_handle->cb_sideband, work_handle->cb_fetch,
+        proxy_url, work_handle->proxy_after);
+    /* Single threaded */
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        struct repo_work *const restrict repo_work = work_handle->repos + i;
+        char const *const restrict url = 
+            work_handle->string_buffer.buffer + repo_work->url_offset;
+        if (gmr_repo_update(repo_work->git_repository, url, &fetch_opts, 
+            work_handle->proxy_after)) {
+            pr_error("Failed to update repo '%s'\n", url);
+            return -1;
+        }
+    }
+    return 0;
 }
 // int mkdir_allow_existing_at(
 //     int const dirfd,
