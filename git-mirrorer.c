@@ -3296,6 +3296,37 @@ int work_handle_open_all_repos(
     return r;
 }
 
+static inline 
+int gmr_remote_update(
+    git_remote *const restrict remote,
+    git_fetch_options const *const restrict fetch_opts
+) {
+    int r;
+    if ((r = git_remote_connect(remote, GIT_DIRECTION_FETCH,
+        &fetch_opts->callbacks, &fetch_opts->proxy_opts, NULL))) {
+        pr_error_with_libgit_error("Failed to connect");
+        return -1;
+    }
+    if ((r = git_remote_download(remote, &gmr_refspecs, fetch_opts))) {
+        pr_error_with_libgit_error("Failed to download from remote");
+    }
+    int r2;
+    if ((r2 = git_remote_disconnect(remote))) {
+        pr_error_with_libgit_error("Failed to disconnect from remote");
+    }
+    if (r || r2) return -1;
+    if ((r = git_remote_update_tips(remote, &fetch_opts->callbacks, 0,
+                        GIT_REMOTE_DOWNLOAD_TAGS_AUTO, NULL))) {
+        pr_error_with_libgit_error("Failed to update tips");
+        return -1;
+    }
+    if ((r = git_remote_prune(remote, &fetch_opts->callbacks))) {
+        pr_error("Failed to prune remote");
+        return -1;
+    }
+    return 0;
+}
+
 int gmr_repo_update(
     git_repository *const restrict repo,
     char const *const restrict url,
@@ -3311,7 +3342,6 @@ int gmr_repo_update(
     }
     pr_debug("Beginning fetching from '%s'\n", url);
     unsigned short max_try = proxy_after + 3;
-    git_error const *error = NULL;
     git_fetch_options fetch_opts = *fetch_opts_orig;
     for (unsigned short try = 0; try < max_try; ++try) {
         if (try == proxy_after) {
@@ -3321,54 +3351,7 @@ int gmr_repo_update(
                     url, proxy_after);
             fetch_opts.proxy_opts.type = GIT_PROXY_SPECIFIED;
         }
-        r = git_remote_connect(remote, GIT_DIRECTION_FETCH,
-            &fetch_opts.callbacks, &fetch_opts.proxy_opts, NULL);
-        if (r) {
-            error = git_error_last();
-            pr_error("Failed to connect to '%s', libgit return %d: %d (%s)\n",
-                url, r, error->klass, error->message);
-            continue;
-        }
-        r = git_remote_download(remote, &gmr_refspecs, &fetch_opts);
-        if (r) {
-            error = git_error_last();
-            pr_error("Failed to download from remote '%s', libgit retutn %d: "
-            "%d (%s)\n", url, r, error->klass, error->message);
-            r = git_remote_disconnect(remote);
-            if (r) {
-                error = git_error_last();
-                pr_error("Failed to disconnect from remote '%s' after failed "
-                "download, libgit return %d: %d (%s)\n",
-                    url, r, error->klass, error->message);
-            } else {
-                r = -1;
-            }
-            continue;
-        }
-        r = git_remote_disconnect(remote);
-        if (r) {
-            error = git_error_last();
-            pr_error("Failed to disconnect from remote '%s', "
-                    "libgit return %d: %d (%s)\n",
-                    url, r, error->klass, error->message);
-            continue;
-        }
-        r = git_remote_update_tips(remote, &fetch_opts.callbacks, 0,
-                            GIT_REMOTE_DOWNLOAD_TAGS_AUTO, NULL);
-        if (r) {
-            error = git_error_last();
-            pr_error("Failed to update tips for remote '%s', "
-                "libgit return %d: %d (%s)\n",
-                    url, r, error->klass, error->message);
-            continue;
-        }
-        r = git_remote_prune(remote, &fetch_opts.callbacks);
-        if (r) {
-            pr_error("Failed to prune remote '%s', libgit return %d: %d (%s)\n",
-                    url, r, error->klass, error->message);
-            continue;
-        }
-        break;
+        if (!(r = gmr_remote_update(remote, &fetch_opts))) break;
     }
     if (r) {
         pr_error("Failed to update repo '%s' after %hu tries, "
