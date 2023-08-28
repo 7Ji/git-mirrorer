@@ -864,7 +864,8 @@ int dynamic_array_add(
 }
 
 #define dynamic_array_add_to(name) \
-    dynamic_array_add((void **)&name, sizeof *name, &name##_count, &name##_allocated)
+    dynamic_array_add((void **)&name, sizeof *name, \
+        &name##_count, &name##_allocated)
 
 int dynamic_array_partial_free(
     void **const restrict array, 
@@ -902,7 +903,8 @@ int dynamic_array_partial_free(
 }
 
 #define dynamic_array_partial_free_to(name) \
-    dynamic_array_partial_free((void **)&name, sizeof *name, name##_count, &name##_allocated)
+    dynamic_array_partial_free((void **)&name, sizeof *name, \
+        name##_count, &name##_allocated)
 
 #define BUFFER_READ_CHUNK CHUNK_SIZE * 64
 
@@ -2466,7 +2468,8 @@ void config_print_repo_wanted(
             "|            type: %d (%s)\n"
             "|            archive: %s\n"
             "|            checkout: %s\n",
-            wanted_object->len_name ? config_get_string(wanted_object->name) : "(unnamed)",
+            wanted_object->len_name ? 
+                config_get_string(wanted_object->name) : "(unnamed)",
             wanted_object->type,
             wanted_type_strings[wanted_object->type],
             wanted_object->archive ? "yes" : "no",
@@ -3096,12 +3099,15 @@ int repo_open_or_create(
         return 0;
     case GIT_ENOTFOUND:
         if ((r = git_repository_init(repo, name, 1))) {
-            pr_error_with_libgit_error("Failed to create repo '%s' at '%s'", r, url, name);
+            pr_error_with_libgit_error(
+                "Failed to create repo '%s' at '%s'", r, url, name);
             return -1;
         }
         git_remote *remote;
-        if ((r = git_remote_create_with_fetchspec(&remote, *repo, GMR_REMOTE, url, GMR_FETCHSPEC))) {
-            pr_error_with_libgit_error("Failed to create remote '"GMR_REMOTE"' with url '%s'", r, url);
+        if ((r = git_remote_create_with_fetchspec(
+                &remote, *repo, GMR_REMOTE, url, GMR_FETCHSPEC))) {
+            pr_error_with_libgit_error(
+                "Failed to create remote '"GMR_REMOTE"' with url '%s'", r, url);
             goto free_repo;
         }
         git_remote_free(remote);
@@ -3113,20 +3119,24 @@ int repo_open_or_create(
 #ifndef SKIP_MIRROR_CONFIG
         git_config *config;
         if ((r = git_repository_config(&config, *repo))) {
-            pr_error_with_libgit_error("Failed to open config for repo '%s' at '%s'", r, url, name);
+            pr_error_with_libgit_error(
+                "Failed to open config for repo '%s' at '%s'", r, url, name);
             goto free_repo;
         }
         r = git_config_set_bool(config, GMR_CONFIG, true);
         git_config_free(config);
         if (r) {
-            pr_error_with_libgit_error("Failed to set config '"GMR_CONFIG"' to true for repo '%s' at '%s'",
-                r, url, name);
+            pr_error_with_libgit_error(
+                "Failed to set config '"GMR_CONFIG"' to true "
+                "for repo '%s' at '%s'",
+                    r, url, name);
             goto free_repo;
         }
 #endif
         return 1;
     default:
-        pr_error_with_libgit_error("Failed to open repo '%s' at '%s'", r, url, name);
+        pr_error_with_libgit_error(
+            "Failed to open repo '%s' at '%s'", r, url, name);
         return -1;
     }
 
@@ -3152,7 +3162,9 @@ int repo_work_open_common(
         case 0:
             break;
         default:
-            pr_error_with_libgit_error("Failed to check if repo '%s' at '%s's HEAD is unborn", r, url, name);
+            pr_error_with_libgit_error(
+                "Failed to check if repo '%s' at '%s's HEAD is unborn", 
+                r, url, name);
             return -1;
         }
         return 0;
@@ -3241,13 +3253,19 @@ free_repos:
     return r;
 }
 
-int work_handle_open_all_repos(struct work_handle const *const restrict work_handle) {
+int work_handle_open_all_repos(
+    struct work_handle const *const restrict work_handle
+) {
     switch (work_handle->repos_count) {
     case 0:
         pr_warn("No repos defined, early quit\n");
         return 0;
     case 1:
-        return repo_work_open_one(work_handle->repos, work_handle->string_buffer.buffer, work_handle->dir_repos.datafd, work_handle->cwd);
+        return repo_work_open_one(
+                    work_handle->repos, 
+                    work_handle->string_buffer.buffer, 
+                    work_handle->dir_repos.datafd, 
+                    work_handle->cwd);
     default:
         break;
     }
@@ -3255,8 +3273,10 @@ int work_handle_open_all_repos(struct work_handle const *const restrict work_han
     struct repo_work *repos_stack[0x100 / sizeof *repos_heap];
     struct repo_work **repos = NULL;
     if (work_handle->repos_count > 0x100 / sizeof *repos_heap - 1) {
-        if (!(repos_heap = malloc(sizeof *repos_heap * (work_handle->repos_count + 1)))) {
-            pr_error_with_errno("Failed to allocate memory for repos' pointers");
+        if (!(repos_heap = malloc(
+                sizeof *repos_heap * (work_handle->repos_count + 1)))) {
+            pr_error_with_errno(
+                "Failed to allocate memory for repos' pointers");
             return -1;
         }
         repos = repos_heap;
@@ -3267,7 +3287,10 @@ int work_handle_open_all_repos(struct work_handle const *const restrict work_han
         repos[i] = work_handle->repos + i;
     }
     repos[work_handle->repos_count] = NULL;
-    int r = repo_work_open_many(repos, work_handle->string_buffer.buffer, work_handle->dir_repos.datafd, work_handle->cwd);
+    int r = repo_work_open_many(repos, 
+                work_handle->string_buffer.buffer, 
+                work_handle->dir_repos.datafd, 
+                work_handle->cwd);
     free_if_allocated(repos_heap);
     return r;
 }
