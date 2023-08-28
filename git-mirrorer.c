@@ -3083,6 +3083,12 @@ int repo_open_or_create(
             goto free_repo;
         }
         git_remote_free(remote);
+        /* 
+          The following part is optional, the remote.*.mirror config
+          is only for note and reference by users, it does not define
+          the actual mirroing behaviour for either us, libgit, or git.
+        */
+#ifndef SKIP_MIRROR_CONFIG
         git_config *config;
         if ((r = git_repository_config(&config, *repo))) {
             pr_error_with_libgit_error("Failed to open config for repo '%s' at '%s'", r, url, name);
@@ -3095,6 +3101,7 @@ int repo_open_or_create(
                 r, url, name);
             goto free_repo;
         }
+#endif
         return 1;
     default:
         pr_error_with_libgit_error("Failed to open repo '%s' at '%s'", r, url, name);
@@ -3243,6 +3250,162 @@ int work_handle_open_all_repos(struct work_handle const *const restrict work_han
     return r;
 }
 
+int gmr_repo_update(
+    git_repository *const restrict repo,
+    char const *const restrict url,
+    char const *const restrict proxy,
+    unsigned short const proxy_after
+) {
+    git_remote *remote;
+    int r = git_remote_create_anonymous(&remote, repo, url);
+    if (r) {
+        pr_error_with_libgit_error(
+            "Failed to create anonymous remote for '%s'", r, url);
+        return -1;
+    }
+    pr_debug("Beginning fetching from '%s'\n", url);
+    bool const tty = isatty(STDOUT_FILENO);
+    git_fetch_options fetch_opts = {
+        .version = GIT_FETCH_OPTIONS_VERSION, 
+        .callbacks = {
+            .version = GIT_REMOTE_CALLBACKS_VERSION,
+            .sideband_progress = tty ? gcb_sideband_progress : NULL,
+            .transfer_progress = tty ? gcb_fetch_progress : NULL,
+        },
+        .prune = GIT_FETCH_PRUNE,
+        .update_fetchhead = true,
+        .download_tags = GIT_REMOTE_DOWNLOAD_TAGS_ALL,
+        .proxy_opts = {
+            .version = GIT_PROXY_OPTIONS_VERSION,
+            .type = (proxy && !proxy_after) ? 
+                        GIT_PROXY_SPECIFIED : GIT_PROXY_NONE,
+            .url = proxy,
+        },
+        .depth = GIT_FETCH_DEPTH_FULL,
+        .follow_redirects = GIT_REMOTE_REDIRECT_INITIAL,
+    };
+    unsigned short max_try = proxy_after + 3;
+    git_error const *error = NULL;
+    for (unsigned short try = 0; try < max_try; ++try) {
+        if (try == proxy_after) {
+            if (try)
+                pr_warn(
+                    "Failed to fetch from '%s' for %hu times, use proxy\n",
+                    url, proxy_after);
+            fetch_opts.proxy_opts.type = GIT_PROXY_SPECIFIED;
+        }
+        r = git_remote_connect(remote, GIT_DIRECTION_FETCH, 
+            &fetch_opts.callbacks, &fetch_opts.proxy_opts, NULL);
+        if (r) {
+            error = git_error_last();
+            pr_error("Failed to connect to '%s', libgit return %d: %d (%s)\n",
+                url, r, error->klass, error->message);
+            continue;
+        }
+        r = git_remote_download(remote, &gmr_refspecs, &fetch_opts);
+        if (r) {
+            error = git_error_last();
+            pr_error("Failed to download from remote '%s', libgit retutn %d: "
+            "%d (%s)\n", url, r, error->klass, error->message);
+            r = git_remote_disconnect(remote);
+            if (r) {
+                error = git_error_last();
+                pr_error("Failed to disconnect from remote '%s' after failed "
+                "download, libgit return %d: %d (%s)\n", 
+                    url, r, error->klass, error->message);
+            } else {
+                r = -1;
+            }
+            continue;
+        }
+        r = git_remote_disconnect(remote);
+        if (r) {
+            error = git_error_last();
+            pr_error("Failed to disconnect from remote '%s', "
+                    "libgit return %d: %d (%s)\n", 
+                    url, r, error->klass, error->message);
+            continue;
+        }
+        r = git_remote_update_tips(remote, &fetch_opts.callbacks, 0, 
+                            GIT_REMOTE_DOWNLOAD_TAGS_AUTO, NULL);
+        if (r) {
+            error = git_error_last();
+            pr_error("Failed to update tips for remote '%s', "
+                "libgit return %d: %d (%s)\n", 
+                    url, r, error->klass, error->message);
+            continue;
+        }
+        r = git_remote_prune(remote, &fetch_opts.callbacks);
+        if (r) {
+            pr_error("Failed to prune remote '%s', libgit return %d: %d (%s)\n",
+                    url, r, error->klass, error->message);
+            continue;
+        }
+        break;
+    }
+    if (r) {
+        pr_error("Failed to update repo '%s' after %hu tries, "
+                "considered failure\n", url, max_try);
+        r = -1;
+        goto free_remote;
+    }
+    git_remote_head const **heads;
+    size_t heads_count;
+    if (git_remote_ls(&heads, &heads_count, remote)) {
+        pr_error("Failed to ls remote\n");
+        r = -1;
+        goto free_remote;
+    } else {
+        for (size_t i = 0; i < heads_count; ++i) {
+            git_remote_head const *const head = heads[i];
+            if (!strcmp(head->name, "HEAD")) {
+                if (head->symref_target == NULL) {
+                    pr_warn("Remote HEAD points to no branch\n");
+                    break;
+                }
+                pr_debug("Remote HEAD points to '%s' now\n",
+                        head->symref_target);
+                if ((r = git_repository_set_head(
+                        repo, head->symref_target))) {
+                    pr_error("Failed to update repo '%s' HEAD to '%s'\n",
+                        url, head->symref_target);
+                    r = -1;
+                    goto free_remote;
+                }
+                pr_debug("Set local HEAD of repo '%s' to '%s'\n",
+                    url, head->symref_target);
+                break;
+            }
+        }
+    }
+    pr_info("Updated repo '%s'\n", url);
+    r = 0;
+free_remote:
+    git_remote_free(remote);
+    return r;
+
+}
+
+int work_handle_update_all_repos(
+    struct work_handle *const restrict work_handle
+) {
+    unsigned long need_updates = 0;
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        if (work_handle->repos[i].need_update) ++need_updates;
+    }
+    if (!need_updates) return 0;
+
+    char const *restrict proxy_url;
+    if (work_handle->proxy_url_offset) {
+        proxy_url = 
+            work_handle->string_buffer.buffer + work_handle->proxy_url_offset;
+    } else {
+        proxy_url = NULL;
+    }
+
+
+
+}
 // int mkdir_allow_existing_at(
 //     int const dirfd,
 //     char *const restrict path
@@ -4409,129 +4572,6 @@ int work_handle_open_all_repos(struct work_handle const *const restrict work_han
 //                 workdir->links_dirfd, clean_links_pass) < 0)  {
 //         pr_error("Failed to remove dead links under '%s'\n", workdir->path);
 //     }
-//     return r;
-// }
-
-// int repo_update(
-//     struct repo *const restrict repo,
-//     git_fetch_options const *const restrict fetch_options,
-//     unsigned short const proxy_after
-// ) {
-//     pr_info("Updating: '%s' ...\n", repo->url);
-//     git_remote *remote;
-//     int r = git_remote_create_anonymous(&remote, repo->repository, repo->url);
-//     if (r) {
-//         pr_error("Failed to create anonymous remote for '%s', "
-//             "libgit return %d\n", repo->url, r);
-//         return -1;
-//     }
-//     pr_debug("Beginning fetching from '%s'\n", repo->url);
-//     git_fetch_options fetch_options_dup = *fetch_options;
-//     if (fetch_options->callbacks.sideband_progress ||
-//         fetch_options->callbacks.transfer_progress) {
-//         fetch_options_dup.callbacks.payload = repo;
-//     }
-//     fetch_options_dup.proxy_opts.type = GIT_PROXY_NONE;
-//     unsigned short max_try = proxy_after + 3;
-//     git_error const *error = NULL;
-//     for (unsigned short try = 0; try < max_try; ++try) {
-//         if (try == proxy_after) {
-//             if (try)
-//                 pr_warn(
-//                     "Failed to fetch from '%s' for %hu times, use proxy\n",
-//                     repo->url, proxy_after);
-//             fetch_options_dup.proxy_opts.type = GIT_PROXY_SPECIFIED;
-//         }
-//         r = git_remote_connect(remote, GIT_DIRECTION_FETCH, 
-//             &fetch_options_dup.callbacks, &fetch_options_dup.proxy_opts, NULL);
-//         if (r) {
-//             error = git_error_last();
-//             pr_error("Failed to connect to '%s', libgit return %d: %d (%s)\n",
-//                 repo->url, r, error->klass, error->message);
-//             continue;
-//         }
-//         r = git_remote_download(remote, &mirror_refspecs, &fetch_options_dup);
-//         if (r) {
-//             error = git_error_last();
-//             pr_error("Failed to download from remote '%s', libgit retutn %d: "
-//             "%d (%s)\n", repo->url, r, error->klass, error->message);
-//             r = git_remote_disconnect(remote);
-//             if (r) {
-//                 error = git_error_last();
-//                 pr_error("Failed to disconnect from remote '%s' after failed "
-//                 "download, libgit return %d: %d (%s)\n", 
-//                     repo->url, r, error->klass, error->message);
-//             } else {
-//                 r = -1;
-//             }
-//             continue;
-//         }
-//         r = git_remote_disconnect(remote);
-//         if (r) {
-//             error = git_error_last();
-//             pr_error("Failed to disconnect from remote '%s', "
-//                     "libgit return %d: %d (%s)\n", 
-//                     repo->url, r, error->klass, error->message);
-//             continue;
-//         }
-//         r = git_remote_update_tips(remote, &fetch_options_dup.callbacks, 0, 
-//                             GIT_REMOTE_DOWNLOAD_TAGS_AUTO, NULL);
-//         if (r) {
-//             error = git_error_last();
-//             pr_error("Failed to update tips for remote '%s', "
-//                 "libgit return %d: %d (%s)\n", 
-//                     repo->url, r, error->klass, error->message);
-//             continue;
-//         }
-//         r = git_remote_prune(remote, &fetch_options_dup.callbacks);
-//         if (r) {
-//             pr_error("Failed to prune remote '%s', libgit return %d: %d (%s)\n",
-//                     repo->url, r, error->klass, error->message);
-//             continue;
-//         }
-//         break;
-//     }
-//     if (r) {
-//         pr_error("Failed to update repo '%s' after %hu tries, "
-//                 "considered failure\n", repo->url, max_try);
-//         r = -1;
-//         goto free_remote;
-//     }
-//     git_remote_head const **heads;
-//     size_t heads_count;
-//     if (git_remote_ls(&heads, &heads_count, remote)) {
-//         pr_error("Failed to ls remote\n");
-//         r = -1;
-//         goto free_remote;
-//     } else {
-//         for (size_t i = 0; i < heads_count; ++i) {
-//             git_remote_head const *const head = heads[i];
-//             if (!strcmp(head->name, "HEAD")) {
-//                 if (head->symref_target == NULL) {
-//                     pr_warn("Remote HEAD points to no branch\n");
-//                     break;
-//                 }
-//                 pr_debug("Remote HEAD points to '%s' now\n",
-//                         head->symref_target);
-//                 if ((r = git_repository_set_head(
-//                         repo->repository, head->symref_target))) {
-//                     pr_error("Failed to update repo '%s' HEAD to '%s'\n",
-//                         repo->url, head->symref_target);
-//                     r = -1;
-//                     goto free_remote;
-//                 }
-//                 pr_debug("Set local HEAD of repo '%s' to '%s'\n",
-//                     repo->url, head->symref_target);
-//                 break;
-//             }
-//         }
-//     }
-
-//     pr_info("Updated repo '%s'\n", repo->url);
-//     repo->updated = true;
-//     r = 0;
-// free_remote:
-//     git_remote_free(remote);
 //     return r;
 // }
 
@@ -8256,6 +8296,17 @@ int tar_finish(
 // }
 
 static inline
+int gmr_set_timeout(int const timeout) {
+    if (timeout && git_libgit2_opts(
+        GIT_OPT_SET_SERVER_CONNECT_TIMEOUT, timeout)) {
+        pr_error("Failed to set timeout, %d (%s)\n", 
+            git_error_last()->klass, git_error_last()->message);
+        return -1;
+    }
+    return 0;
+}
+
+static inline
 int gmr_work(char const *const restrict config_path) {
     int r = setvbuf(stdout, NULL, _IOLBF, 0);
     if (r) {
@@ -8288,28 +8339,12 @@ int gmr_work(char const *const restrict config_path) {
         }
         goto free_work_handle;
     }
-    if (config.timeout_connect && git_libgit2_opts(
-        GIT_OPT_SET_SERVER_CONNECT_TIMEOUT, config.timeout_connect)) {
-        pr_error("Failed to set timeout, %d (%s)\n", 
-            git_error_last()->klass, git_error_last()->message);
-        goto free_work_handle;
+    if ((r = gmr_set_timeout(config.timeout_connect))) {
+        goto shutdown;
     }
-    r = work_handle_open_all_repos(&work_handle);
-    // if (config.daemon) {
-    //     if (work_daemon(&config, config_path, &workdir_repos, &workdir_archives,
-    //     &workdir_checkouts)) {
-    //         pr_error("Daemon work failed\n");
-    //         r = -1;
-    //         goto shutdown;
-    //     }
-    // } else {
-    //     if (work_oneshot(&config, &workdir_repos, &workdir_archives,
-    //     &workdir_checkouts)) {
-    //         pr_error("One shot work failed\n");
-    //         r = -1;
-    //         goto shutdown;
-    //     }
-    // }
+    if ((r = work_handle_open_all_repos(&work_handle))) {
+        goto shutdown;
+    }
     r = 0;
 shutdown:
     pr_info("Shutting down libgit2\n");
