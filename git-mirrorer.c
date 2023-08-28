@@ -1394,12 +1394,14 @@ int yamlconf_parse_wanted_list_add_object(
 ) {
     char const *const name = (char const *)event->data.scalar.value;
     unsigned short const len_name = event->data.scalar.length;
-    enum wanted_type const type = guess_type ?
-        wanted_type_guess_from_name(name, len_name) :
-        WANTED_TYPE_UNKNOWN;
-    if (!type) {
-        pr_error("Failed to guess type of '%s'\n", name);
-        return -1;
+    enum wanted_type type;
+    if (guess_type) {
+        if (!(type = wanted_type_guess_from_name(name, len_name))) {
+            pr_error("Failed to guess type of '%s'\n", name);
+            return -1;
+        }
+    } else {
+        type = WANTED_TYPE_UNKNOWN;
     }
     struct wanted_base **wanted_objects = NULL;
     unsigned long *count = NULL, *alloc = NULL;
