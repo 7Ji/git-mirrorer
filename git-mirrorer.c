@@ -3284,7 +3284,6 @@ int repo_work_open_many_serial(
     unsigned long free_count = 0;
     for (unsigned long i = 0; i < repos_count; ++i) {
         struct repo_work *const restrict repo_work = repos + i;
-        if (!repo_work) break;
         if (repo_work->git_repository) {
             pr_error("Repo already opened\n");
             free_count = i + 1;
