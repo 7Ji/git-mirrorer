@@ -154,6 +154,9 @@ struct string_buffer {
 
 #define get_last(x) x + x##_count - 1
 
+#define free_if_allocated(name) if (name) free(name)
+#define free_if_allocated_to_null(name) if (name) { free(name); name = NULL; }
+
 /* Commit */
 
 #define COMMIT_ID_DECLARE { \
@@ -440,6 +443,10 @@ struct work_handle const WORK_HANDLE_INIT = {
     .dir_archives = {WORK_DIRECTORY_INIT_ASSIGN},
     .dir_checkouts = {WORK_DIRECTORY_INIT_ASSIGN}
 };
+
+/* IO */
+
+#define BUFFER_READ_CHUNK CHUNK_SIZE * 64
 
 /* TAR */
 
@@ -759,9 +766,6 @@ int string_buffer_add(
     return 0;
 }
 
-#define free_if_allocated(name) if (name) free(name)
-#define free_if_allocated_to_null(name) if (name) { free(name); name = NULL; }
-
 int string_buffer_free(
     struct string_buffer *const restrict sbuffer
 ) {
@@ -906,8 +910,6 @@ int dynamic_array_partial_free(
 #define dynamic_array_partial_free_to(name) \
     dynamic_array_partial_free((void **)&name, sizeof *name, \
         name##_count, &name##_allocated)
-
-#define BUFFER_READ_CHUNK CHUNK_SIZE * 64
 
 /* Return -1 for error */
 size_t buffer_read_from_fd(
@@ -2827,7 +2829,7 @@ int wanted_object_complete_from_base(
         pr_error("Failed to convert '%s' to a git oid\n", name);
         return -1;
     }
-    if (!git_oid_fmt(
+    if (git_oid_fmt(
             wanted_object->hex_string,
             &wanted_object->oid)) {
         pr_error("Failed to format git oid hex string\n");
