@@ -312,7 +312,7 @@ struct wanted_reference const WANTED_HEAD_INIT = {
     hash_type   hash_url, \
                 hash_long_name, \
                 hash_short_name, \
-                hash_server; \
+                hash_domain; \
     unsigned short depth_long_name; \
     char hash_url_string[HASH_STRING_LEN + 1]; \
 }
@@ -1716,15 +1716,17 @@ int repo_common_init_from_url(
     long_name[0] = '\0';
     repo->len_long_name = 0;
     repo->depth_long_name = 1; // depth always starts from 1
-    repo->hash_server = 0;
+    repo->hash_domain = 0;
+    bool has_domain = false;
     unsigned short short_name_offset = 0;
     int r;
     for (unsigned short i = 0; i < len_url; ++i) {
         if (url[i] == '/') {
             if (repo->depth_long_name == 1) {
                 // Only record hash, won't access string later
-                repo->hash_server = hash_calculate(url,
+                repo->hash_domain = hash_calculate(url,
                                                    repo->len_long_name);
+                has_domain = true;
             }
             // Skip all continous leading /
             for (; url[i + 1] =='/' && i < len_url; ++i);
@@ -1737,6 +1739,12 @@ int repo_common_init_from_url(
             short_name_offset = i + 1;
         }
         long_name[repo->len_long_name++] = url[i];
+    }
+    if (!has_domain) {
+        pr_error("Url '%s' does not have domain\n",
+                    sbuffer->buffer + repo->url_offset);
+        r = -1;
+        goto free_long_name_heap;
     }
     if (!repo->len_long_name) {
         pr_error("Long name for url '%s' is empty\n",
@@ -2491,12 +2499,14 @@ void config_print_repo(
         "|  - %s:\n"
         "|      hash: %016lx\n"
         "|      long_name: %s (depth %hu)\n"
-        "|      short_name: %s\n",
+        "|      short_name: %s\n"
+        "|      domain: %016lx\n",
         config_get_string(repo->url),
         repo->hash_url,
         config_get_string(repo->long_name),
         repo->depth_long_name,
-        config_get_string(repo->short_name));
+        config_get_string(repo->short_name),
+        repo->hash_domain);
     if (repo->wanted_objects_count) {
         printf(
         "|      wanted (%lu):\n",
