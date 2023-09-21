@@ -3224,7 +3224,8 @@ return_cwd:
     return r;
 }
 
-int repo_work_open_many(
+/* Expecting a list of repo pointers, ended with NULL */
+int repo_work_open_many_scatter(
     struct repo_work **const restrict repos,
     char const *const restrict sbuffer,
     int const fd_repos,
@@ -3260,7 +3261,51 @@ free_repos:
         git_repository_free(repos[i]->git_repository);
         repos[i]->git_repository = NULL;
     }
-// return_cwd:
+    if (fchdir(fd_cwd)) {
+        pr_error_with_errno("Failed to chdir back to cwd");
+        r = -1;
+    }
+    return r;
+}
+
+/* Expecting continous repo structures */
+int repo_work_open_many_serial(
+    struct repo_work *const restrict repos,
+    unsigned long repos_count,
+    char const *const restrict sbuffer,
+    int const fd_repos,
+    int const fd_cwd
+) {
+    if (fchdir(fd_repos)) {
+        pr_error_with_errno("Failed to chdir to repos");
+        return -1;
+    }
+    int r;
+    unsigned long free_count = 0;
+    for (unsigned long i = 0; i < repos_count; ++i) {
+        struct repo_work *const restrict repo_work = repos + i;
+        if (!repo_work) break;
+        if (repo_work->git_repository) {
+            pr_error("Repo already opened\n");
+            free_count = i + 1;
+            r = -1;
+            goto free_repos;
+        }
+        char const *const url = sbuffer + repo_work->url_offset;
+        char const *const name = repo_work->hash_url_string;
+        if (repo_work_open_common(repo_work, url, name)) {
+            pr_error("Failed to open repo '%s' at '%s'\n", url, name);
+            free_count = i;
+            r = -1;
+            goto free_repos;
+        }
+    }
+    r = 0;
+free_repos:
+    for (unsigned short i = 0; i < free_count; ++i) {
+        git_repository_free((repos + i)->git_repository);
+        (repos + i)->git_repository = NULL;
+    }
     if (fchdir(fd_cwd)) {
         pr_error_with_errno("Failed to chdir back to cwd");
         r = -1;
@@ -3284,6 +3329,7 @@ int work_handle_open_all_repos(
     default:
         break;
     }
+#ifdef WORK_HANDLE_OPEN_ALL_REPOS_USE_SCATTER_VARAINT
     struct repo_work **repos_heap = NULL;
     struct repo_work *repos_stack[0x100 / sizeof *repos_heap];
     struct repo_work **repos = NULL;
@@ -3308,6 +3354,14 @@ int work_handle_open_all_repos(
                 work_handle->cwd);
     free_if_allocated(repos_heap);
     return r;
+#else
+    return repo_work_open_many_serial(
+        work_handle->repos,
+        work_handle->repos_count,
+        work_handle->string_buffer.buffer,
+        work_handle->dir_repos.datafd,
+        work_handle->cwd);
+#endif
 }
 
 static inline 
@@ -3453,12 +3507,6 @@ git_fetch_options gmr_fetch_options_init(
 int work_handle_update_all_repos(
     struct work_handle *const restrict work_handle
 ) {
-    unsigned long need_updates = 0;
-    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-        if (work_handle->repos[i].need_update) ++need_updates;
-    }
-    if (!need_updates) return 0;
-
     char const *restrict proxy_url;
     if (work_handle->len_proxy_url) {
         proxy_url =
@@ -3472,6 +3520,7 @@ int work_handle_update_all_repos(
     /* Single threaded */
     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
         struct repo_work *const restrict repo_work = work_handle->repos + i;
+        if (!repo_work->need_update) continue;
         char const *const restrict url = 
             work_handle->string_buffer.buffer + repo_work->url_offset;
         if (gmr_repo_update(repo_work->git_repository, url, &fetch_opts, 
