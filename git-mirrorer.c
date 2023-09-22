@@ -3362,6 +3362,110 @@ int work_handle_open_all_repos(
 #endif
 }
 
+/* 0 link exists and OK, 1 link does not exist, or removed, -1 error */
+int check_symlink_at(
+    int const links_dirfd,
+    char const *const restrict symlink_path,
+    char const *const restrict symlink_target
+) {
+    char actual_target_stack[0x100];
+    char *actual_target_heap = NULL;
+    char *actual_target = actual_target_stack;
+    size_t buffer_size = 0x100;
+    ssize_t len;
+    int r;
+    while ((len = readlinkat(links_dirfd, symlink_path, 
+                    actual_target, buffer_size)) >= buffer_size) {
+        /* Just in case target is too long */
+        buffer_size *= ALLOC_MULTIPLIER;
+        if (actual_target_heap) free(actual_target_heap);
+        if (!(actual_target_heap = malloc(buffer_size))) {
+            pr_error_with_errno("Failed to allocate path buffer on heap");
+            return -1;
+        }
+        actual_target = actual_target_heap;
+    }
+    if (len < 0) {
+        if (errno == ENOENT) {
+            r = 1;
+            goto free_actual_target_heap;
+        } else {
+            pr_error_with_errno("Failed to read link at '%s'", symlink_path);
+            r = -1;
+            goto free_actual_target_heap;
+        }
+    } else if (len == 0) {
+        pr_error("Symlink target is 0, impossible\n");
+        r = -1;
+        goto free_actual_target_heap;
+    } else {
+        actual_target[len] = '\0';
+        if (strcmp(actual_target, symlink_target)) {
+            pr_warn("Symlink at '%s' points to '%s' instead of '%s', "
+            "if you see this message for too many times, you've probably set "
+            "too many repos with same path but different schemes.\n",
+            symlink_path, actual_target, symlink_target);
+            if (unlinkat(links_dirfd, symlink_path, 0) < 0) {
+                pr_error_with_errno("Faild to unlink '%s'", symlink_path);
+                r = -1;
+                goto free_actual_target_heap;
+            }
+            r = 1;
+            goto free_actual_target_heap;
+        }
+    }
+    r = 0;
+free_actual_target_heap:
+    free_if_allocated(actual_target_heap);
+    return r;
+
+}
+
+int guarantee_symlink_at (
+    int const links_dirfd,
+    char const *const restrict symlink_path,
+    char const *const restrict symlink_target
+) {
+    switch (check_symlink_at(links_dirfd, symlink_path, symlink_target)) {
+    case 0: /* Exists and OK */
+        return 0;
+    case 1: /* Does not exist, or invalid but removed */
+        break;
+    default: /* Error */
+        return -1;
+    }
+    if (symlinkat(symlink_target, links_dirfd, symlink_path) < 0) {
+        switch (errno) {
+        case ENOENT:
+            break;
+        default:
+            pr_error_with_errno(
+                "Failed to create symlink '%s' -> '%s'",
+                symlink_path, symlink_target);
+            return -1;
+        }
+    } else {
+        pr_debug("Created symlink '%s' -> '%s'\n",
+            symlink_path, symlink_target);
+        return 0;
+    }
+}
+
+int work_handle_link_all_repos(
+    struct work_handle const *const restrict work_handle
+) {
+    // char symlink_
+
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        struct repo_work const *const restrict repo_work = 
+            work_handle->repos + i;
+        char const *const long_name = 
+            work_handle_get_string(repo_work->long_name);
+
+    }
+    return 0;
+}
+
 static inline 
 int gmr_remote_update(
     git_remote *const restrict remote,
@@ -3857,106 +3961,6 @@ int work_handle_update_all_repos(
 //     return subdir_fd;
 // }
 
-// int guarantee_symlink_at (
-//     int const links_dirfd,
-//     char const *const restrict symlink_path,
-//     unsigned short const len_symlink_path,
-//     char const *const restrict symlink_target
-// ) {
-//     if (len_symlink_path >= PATH_MAX) {
-//         pr_error("Symlink path too long\n");
-//         return -1;
-//     }
-//     char path[PATH_MAX];
-//     ssize_t len = readlinkat(links_dirfd, symlink_path, path, PATH_MAX);
-//     if (len < 0) {
-//         switch (errno) {
-//         case ENOENT:
-//             break;
-//         default:
-//             pr_error_with_errno("Failed to read link at '%s'", symlink_path);
-//             return -1;
-//         }
-//     } else {
-//         path[len] = '\0';
-//         if (strcmp(path, symlink_target)) {
-//             pr_warn("Symlink at '%s' points to '%s' instead of '%s', "
-//             "if you see this message for too many times, you've probably set "
-//             "too many repos with same path but different schemes.\n",
-//             symlink_path, path, symlink_target);
-//             if (unlinkat(links_dirfd, symlink_path, 0) < 0) {
-//                 pr_error_with_errno("Faild to unlink '%s'", symlink_path);
-//                 return -1;
-//             }
-//         } else {
-//             // pr_info("Symlink '%s' -> '%s' already existing\n",
-//             //     symlink_path, symlink_target);
-//             return 0;
-//         }
-//     }
-//     if (symlinkat(symlink_target, links_dirfd, symlink_path) < 0) {
-//         switch (errno) {
-//         case ENOENT:
-//             break;
-//         default:
-//             pr_error_with_errno(
-//                 "Failed to create symlink '%s' -> '%s'",
-//                 symlink_path, symlink_target);
-//             return -1;
-//         }
-//     } else {
-//         pr_debug("Created symlink '%s' -> '%s'\n",
-//             symlink_path, symlink_target);
-//         return 0;
-//     }
-//     // After above routine, the only possiblity is missing dirs
-//     char symlink_path_dup[PATH_MAX];
-//     memcpy(symlink_path_dup, symlink_path, len_symlink_path);
-//     symlink_path_dup[len_symlink_path] = '\0';
-//     unsigned short last_sep = 0;
-//     for (unsigned short i = len_symlink_path; i > 0; --i) {
-//         char *c = symlink_path_dup + i;
-//         if (*c == '/') {
-//             if (!last_sep) {
-//                 last_sep = i;
-//             }
-//             *c = '\0';
-//             if (mkdirat(links_dirfd, symlink_path_dup, 0755)) {
-//                 if (errno != ENOENT) {
-//                     pr_error_with_errno(
-//                         "Failed to create folder '%s' as parent of symlink "
-//                         "'%s' -> '%s'",
-//                         symlink_path_dup, symlink_path, symlink_target);
-//                     return -1;
-//                 }
-//             } else {
-//                 for (unsigned short j = i; j < last_sep; ++j) {
-//                     c = symlink_path_dup + j;
-//                     if (*c == '\0') {
-//                         *c = '/';
-//                         if (mkdirat(links_dirfd, symlink_path_dup, 0755)) {
-//                             pr_error_with_errno(
-//                                 "Failed to create folder '%s' as parent of "
-//                                 "symlink '%s' -> '%s'",
-//                                 symlink_path_dup, symlink_path, symlink_target);
-//                             return -1;
-//                         }
-//                     }
-//                 }
-//                 break;
-//             }
-//         }
-//     }
-//     if (symlinkat(symlink_target, links_dirfd, symlink_path) < 0) {
-//         pr_error_with_errno(
-//             "Failed to create symlink '%s' -> '%s'",
-//             symlink_path, symlink_target);
-//         return -1;
-//     }
-//     pr_debug("Created symlink '%s' -> '%s'\n",
-//         symlink_path, symlink_target);
-//     return 0;
-// }
 
 // int wanted_object_guarantee_symlinks(
 //     struct wanted_object const *const restrict wanted_object,
@@ -8466,6 +8470,9 @@ int gmr_work(char const *const restrict config_path) {
         goto shutdown;
     }
     if ((r = work_handle_open_all_repos(&work_handle))) {
+        goto shutdown;
+    }
+    if ((r = work_handle_link_all_repos(&work_handle))) {
         goto shutdown;
     }
     if ((r = work_handle_update_all_repos(&work_handle))) {
