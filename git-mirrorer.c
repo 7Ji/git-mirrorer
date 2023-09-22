@@ -2562,6 +2562,32 @@ int mkdir_allow_existing(
     return 0;
 }
 
+static inline
+int mkdir_allow_existing_at(
+    int const dir_fd,
+    char *const restrict path
+) {
+    if (mkdirat(dir_fd, path, 0755)) {
+        if (errno == EEXIST) {
+            struct stat stat_buffer;
+            if (fstatat(dir_fd, path, &stat_buffer, AT_SYMLINK_NOFOLLOW)) {
+                pr_error_with_errno("Failed to stat '%s'", path);
+                return -1;
+            }
+            if ((stat_buffer.st_mode & S_IFMT) == S_IFDIR) {
+                return 0;
+            } else {
+                pr_error("Exisitng '%s' is not a folder\n", path);
+                return -1;
+            }
+        } else {
+            pr_error_with_errno("Failed to mkdir '%s'", path);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 int mkdir_recursively(
     char const *const restrict path,
     unsigned short const len_path
@@ -2619,6 +2645,79 @@ from_left:
             __attribute__((fallthrough));
         case '\0':
             r = mkdir_allow_existing(path_dup);
+            if (revert_slash) path_dup[i] = '/';
+            if (r) {
+                pr_error("Failed to mkdir '%s'\n", path_dup);
+                r = -1;
+                goto free_path_heap;
+            }
+            break;
+        }
+    }
+    r = 0;
+free_path_heap:
+    free_if_allocated(path_heap);
+    return r;
+}
+
+int mkdir_recursively_at(
+    int const dir_fd,
+    char const *const restrict path,
+    unsigned short const len_path
+) {
+    if (path && len_path && dir_fd >= 0);
+    else {
+        pr_error("Internal: caller passed NULL pointer or 0-length path\n");
+        return -1;
+    }
+    char path_stack[0x100]; // 256 is long enough for normal paths
+    char *path_heap = NULL;
+    char *path_dup;
+    if (len_path >= sizeof path_stack) {
+        if (!(path_heap = malloc(len_path + 1))) {
+            pr_error_with_errno("Failed to allocate memory");
+            return -1;
+        }
+        path_dup = path_heap;
+    } else {
+        path_dup = path_stack;
+    }
+    memcpy(path_dup, path, len_path);
+    path_dup[len_path] = '\0';
+    unsigned short from_left = 0;
+    int r;
+    /* Go from right to reduce mkdir calls */
+    /* In the worst case this takes double the time than from left */
+    /* but in the most cases parents should exist and this should */
+    /* skip redundant mkdir syscalls */
+    for (unsigned short i = len_path; i; --i) {
+        bool revert_slash = false;
+        switch (path_dup[i]) {
+        case '/':
+            path_dup[i] = '\0';
+            revert_slash = true;
+            __attribute__((fallthrough));
+        case '\0':
+            r = mkdir_allow_existing_at(dir_fd, path_dup);
+            if (revert_slash) path_dup[i] = '/';
+            if (!r) {
+                if (!revert_slash) return 0;
+                from_left = i + 1;
+                goto from_left;
+            }
+            break;
+        }
+    }
+from_left:
+    for (unsigned short i = from_left; i < len_path + 1; ++i) {
+        bool revert_slash = false;
+        switch (path_dup[i]) {
+        case '/':
+            path_dup[i] = '\0';
+            revert_slash = true;
+            __attribute__((fallthrough));
+        case '\0':
+            r = mkdir_allow_existing_at(dir_fd, path_dup);
             if (revert_slash) path_dup[i] = '/';
             if (r) {
                 pr_error("Failed to mkdir '%s'\n", path_dup);
@@ -3371,7 +3470,7 @@ int check_symlink_at(
     char actual_target_stack[0x100];
     char *actual_target_heap = NULL;
     char *actual_target = actual_target_stack;
-    size_t buffer_size = 0x100;
+    ssize_t buffer_size = 0x100;
     ssize_t len;
     int r;
     while ((len = readlinkat(links_dirfd, symlink_path, 
@@ -3421,9 +3520,37 @@ free_actual_target_heap:
 
 }
 
-int guarantee_symlink_at (
+int ensure_parent_dir(
+    char const *const restrict path,
+    unsigned short const len_path
+) {
+    for (unsigned short i = len_path; i > 0; --i) {
+        if (path[i - 1] == '/') {
+            return mkdir_recursively(path, i - 1);
+        }
+    }
+    pr_error("Path '%s' does not have parent\n", path);
+    return -1;
+}
+
+int ensure_parent_dir_at(
+    int const dir_fd,
+    char const *const restrict path,
+    unsigned short const len_path
+) {
+    for (unsigned short i = len_path; i > 0; --i) {
+        if (path[i - 1] == '/') {
+            return mkdir_recursively_at(dir_fd, path, i - 1);
+        }
+    }
+    pr_error("Path '%s' does not have parent\n", path);
+    return -1;
+}
+
+int ensure_symlink_at (
     int const links_dirfd,
     char const *const restrict symlink_path,
+    size_t const len_symlink_path,
     char const *const restrict symlink_target
 ) {
     switch (check_symlink_at(links_dirfd, symlink_path, symlink_target)) {
@@ -3449,21 +3576,89 @@ int guarantee_symlink_at (
             symlink_path, symlink_target);
         return 0;
     }
+    // After above routine, the only possiblity is missing dirs
+    if (ensure_parent_dir_at(links_dirfd, symlink_path, len_symlink_path)) {
+        pr_error("Failed to ensure parent dir for '%s'\n", symlink_path);
+        return -1;
+    }
+    if (symlinkat(symlink_target, links_dirfd, symlink_path) < 0) {
+        pr_error_with_errno(
+            "Failed to create symlink '%s' -> '%s'",
+            symlink_path, symlink_target);
+        return -1;
+    }
+    pr_debug("Created symlink '%s' -> '%s'\n",
+        symlink_path, symlink_target);
+    return 0;
+}
+
+static inline
+int format_link_target(
+    char **const target,
+    char *const restrict target_stack,
+    char **const restrict target_heap,
+    size_t *target_heap_allocated,
+    unsigned short const depth_link,
+    char const *const restrict target_suffix,
+    unsigned short const len_target_suffix
+) {
+    // E.g. links/A -> ../data/B
+    size_t const len = depth_link * 3 + 5 + len_target_suffix;
+    if (len + 1 >= 0x100) {
+        if (len + 1 >= *target_heap_allocated) {
+            free_if_allocated(*target_heap);
+            if (!(*target_heap = malloc((*target_heap_allocated = 
+                    (len + 2) / 0x1000 * 0x1000)))) {
+                pr_error_with_errno("Failed to allocate memory");
+                return -1;
+            }
+        }
+        *target = *target_heap;
+    } else {
+        *target = target_stack;
+    }
+    char *current = *target;
+    for (unsigned short i = 0; i < depth_link; ++i) {
+        memcpy(current, "../", 3);
+        current += 3;
+    }
+    memcpy(current, "data/", 5);
+    current += 5;
+    memcpy(current, target_suffix, len_target_suffix);
+    (*target)[len] = '\0';
+    return 0;
 }
 
 int work_handle_link_all_repos(
     struct work_handle const *const restrict work_handle
 ) {
-    // char symlink_
-
+    char target_stack[0x100];
+    char *target_heap = NULL;
+    size_t target_heap_allocated = 0;
+    char *target;
+    int r;
     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
         struct repo_work const *const restrict repo_work = 
             work_handle->repos + i;
-        char const *const long_name = 
-            work_handle_get_string(repo_work->long_name);
-
+        if (format_link_target(&target, target_stack, &target_heap, 
+                                &target_heap_allocated, 
+                                repo_work->depth_long_name,
+                                repo_work->hash_url_string,
+                                HASH_STRING_LEN)) {
+            r = -1;
+            goto free_target_heap;   
+        }
+        if (ensure_symlink_at(work_handle->dir_repos.linkfd, 
+                            work_handle_get_string(repo_work->long_name),
+                            repo_work->len_long_name, target)) {
+            r = -1;
+            goto free_target_heap;
+        }
     }
-    return 0;
+    r = 0;
+free_target_heap:
+    free_if_allocated(target_heap);
+    return r;
 }
 
 static inline 
@@ -3857,47 +4052,6 @@ int work_handle_update_all_repos(
 //         return -1;
 //     }
 //     return 0;
-// }
-
-// int ensure_parent_dir(
-//     char *const restrict path,
-//     unsigned short const len_path
-// ) {
-//     for (unsigned short i = len_path; i > 0; --i) {
-//         if (path[i - 1] == '/') {
-//             path[i - 1] = '\0';
-//             int r = mkdir_recursively(path);
-//             path[i - 1] = '/';
-//             if (r) {
-//                 pr_error("Failed to ensure parent dir of '%s'\n", path);
-//                 return -1;
-//             }
-//             return 0;
-//         }
-//     }
-//     pr_error("Path '%s' does not have parent\n", path);
-//     return -1;
-// }
-
-// int ensure_parent_dir_at(
-//     int const dir_fd,
-//     char *const restrict path,
-//     unsigned short const len_path
-// ) {
-//     for (unsigned short i = len_path; i > 0; --i) {
-//         if (path[i - 1] == '/') {
-//             path[i - 1] = '\0';
-//             int r = mkdir_recursively_at(dir_fd, path);
-//             path[i - 1] = '/';
-//             if (r) {
-//                 pr_error("Failed to ensure parent dir of '%s'\n", path);
-//                 return -1;
-//             }
-//             return 0;
-//         }
-//     }
-//     pr_error("Path '%s' does not have parent\n", path);
-//     return -1;
 // }
 
 // unsigned short get_unsigned_short_decimal_width(unsigned short number) {
