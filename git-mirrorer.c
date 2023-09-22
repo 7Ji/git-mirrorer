@@ -4016,10 +4016,10 @@ int repo_domain_map_update(
         }
         if (active_threads == 0) {
             break;
-        } else if (active_threads < max_connections) {
+        } else if (active_threads <= max_connections) {
             usleep(100000);
         } else {
-            sleep(10);
+            sleep(1);
         }
     }
     if (bad_ret) {
