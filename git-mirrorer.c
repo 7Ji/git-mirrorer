@@ -4028,6 +4028,28 @@ int repo_domain_map_update(
         r = 0;
     }
 wait_threads:
+    for (unsigned long i = 0; i < map->groups_count; ++i) {
+        void *const chunk = chunks + chunk_size * i;
+        threads_count = chunk;
+        if (!*threads_count) continue;
+        thread_helpers = chunk + sizeof *threads_count;
+        for (unsigned long j = 0; j < max_connections; ++j) {
+            struct thread_helper *const restrict thread_helper
+                = thread_helpers + j;
+            if (thread_helper->used) {
+                pr_info("Waiting for updater for '%s'...\n", 
+                        thread_helper->arg.url);
+                while (!thread_helper->arg.finished) {
+                    usleep(100000);
+                }
+                if (thread_helper->arg.r) {
+                    pr_error("Updater for '%s' bad return %d...\n", 
+                        thread_helper->arg.url, thread_helper->arg.r);
+                    r = -1;
+                }
+            }
+        }
+    }
 destroy_attr:
     pthread_attr_destroy(&thread_attr);
 free_chunks:
