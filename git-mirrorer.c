@@ -3987,7 +3987,7 @@ int repo_domain_map_update(
             while (*threads_count < max_connections && group->repos_count) {
                 struct repo_work *repo = group->repos[--group->repos_count];
                 struct thread_helper *thread_helper = NULL;
-                for (unsigned short j = 0; i < max_connections; ++j) {
+                for (unsigned short j = 0; j < max_connections; ++j) {
                     if (!thread_helpers[j].used) {
                         thread_helper = thread_helpers + j;
                         break;
@@ -4056,9 +4056,19 @@ int work_handle_update_all_repos(
         goto free_map;
     }
     repo_domain_map_print(&map, work_handle->string_buffer.buffer);
-    unsigned short const max_connections = 
+    unsigned short max_connections = 
         work_handle->connections_per_server > 1 ? 
             work_handle->connections_per_server: 1;
+    unsigned short max_domain_repos = 0;
+    for (unsigned long i = 0; i < map.groups_count; ++i) {
+        if (map.groups[i].repos_count > max_domain_repos) {
+            max_domain_repos = map.groups[i].repos_count;
+        }
+    }
+    if (max_connections > max_domain_repos) {
+        max_connections = max_domain_repos;
+    }
+    pr_info("Connections per domain group: %hu\n", max_connections);
     char const *restrict proxy_url;
     if (work_handle->len_proxy_url) {
         proxy_url =
