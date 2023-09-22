@@ -3961,9 +3961,9 @@ int repo_domain_map_update(
         r = -1;
         goto destroy_attr;
     }
-    unsigned short active_threads = -1;
+    unsigned short active_threads;
     bool bad_ret = false;
-    while (active_threads >  0) {
+    for (;;) {
         active_threads = 0;
         for (unsigned long i = 0; i < map->groups_count; ++i) {
             void *const chunk = chunks + chunk_size * i;
@@ -4014,10 +4014,12 @@ int repo_domain_map_update(
             }
             active_threads += *threads_count;
         }
-        if (active_threads >= max_connections) {
-            sleep(10);
+        if (active_threads == 0) {
+            break;
+        } else if (active_threads < max_connections) {
+            usleep(100000);
         } else {
-            sleep(1);
+            sleep(10);
         }
     }
     if (bad_ret) {
