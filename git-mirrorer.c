@@ -3842,8 +3842,7 @@ int repo_domain_map_init(
         if (!group) {
             if (dynamic_array_add_to(map->groups)) {
                 pr_error("Failed to add domain group to map\n");
-                repo_domain_map_free(map);
-                return -1;
+                goto free_map;
             }
             group = get_last(map->groups);
             group->domain = repo->hash_domain;
@@ -3853,12 +3852,25 @@ int repo_domain_map_init(
         }
         if (dynamic_array_add_to(group->repos)) {
             pr_error("Failed to add repo to domain group\n");
-            repo_domain_map_free(map);
-            return -1;
+            goto free_map;
         }
         *(get_last(group->repos)) = repo;
     }
+    for (unsigned long i = 0; i < map->groups_count; ++i) {
+        struct repo_domain_group *group = map->groups + i;
+        if (dynamic_array_partial_free_to(group->repos)) {
+            pr_error("Failed to partially free group repos\n");
+            goto free_map;
+        }
+    }
+    if (dynamic_array_partial_free_to(map->groups)) {
+        pr_error("Failed to partially free map groups\n");
+        goto free_map;
+    }
     return 0;
+free_map:
+    repo_domain_map_free(map);
+    return -1;
 }
 
 static inline
