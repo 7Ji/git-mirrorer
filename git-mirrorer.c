@@ -3451,8 +3451,8 @@ int work_handle_open_all_repos(
 #else
     switch (work_handle->repos_count) {
     case 0:
-        pr_warn("No repos defined, early quit\n");
-        return 0;
+        pr_error("No repos defined\n");
+        return -1;
     case 1:
         return repo_work_open_one(
                     work_handle->repos,
@@ -3641,6 +3641,10 @@ int format_link_target(
 int work_handle_link_all_repos(
     struct work_handle const *const restrict work_handle
 ) {
+    if (!work_handle->repos_count) {
+        pr_error("No repos defined\n");
+        return -1;
+    }
     char target_stack[0x100];
     char *target_heap = NULL;
     size_t target_heap_allocated = 0;
@@ -3778,7 +3782,23 @@ int gmr_repo_update(
 free_remote:
     git_remote_free(remote);
     return r;
+}
 
+struct gmr_repo_update_thread_arg {
+    git_repository *restrict repo;
+    char const *restrict url;
+    git_fetch_options const *restrict fetch_opts_orig;
+    unsigned short proxy_after;
+    int r;
+    bool finished;
+};
+
+void *gmr_repo_update_thread(void *arg) {
+    struct gmr_repo_update_thread_arg *const restrict parg = arg;
+    parg->r = gmr_repo_update(
+        parg->repo, parg->url, parg->fetch_opts_orig, parg->proxy_after);
+    parg->finished = true;
+    return NULL;
 }
 
 static inline
@@ -3896,9 +3916,142 @@ void repo_domain_map_print(
     }
 }
 
+static inline
+int repo_domain_map_update(
+    struct repo_domain_map const *const restrict map,
+    unsigned short const max_connections,
+    struct gmr_repo_update_thread_arg *thread_arg_init,
+    char const *const restrict sbuffer
+) {
+    struct thread_helper {
+        bool used;
+        struct gmr_repo_update_thread_arg arg;
+    };
+    struct thread_helper *thread_helpers;
+    unsigned short *threads_count;
+    /* Basically a fixed-dynamic array */
+    size_t const chunk_size = sizeof *threads_count + 
+            max_connections * sizeof *thread_helpers;
+    void *const restrict chunks = malloc(chunk_size * map->groups_count);
+    if (!chunks) {
+        pr_error_with_errno("Failed to allocate memory for thread chunks");
+        return -1;
+    }
+    for (unsigned long i = 0; i < map->groups_count; ++i) {
+        void *const chunk = chunks + chunk_size * i;
+        threads_count = chunk;
+        *threads_count = 0;
+        thread_helpers = chunk + sizeof *threads_count;
+        for (unsigned long j = 0; j < max_connections; ++j) {
+            struct thread_helper *const restrict thread_helper = 
+                thread_helpers + j;
+            thread_helper->used = false;
+            thread_helper->arg = *thread_arg_init;
+        }
+    }
+    pthread_attr_t thread_attr;
+    int r;
+    if ((r = pthread_attr_init(&thread_attr))) {
+        pr_error("Failed to init pthread attr, pthread return %d\n", r);
+        r = -1;
+        goto free_chunks;
+    }
+    if ((r = pthread_attr_setdetachstate(
+            &thread_attr, PTHREAD_CREATE_DETACHED))) {
+        r = -1;
+        goto destroy_attr;
+    }
+    unsigned short active_threads = -1;
+    bool bad_ret = false;
+    while (active_threads >  0) {
+        active_threads = 0;
+        for (unsigned long i = 0; i < map->groups_count; ++i) {
+            void *const chunk = chunks + chunk_size * i;
+            threads_count = chunk;
+            thread_helpers = chunk + sizeof *threads_count;
+            if (*threads_count) {
+                for (unsigned short j = 0; j < max_connections; ++j) {
+                    struct thread_helper *thread_helper = thread_helpers + j;
+                    if (thread_helper->used && thread_helper->arg.finished);
+                    else continue;
+                    --*threads_count;
+                    if (thread_helper->arg.r) {
+                        pr_error("Repo updater for '%s' returned with %d\n",
+                            thread_helper->arg.url, thread_helper->arg.r);
+                        bad_ret = true;
+                    }
+                    thread_helper->used = false;
+                }
+            }
+            struct repo_domain_group* const restrict group = map->groups + i;
+            while (*threads_count < max_connections && group->repos_count) {
+                struct repo_work *repo = group->repos[--group->repos_count];
+                struct thread_helper *thread_helper = NULL;
+                for (unsigned short j = 0; i < max_connections; ++j) {
+                    if (!thread_helpers[j].used) {
+                        thread_helper = thread_helpers + j;
+                        break;
+                    }
+                }
+                if (!thread_helper) {
+                    pr_error("FATAL: failed to find free thread slot\n");
+                    r = -1;
+                    goto wait_threads;
+                }
+                thread_helper->arg.finished = false;
+                thread_helper->arg.repo = repo->git_repository;
+                thread_helper->arg.url = sbuffer + repo->url_offset;
+                thread_helper->used = true;
+                pthread_t thread;
+                if ((r = pthread_create(&thread, &thread_attr, 
+                    gmr_repo_update_thread, &thread_helper->arg))) {
+                    pr_error(
+                        "Failed to create thread, pthread return %d\n", r);
+                    r = -1;
+                    goto wait_threads;
+                }
+                ++*threads_count;
+            }
+            active_threads += *threads_count;
+        }
+    }
+    if (bad_ret) {
+        r = -1;
+    } else {
+        r = 0;
+    }
+wait_threads:
+destroy_attr:
+    pthread_attr_destroy(&thread_attr);
+free_chunks:
+    free(chunks);
+    return r;
+}
+
 int work_handle_update_all_repos(
     struct work_handle *const restrict work_handle
 ) {
+    if (!work_handle->repos_count) {
+        pr_error("No repos defined\n");
+        return -1;
+    }
+    struct repo_domain_map map;
+    if (repo_domain_map_init(&map, work_handle->repos, 
+                            work_handle->repos_count)) 
+    {
+        pr_error("Failed to map repos by domain");
+        return -1;
+    }
+    int r;
+    if (!map.groups_count) {
+        pr_error("Repos map is empty");
+        r = -1;
+        goto free_map;
+    }
+    repo_domain_map_print(&map, work_handle->string_buffer.buffer);
+    unsigned short const max_connections = 
+        work_handle->connections_per_server > 1 ? 
+            work_handle->connections_per_server: 1;
     char const *restrict proxy_url;
     if (work_handle->len_proxy_url) {
         proxy_url =
@@ -3909,28 +4062,21 @@ int work_handle_update_all_repos(
     git_fetch_options fetch_opts = gmr_fetch_options_init(
         work_handle->cb_sideband, work_handle->cb_fetch,
         proxy_url, work_handle->proxy_after);
-    struct repo_domain_map map;
-    if (repo_domain_map_init(&map, work_handle->repos, 
-                            work_handle->repos_count)) 
-    {
-        pr_error("Failed to map repos by domain");
-        return -1;
+    struct gmr_repo_update_thread_arg thread_arg_init = {
+        .fetch_opts_orig = &fetch_opts,
+        .finished = false,
+        .proxy_after = work_handle->proxy_after,
+        .r = 0,
+        .repo = NULL,
+        .url = NULL,
+    };
+    if (repo_domain_map_update(&map, max_connections, &thread_arg_init, work_handle->string_buffer.buffer)) {
+        r = -1;
+        goto free_map;
     }
-    repo_domain_map_print(&map, work_handle->string_buffer.buffer);
-    return 0;
-    /* Single threaded */
-    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-        struct repo_work *const restrict repo_work = work_handle->repos + i;
-        if (!repo_work->need_update) continue;
-        char const *const restrict url = 
-            work_handle->string_buffer.buffer + repo_work->url_offset;
-        if (gmr_repo_update(repo_work->git_repository, url, &fetch_opts, 
-            work_handle->proxy_after)) {
-            pr_error("Failed to update repo '%s'\n", url);
-            return -1;
-        }
-    }
-    return 0;
+free_map:
+    repo_domain_map_free(&map);
+    return r;
 }
 // int mkdir_allow_existing_at(
 //     int const dirfd,
@@ -8714,6 +8860,11 @@ int gmr_work(char const *const restrict config_path) {
     if (work_handle_init_from_config(&work_handle, &config, -1)) {
         r = -1;
         goto free_config;
+    }
+    if (!work_handle.repos_count) {
+        pr_error("No repos after parsing config to work handle\n");
+        r = -1;
+        goto free_work_handle;
     }
     pr_info("Initializing libgit2\n");
     if ((r = git_libgit2_init()) != 1) {
