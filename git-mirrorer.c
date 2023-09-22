@@ -3315,19 +3315,6 @@ free_repos:
 int work_handle_open_all_repos(
     struct work_handle const *const restrict work_handle
 ) {
-    switch (work_handle->repos_count) {
-    case 0:
-        pr_warn("No repos defined, early quit\n");
-        return 0;
-    case 1:
-        return repo_work_open_one(
-                    work_handle->repos,
-                    work_handle->string_buffer.buffer,
-                    work_handle->dir_repos.datafd,
-                    work_handle->cwd);
-    default:
-        break;
-    }
 #ifdef WORK_HANDLE_OPEN_ALL_REPOS_USE_SCATTER_VARAINT
     struct repo_work **repos_heap = NULL;
     struct repo_work *repos_stack[0x100 / sizeof *repos_heap];
@@ -3354,12 +3341,24 @@ int work_handle_open_all_repos(
     free_if_allocated(repos_heap);
     return r;
 #else
-    return repo_work_open_many_serial(
-        work_handle->repos,
-        work_handle->repos_count,
-        work_handle->string_buffer.buffer,
-        work_handle->dir_repos.datafd,
-        work_handle->cwd);
+    switch (work_handle->repos_count) {
+    case 0:
+        pr_warn("No repos defined, early quit\n");
+        return 0;
+    case 1:
+        return repo_work_open_one(
+                    work_handle->repos,
+                    work_handle->string_buffer.buffer,
+                    work_handle->dir_repos.datafd,
+                    work_handle->cwd);
+    default:
+        return repo_work_open_many_serial(
+            work_handle->repos,
+            work_handle->repos_count,
+            work_handle->string_buffer.buffer,
+            work_handle->dir_repos.datafd,
+            work_handle->cwd);
+    }
 #endif
 }
 
