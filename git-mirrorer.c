@@ -4014,6 +4014,11 @@ int repo_domain_map_update(
             }
             active_threads += *threads_count;
         }
+        if (active_threads >= max_connections) {
+            sleep(10);
+        } else {
+            sleep(1);
+        }
     }
     if (bad_ret) {
         r = -1;
