@@ -4077,10 +4077,13 @@ int work_handle_update_all_repos(
         .repo = NULL,
         .url = NULL,
     };
-    if (repo_domain_map_update(&map, max_connections, &thread_arg_init, work_handle->string_buffer.buffer)) {
+    if (repo_domain_map_update(&map, max_connections, &thread_arg_init, 
+            work_handle->string_buffer.buffer)) {
+        pr_error("Failed to update all repos with domain map\n");
         r = -1;
         goto free_map;
     }
+    r = 0;
 free_map:
     repo_domain_map_free(&map);
     return r;
