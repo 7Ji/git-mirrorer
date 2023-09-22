@@ -338,6 +338,15 @@ struct repo_work {
     bool from_config, wanted_dynamic, need_update, updated;
 };
 
+struct repo_domain_group {
+    hash_type domain;
+    DYNAMIC_ARRAY_DECLARE(struct repo_work *, repo);
+};
+
+struct repo_domain_map {
+    DYNAMIC_ARRAY_DECLARE(struct repo_domain_group, group);
+};
+
 /* Config */
 
 struct archive_pipe_arg {
@@ -3801,6 +3810,80 @@ git_fetch_options gmr_fetch_options_init(
     return fetch_opts;
 }
 
+void repo_domain_map_free(
+    struct repo_domain_map *const restrict map
+) {
+    if (map->groups) {
+        for (unsigned long i = 0; i < map->groups_count; ++i) {
+            struct repo_domain_group *group = map->groups + i;
+            free_if_allocated(group->repos);
+        }
+        free(map->groups);
+    }
+}
+
+int repo_domain_map_init(
+    struct repo_domain_map *const restrict map,
+    struct repo_work *const restrict repos,
+    unsigned long const repos_count
+) {
+    map->groups = NULL;
+    map->groups_allocated = 0;
+    map->groups_count = 0;
+    for (unsigned long i = 0; i < repos_count; ++i) {
+        struct repo_work *const repo = repos + i;
+        struct repo_domain_group *group = NULL;
+        for (unsigned long j = 0; j < map->groups_count; ++j) {
+            if (map->groups[j].domain == repo->hash_domain) {
+                group = map->groups + j;
+                break;
+            }
+        }
+        if (!group) {
+            if (dynamic_array_add_to(map->groups)) {
+                pr_error("Failed to add domain group to map\n");
+                repo_domain_map_free(map);
+                return -1;
+            }
+            group = get_last(map->groups);
+            group->domain = repo->hash_domain;
+            group->repos = NULL;
+            group->repos_allocated = 0;
+            group->repos_count = 0;
+        }
+        if (dynamic_array_add_to(group->repos)) {
+            pr_error("Failed to add repo to domain group\n");
+            repo_domain_map_free(map);
+            return -1;
+        }
+        *(get_last(group->repos)) = repo;
+    }
+    return 0;
+}
+
+static inline
+void repo_domain_group_print(
+    struct repo_domain_group const *const restrict group,
+    char const *const restrict sbuffer
+) {
+    printf("| Domain %016lx:\n", group->domain);
+    for (unsigned long j = 0; j < group->repos_count; ++j) {
+        printf("|  - Repo %s\n", sbuffer + group->repos[j]->url_offset);
+    }
+}
+
+
+static inline
+void repo_domain_map_print(
+    struct repo_domain_map const *const restrict map,
+    char const *const restrict sbuffer
+) {
+    pr_info("Domain-repo map:\n");
+    for (unsigned long i = 0; i < map->groups_count; ++i) {
+        repo_domain_group_print(map->groups + i, sbuffer);
+    }
+}
+
 int work_handle_update_all_repos(
     struct work_handle *const restrict work_handle
 ) {
@@ -3814,6 +3897,15 @@ int work_handle_update_all_repos(
     git_fetch_options fetch_opts = gmr_fetch_options_init(
         work_handle->cb_sideband, work_handle->cb_fetch,
         proxy_url, work_handle->proxy_after);
+    struct repo_domain_map map;
+    if (repo_domain_map_init(&map, work_handle->repos, 
+                            work_handle->repos_count)) 
+    {
+        pr_error("Failed to map repos by domain");
+        return -1;
+    }
+    repo_domain_map_print(&map, work_handle->string_buffer.buffer);
+    return 0;
     /* Single threaded */
     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
         struct repo_work *const restrict repo_work = work_handle->repos + i;
