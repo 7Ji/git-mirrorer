@@ -712,7 +712,7 @@ static git_strarray const gmr_refspecs = {
 
 struct gmr_payload {
     char const *const restrict url;
-    unsigned long tick;
+    time_t *last_transfer;
 };
 
 /* Functions */
@@ -3084,7 +3084,18 @@ int work_handle_cwd_open_or_dup(
     return 0;
 }
 
+static inline
+int gcb_sideband_progress_headless(
+    char const *string, int len, void *payload
+) {
+    (void)string;
+    (void)len;
+    *((struct gmr_payload *)payload)->last_transfer = time(NULL);
+	return 0;
+}
+
 int gcb_sideband_progress(char const *string, int len, void *payload) {
+    gcb_sideband_progress_headless(string, len, payload);
     pr_info("Repo '%s': Remote: %.*s",
         ((struct gmr_payload *)payload)->url, len, string);
 	return 0;
@@ -3145,8 +3156,8 @@ static inline
 int gcb_fetch_progress_headless(
     git_indexer_progress const *stats, void *payload
 ) {
-    (void *)stats;
-    ++((struct gmr_payload *)payload)->tick;
+    (void)stats;
+    *((struct gmr_payload *)payload)->last_transfer = time(NULL);
 	return 0;
 }
 
@@ -3184,7 +3195,7 @@ int work_handle_init_from_config(
         work_handle->cb_sideband = gcb_sideband_progress;
         work_handle->cb_fetch = gcb_fetch_progress;
     } else {
-        work_handle->cb_sideband = NULL;
+        work_handle->cb_sideband = gcb_sideband_progress_headless;
         work_handle->cb_fetch = gcb_fetch_progress_headless;
     }
     return 0;
@@ -3759,7 +3770,8 @@ int gmr_repo_update(
     git_repository *const restrict repo,
     char const *const restrict url,
     git_fetch_options const *const restrict fetch_opts_orig,
-    unsigned short const proxy_after
+    unsigned short const proxy_after,
+    time_t *last_transfer
 ) {
     pr_info("Updating repo '%s'\n", url);
     git_remote *remote;
@@ -3773,7 +3785,7 @@ int gmr_repo_update(
     git_fetch_options fetch_opts = *fetch_opts_orig;
     struct gmr_payload payload = {
         .url = url,
-        .tick = 0
+        .last_transfer = last_transfer,
     };
     fetch_opts.callbacks.payload = (void *)&payload;
     for (unsigned short try = 0; try < max_try; ++try) {
@@ -3810,12 +3822,14 @@ struct gmr_repo_update_thread_arg {
     unsigned short proxy_after;
     int r;
     bool finished;
+    time_t last_transfer;
 };
 
 void *gmr_repo_update_thread(void *arg) {
     struct gmr_repo_update_thread_arg *const restrict parg = arg;
     parg->r = gmr_repo_update(
-        parg->repo, parg->url, parg->fetch_opts_orig, parg->proxy_after);
+        parg->repo, parg->url, parg->fetch_opts_orig, 
+        parg->proxy_after, &parg->last_transfer);
     parg->finished = true;
     return NULL;
 }
@@ -3945,6 +3959,7 @@ int repo_domain_map_update(
 ) {
     struct thread_helper {
         bool used;
+        pthread_t thread;
         struct gmr_repo_update_thread_arg arg;
     };
     struct thread_helper *thread_helpers;
@@ -3981,12 +3996,12 @@ int repo_domain_map_update(
         r = -1;
         goto destroy_attr;
     }
-    unsigned short active_threads;
     bool bad_ret = false;
     void *chunks_actual = chunks;
     struct repo_domain_group* groups_actual = map->groups;
     for (;;) {
-        active_threads = 0;
+        time_t time_current = time(NULL);
+        unsigned short active_threads = 0;
         for (unsigned long i = 0; i < map->groups_count;) {
             void *const chunk = chunks_actual + chunk_size * i;
             threads_count = chunk;
@@ -3994,15 +4009,34 @@ int repo_domain_map_update(
             if (*threads_count) {
                 for (unsigned short j = 0; j < max_connections; ++j) {
                     struct thread_helper *thread_helper = thread_helpers + j;
-                    if (thread_helper->used && thread_helper->arg.finished);
-                    else continue;
-                    --*threads_count;
-                    if (thread_helper->arg.r) {
-                        pr_error("Repo updater for '%s' returned with %d\n",
-                            thread_helper->arg.url, thread_helper->arg.r);
-                        bad_ret = true;
+                    if (thread_helper->used) {
+                        if (thread_helper->arg.finished) {
+                            --*threads_count;
+                            if (thread_helper->arg.r) {
+                                pr_error(
+                                    "Repo updater for '%s' returned with %d\n",
+                                    thread_helper->arg.url, 
+                                    thread_helper->arg.r);
+                                bad_ret = true;
+                            }
+                            thread_helper->used = false;
+                        } else if (time_current - 
+                                    thread_helper->arg.last_transfer > 600) {
+                            pr_warn(
+                                "Repo updater for '%s' took too long without "
+                                "transfter, cancelling it\n", 
+                                thread_helper->arg.url);
+                            bad_ret = true;
+                            thread_helper->used = false;
+                            int pr = pthread_cancel(thread_helper->thread);
+                            if (pr) {
+                                pr_error("Failed to cancel thread, "
+                                    "pthread return %d\n", pr);
+                                r = -1;
+                                goto wait_threads;
+                            }
+                        }
                     }
-                    thread_helper->used = false;
                 }
             }
             struct repo_domain_group* const restrict group = groups_actual + i;
@@ -4023,6 +4057,7 @@ int repo_domain_map_update(
                 thread_helper->arg.finished = false;
                 thread_helper->arg.repo = repo->git_repository;
                 thread_helper->arg.url = sbuffer + repo->url_offset;
+                thread_helper->arg.last_transfer = time_current;
                 thread_helper->used = true;
                 pthread_t thread;
                 if ((r = pthread_create(&thread, &thread_attr, 
@@ -4033,6 +4068,7 @@ int repo_domain_map_update(
                     r = -1;
                     goto wait_threads;
                 }
+                thread_helper->thread = thread;
                 ++*threads_count;
             }
             active_threads += *threads_count;
@@ -4075,13 +4111,29 @@ wait_threads:
             if (thread_helper->used) {
                 pr_info("Waiting for updater for '%s'...\n", 
                         thread_helper->arg.url);
-                while (!thread_helper->arg.finished) {
+                time_t time_current = time(NULL);
+                while (!thread_helper->arg.finished && 
+                    time_current - thread_helper->arg.last_transfer < 600) 
+                {
+                    time_current = time(NULL);
                     usleep(100000);
                 }
-                if (thread_helper->arg.r) {
-                    pr_error("Updater for '%s' bad return %d...\n", 
-                        thread_helper->arg.url, thread_helper->arg.r);
-                    r = -1;
+                if (thread_helper->arg.finished) {
+                    if (thread_helper->arg.r) {
+                        pr_error("Updater for '%s' bad return %d...\n", 
+                            thread_helper->arg.url, thread_helper->arg.r);
+                        r = -1;
+                    }
+                } else {
+                    pr_warn(
+                        "Repo updater for '%s' took too long without "
+                        "transfter, cancelling it\n", thread_helper->arg.url);
+                    int pr = pthread_cancel(thread_helper->thread);
+                    if (pr) {
+                        pr_error("Failed to cancel thread, "
+                            "pthread return %d\n", pr);
+                        r = -1;
+                    }
                 }
             }
         }
@@ -4152,6 +4204,7 @@ int work_handle_update_all_repos(
         .r = 0,
         .repo = NULL,
         .url = NULL,
+        .last_transfer = 0,
     };
     if (repo_domain_map_update(&map, max_connections, &thread_arg_init, 
             work_handle->string_buffer.buffer)) {
