@@ -3705,27 +3705,30 @@ int gmr_remote_update(
     git_remote *const restrict remote,
     git_fetch_options const *const restrict fetch_opts
 ) {
+    char const *const url = git_remote_url(remote);
     int r;
     if ((r = git_remote_connect(remote, GIT_DIRECTION_FETCH,
         &fetch_opts->callbacks, &fetch_opts->proxy_opts, NULL))) {
-        pr_error_with_libgit_error("Failed to connect");
+        pr_error_with_libgit_error("Failed to connect to remote '%s'", url);
         return -1;
     }
     if ((r = git_remote_download(remote, &gmr_refspecs, fetch_opts))) {
-        pr_error_with_libgit_error("Failed to download from remote");
+        pr_error_with_libgit_error("Failed to download from remote '%s'", url);
     }
     int r2;
     if ((r2 = git_remote_disconnect(remote))) {
-        pr_error_with_libgit_error("Failed to disconnect from remote");
+        pr_error_with_libgit_error(
+            "Failed to disconnect from remote '%s'", url);
     }
     if (r || r2) return -1;
     if ((r = git_remote_update_tips(remote, &fetch_opts->callbacks, 0,
                         GIT_REMOTE_DOWNLOAD_TAGS_AUTO, NULL))) {
-        pr_error_with_libgit_error("Failed to update tips");
+        pr_error_with_libgit_error(
+            "Failed to update tips from remote '%s'", url);
         return -1;
     }
     if ((r = git_remote_prune(remote, &fetch_opts->callbacks))) {
-        pr_error("Failed to prune remote");
+        pr_error("Failed to prune remote '%s'", url);
         return -1;
     }
     return 0;
