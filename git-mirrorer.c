@@ -3916,9 +3916,10 @@ void repo_domain_map_print(
     }
 }
 
+/* Warning: passed-in map would be exhausted, but still need to be freed */
 static inline
 int repo_domain_map_update(
-    struct repo_domain_map const *const restrict map,
+    struct repo_domain_map *const restrict map,
     unsigned short const max_connections,
     struct gmr_repo_update_thread_arg *thread_arg_init,
     char const *const restrict sbuffer
@@ -3963,10 +3964,12 @@ int repo_domain_map_update(
     }
     unsigned short active_threads;
     bool bad_ret = false;
+    void *chunks_actual = chunks;
+    struct repo_domain_group* groups_actual = map->groups;
     for (;;) {
         active_threads = 0;
-        for (unsigned long i = 0; i < map->groups_count; ++i) {
-            void *const chunk = chunks + chunk_size * i;
+        for (unsigned long i = 0; i < map->groups_count;) {
+            void *const chunk = chunks_actual + chunk_size * i;
             threads_count = chunk;
             thread_helpers = chunk + sizeof *threads_count;
             if (*threads_count) {
@@ -3983,7 +3986,7 @@ int repo_domain_map_update(
                     thread_helper->used = false;
                 }
             }
-            struct repo_domain_group* const restrict group = map->groups + i;
+            struct repo_domain_group* const restrict group = groups_actual + i;
             while (*threads_count < max_connections && group->repos_count) {
                 struct repo_work *repo = group->repos[--group->repos_count];
                 struct thread_helper *thread_helper = NULL;
@@ -4014,6 +4017,19 @@ int repo_domain_map_update(
                 ++*threads_count;
             }
             active_threads += *threads_count;
+            if (*threads_count + group->repos_count) {
+                // Group not exhausted
+                ++i;
+            } else if (i == 0) { 
+                // Group exhausted at head
+                chunks_actual += chunk_size;
+                groups_actual += 1;
+                --map->groups_count;
+            } else if (i == map->groups_count - 1) {
+                // Group exhausted at end
+                --map->groups_count;
+                ++i;
+            }
         }
         if (active_threads == 0) {
             break;
