@@ -710,6 +710,11 @@ static git_strarray const gmr_refspecs = {
     .strings = (char **)gmr_refspecs_strings
 };
 
+struct gmr_payload {
+    char const *const restrict url;
+    unsigned long tick;
+};
+
 /* Functions */
 
 // Dumb help message
@@ -3081,7 +3086,7 @@ int work_handle_cwd_open_or_dup(
 
 int gcb_sideband_progress(char const *string, int len, void *payload) {
     pr_info("Repo '%s': Remote: %.*s",
-        (char const *)payload, len, string);
+        ((struct gmr_payload *)payload)->url, len, string);
 	return 0;
 }
 
@@ -3118,8 +3123,8 @@ static inline void gcb_print_progress(
         char suffix;
         unsigned int size_human_readable = size_to_human_readable_uint(
             stats->received_bytes, &suffix);
-		pr_info(
-            "Repo '%s': Receiving objects %u%% (%u%c, %u); "
+		pr_info("Repo '%s': "
+            "Receiving objects %u%% (%u%c, %u); "
             "Indexing objects %u%% (%u); "
             "Total objects %u.\r",
             repo,
@@ -3136,8 +3141,18 @@ static inline void gcb_print_progress(
 	}
 }
 
+static inline
+int gcb_fetch_progress_headless(
+    git_indexer_progress const *stats, void *payload
+) {
+    (void *)stats;
+    ++((struct gmr_payload *)payload)->tick;
+	return 0;
+}
+
 int gcb_fetch_progress(git_indexer_progress const *stats, void *payload) {
-	gcb_print_progress(stats, (char const *)payload);
+    gcb_fetch_progress_headless(stats, payload);
+	gcb_print_progress(stats, ((struct gmr_payload *)payload)->url);
 	return 0;
 }
 
@@ -3170,7 +3185,7 @@ int work_handle_init_from_config(
         work_handle->cb_fetch = gcb_fetch_progress;
     } else {
         work_handle->cb_sideband = NULL;
-        work_handle->cb_fetch = NULL;
+        work_handle->cb_fetch = gcb_fetch_progress_headless;
     }
     return 0;
 free_repos:
@@ -3756,7 +3771,11 @@ int gmr_repo_update(
     }
     unsigned short max_try = proxy_after + 3;
     git_fetch_options fetch_opts = *fetch_opts_orig;
-    fetch_opts.callbacks.payload = (void *)url;
+    struct gmr_payload payload = {
+        .url = url,
+        .tick = 0
+    };
+    fetch_opts.callbacks.payload = (void *)&payload;
     for (unsigned short try = 0; try < max_try; ++try) {
         if (try == proxy_after) {
             if (try)
