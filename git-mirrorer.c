@@ -4007,6 +4007,7 @@ int repo_domain_map_update(
                     gmr_repo_update_thread, &thread_helper->arg))) {
                     pr_error(
                         "Failed to create thread, pthread return %d\n", r);
+                    thread_helper->used = false;
                     r = -1;
                     goto wait_threads;
                 }
@@ -4057,6 +4058,19 @@ free_chunks:
     return r;
 }
 
+static inline
+unsigned short repo_domain_map_get_max_repos(
+    struct repo_domain_map const *const restrict map
+) {
+    unsigned short max_domain_repos = 0;
+    for (unsigned long i = 0; i < map->groups_count; ++i) {
+        if (map->groups[i].repos_count > max_domain_repos) {
+            max_domain_repos = map->groups[i].repos_count;
+        }
+    }
+    return max_domain_repos;
+}
+
 int work_handle_update_all_repos(
     struct work_handle *const restrict work_handle
 ) {
@@ -4081,12 +4095,7 @@ int work_handle_update_all_repos(
     unsigned short max_connections = 
         work_handle->connections_per_server > 1 ? 
             work_handle->connections_per_server: 1;
-    unsigned short max_domain_repos = 0;
-    for (unsigned long i = 0; i < map.groups_count; ++i) {
-        if (map.groups[i].repos_count > max_domain_repos) {
-            max_domain_repos = map.groups[i].repos_count;
-        }
-    }
+    unsigned short const max_domain_repos = repo_domain_map_get_max_repos(&map);
     if (max_connections > max_domain_repos) {
         max_connections = max_domain_repos;
     }
