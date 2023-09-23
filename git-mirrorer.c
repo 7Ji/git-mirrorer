@@ -4084,6 +4084,9 @@ int repo_domain_map_update(
                 // Group exhausted at end
                 --map->groups_count;
                 ++i;
+            } else {
+                // Group exhuasted in the middle
+                ++i;
             }
         }
         if (active_threads == 0) {
