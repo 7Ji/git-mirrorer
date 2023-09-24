@@ -3700,6 +3700,36 @@ free_target_heap:
     return r;
 }
 
+// check if non-dynamic wanted objects are OK
+static inline
+void work_handle_need_update_all_repos(
+    struct work_handle *const restrict work_handle
+) {
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        struct repo_work *const restrict repo = work_handle->repos + i;
+        if (repo->need_update) continue;
+        for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
+            struct wanted_object const *const restrict wanted_object
+                = repo->wanted_objects + j;
+            if (wanted_object->type != WANTED_TYPE_COMMIT) continue;
+            struct wanted_commit const *const wanted_commit
+                = (struct wanted_commit *)wanted_object;
+            git_commit *commit;
+            int r = git_commit_lookup(&commit, 
+                repo->git_repository, &wanted_commit->oid);
+            if (r) {
+                pr_error_with_libgit_error(
+                    "Failed to lookup commit '%s' from repo '%s', need update",
+                    wanted_commit->hex_string, 
+                    work_handle_get_string(repo->url));
+                repo->need_update = true;
+            } else {
+                git_commit_free(commit);
+            }
+        }
+    }
+}
+
 static inline 
 int gmr_remote_update(
     git_remote *const restrict remote,
@@ -4171,6 +4201,7 @@ int work_handle_update_all_repos(
         pr_error("No repos defined\n");
         return -1;
     }
+    work_handle_need_update_all_repos(work_handle);
     struct repo_domain_map map;
     if (repo_domain_map_init(&map, work_handle->repos, 
                             work_handle->repos_count)) 
