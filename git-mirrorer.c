@@ -4044,7 +4044,6 @@ int repo_domain_map_update(
                     struct thread_helper *thread_helper = thread_helpers + j;
                     if (thread_helper->used) {
                         if (thread_helper->arg.finished) {
-                            --*threads_count;
                             if (thread_helper->arg.r) {
                                 pr_error(
                                     "Repo updater for '%s' returned with %d\n",
@@ -4052,6 +4051,7 @@ int repo_domain_map_update(
                                     thread_helper->arg.r);
                                 bad_ret = true;
                             }
+                            --*threads_count;
                             thread_helper->used = false;
                         } else if (time_current - 
                                     thread_helper->arg.last_transfer > 600) {
@@ -4060,6 +4060,7 @@ int repo_domain_map_update(
                                 "transfter, cancelling it\n", 
                                 thread_helper->arg.url);
                             bad_ret = true;
+                            --*threads_count;
                             thread_helper->used = false;
                             int pr = pthread_cancel(thread_helper->thread);
                             if (pr) {
