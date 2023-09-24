@@ -3918,6 +3918,7 @@ int repo_domain_map_init(
     map->groups_count = 0;
     for (unsigned long i = 0; i < repos_count; ++i) {
         struct repo_work *const repo = repos + i;
+        if (!repo->need_update) continue;
         struct repo_domain_group *group = NULL;
         for (unsigned long j = 0; j < map->groups_count; ++j) {
             if (map->groups[j].domain == repo->hash_domain) {
