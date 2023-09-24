@@ -712,6 +712,7 @@ static git_strarray const gmr_refspecs = {
 
 struct gmr_payload {
     char const *const restrict url;
+    time_t first_transfer;
     time_t *last_transfer;
 };
 
@@ -3119,30 +3120,40 @@ declare_func_size_to_human_readable_type(unsigned int, uint)
 
 static inline void gcb_print_progress(
     git_indexer_progress const *const restrict stats,
-    char const *const restrict repo
+    struct gmr_payload const *const restrict payload
 ) {
 	if (stats->total_objects &&
 		stats->received_objects == stats->total_objects) {
 		pr_info("Repo '%s': Resolving deltas %u%% (%u/%u)\r",
-                repo,
+                payload->url,
                 stats->total_deltas > 0 ?
                     100 * stats->indexed_deltas / stats->total_deltas :
                     0,
                 stats->indexed_deltas,
                 stats->total_deltas);
 	} else {
-        char suffix;
-        unsigned int size_human_readable = size_to_human_readable_uint(
-            stats->received_bytes, &suffix);
+        char suffix_total, suffix_speed;
+        unsigned int size_total_human_readable = size_to_human_readable_uint(
+            stats->received_bytes, &suffix_total);
+        unsigned int speed_human_readable;
+        time_t time_elasped = time(NULL) - payload->first_transfer;
+        if (time_elasped > 0) {
+            speed_human_readable = size_to_human_readable_uint(
+                stats->received_bytes / time_elasped, &suffix_speed);
+        } else {
+            speed_human_readable = 0;
+            suffix_speed = 'B';
+        }
 		pr_info("Repo '%s': "
-            "Receiving objects %u%% (%u%c, %u); "
+            "Receiving objects %u%% (%u%c, %u%c/s %u); "
             "Indexing objects %u%% (%u); "
             "Total objects %u.\r",
-            repo,
+            payload->url,
             stats->total_objects > 0 ?
                 100 * stats->received_objects / stats->total_objects :
                 0,
-            size_human_readable, suffix,
+            size_total_human_readable, suffix_total,
+            speed_human_readable, suffix_speed,
             stats->received_objects,
             stats->total_objects > 0 ?
                 100 * stats->indexed_objects/ stats->total_objects :
@@ -3163,7 +3174,7 @@ int gcb_fetch_progress_headless(
 
 int gcb_fetch_progress(git_indexer_progress const *stats, void *payload) {
     gcb_fetch_progress_headless(stats, payload);
-	gcb_print_progress(stats, ((struct gmr_payload *)payload)->url);
+	gcb_print_progress(stats, (struct gmr_payload *)payload);
 	return 0;
 }
 
@@ -3736,27 +3747,34 @@ int gmr_remote_update(
     git_fetch_options const *const restrict fetch_opts
 ) {
     char const *const url = git_remote_url(remote);
+    struct gmr_payload *payload = fetch_opts->callbacks.payload;
     int r;
+    *payload->last_transfer = time(NULL);
     if ((r = git_remote_connect(remote, GIT_DIRECTION_FETCH,
         &fetch_opts->callbacks, &fetch_opts->proxy_opts, NULL))) {
         pr_error_with_libgit_error("Failed to connect to remote '%s'", url);
         return -1;
     }
+    payload->first_transfer = time(NULL);
+    *payload->last_transfer = time(NULL);
     if ((r = git_remote_download(remote, &gmr_refspecs, fetch_opts))) {
         pr_error_with_libgit_error("Failed to download from remote '%s'", url);
     }
     int r2;
+    *payload->last_transfer = time(NULL);
     if ((r2 = git_remote_disconnect(remote))) {
         pr_error_with_libgit_error(
             "Failed to disconnect from remote '%s'", url);
     }
     if (r || r2) return -1;
+    *payload->last_transfer = time(NULL);
     if ((r = git_remote_update_tips(remote, &fetch_opts->callbacks, 0,
                         GIT_REMOTE_DOWNLOAD_TAGS_AUTO, NULL))) {
         pr_error_with_libgit_error(
             "Failed to update tips from remote '%s'", url);
         return -1;
     }
+    *payload->last_transfer = time(NULL);
     if ((r = git_remote_prune(remote, &fetch_opts->callbacks))) {
         pr_error("Failed to prune remote '%s'", url);
         return -1;
