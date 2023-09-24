@@ -4136,6 +4136,7 @@ int repo_domain_map_update(
         r = 0;
     }
 wait_threads:
+    pr_info("Waiting for remaining updaters...\n");
     for (unsigned long i = 0; i < map->groups_count; ++i) {
         void *const chunk = chunks + chunk_size * i;
         threads_count = chunk;
