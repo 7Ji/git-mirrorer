@@ -3117,6 +3117,7 @@ TYPE size_to_human_readable_##SUFFIX(TYPE size, char *const suffix) { \
 
 declare_func_size_to_human_readable_type(size_t, size_t)
 declare_func_size_to_human_readable_type(unsigned int, uint)
+declare_func_size_to_human_readable_type(double, double)
 
 static inline void gcb_print_progress(
     git_indexer_progress const *const restrict stats,
@@ -3135,17 +3136,17 @@ static inline void gcb_print_progress(
         char suffix_total, suffix_speed;
         unsigned int size_total_human_readable = size_to_human_readable_uint(
             stats->received_bytes, &suffix_total);
-        unsigned int speed_human_readable;
+        double speed_human_readable;
         time_t time_elasped = time(NULL) - payload->first_transfer;
         if (time_elasped > 0) {
-            speed_human_readable = size_to_human_readable_uint(
+            speed_human_readable = size_to_human_readable_double(
                 stats->received_bytes / time_elasped, &suffix_speed);
         } else {
             speed_human_readable = 0;
             suffix_speed = 'B';
         }
 		pr_info("Repo '%s': "
-            "Receiving objects %u%% (%u%c, %u%c/s %u); "
+            "Receiving objects %u%% (%u%c, %.2lf%c/s %u); "
             "Indexing objects %u%% (%u); "
             "Total objects %u.\r",
             payload->url,
