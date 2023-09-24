@@ -4033,6 +4033,7 @@ int repo_domain_map_update(
     bool bad_ret = false;
     void *chunks_actual = chunks;
     struct repo_domain_group* groups_actual = map->groups;
+    unsigned short active_threads_last = 0;
     for (;;) {
         time_t time_current = time(NULL);
         unsigned short active_threads = 0;
@@ -4124,6 +4125,10 @@ int repo_domain_map_update(
                 ++i;
             }
         }
+        if (active_threads != active_threads_last) {
+            active_threads_last = active_threads;
+            pr_info("%hu updaters running...\n", active_threads);
+        }
         if (active_threads == 0) {
             break;
         } else if (active_threads <= max_connections) {
@@ -4138,7 +4143,9 @@ int repo_domain_map_update(
         r = 0;
     }
 wait_threads:
-    pr_info("Waiting for remaining updaters...\n");
+    if (active_threads_last) {
+        pr_info("Waiting for %hu remaining updaters...\n", active_threads_last);
+    }
     for (unsigned long i = 0; i < map->groups_count; ++i) {
         void *const chunk = chunks + chunk_size * i;
         threads_count = chunk;
