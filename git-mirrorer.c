@@ -4282,53 +4282,6 @@ free_map:
     repo_domain_map_free(&map);
     return r;
 }
-// int mkdir_allow_existing_at(
-//     int const dirfd,
-//     char *const restrict path
-// ) {
-//     if (mkdirat(dirfd, path, 0755)) {
-//         if (errno == EEXIST) {
-//             struct stat stat_buffer;
-//             if (fstatat(dirfd, path, &stat_buffer, AT_SYMLINK_NOFOLLOW)) {
-//                 pr_error_with_errno("Failed to stat '%s'", path);
-//                 return -1;
-//             }
-//             if ((stat_buffer.st_mode & S_IFMT) == S_IFDIR) {
-//                 return 0;
-//             } else {
-//                 pr_error("Exisitng '%s' is not a folder\n", path);
-//                 return -1;
-//             }
-//         } else {
-//             pr_error_with_errno("Failed to mkdir '%s'", path);
-//             return -1;
-//         }
-//     }
-//     return 0;
-// }
-
-// int mkdir_recursively_at(
-//     int const dirfd,
-//     char *const restrict path
-// ) {
-//     for (char *c = path; ; ++c) {
-//         switch (*c) {
-//         case '\0':
-//             return mkdir_allow_existing_at(dirfd, path);
-//         case '/':
-//             *c = '\0';
-//             int r = mkdir_allow_existing_at(dirfd, path);
-//             *c = '/';
-//             if (r) {
-//                 pr_error("Failed to mkdir recursively '%s'\n", path);
-//                 return -1;
-//             }
-//             break;
-//         default:
-//             break;
-//         }
-//     }
-// }
 
 // int remove_dir_recursively(
 //     DIR * const restrict dir_p
@@ -4817,155 +4770,6 @@ free_map:
 //     return NULL;
 // }
 
-
-
-
-
-// int guarantee_symlink (
-//     char const *const restrict symlink_path,
-//     unsigned short const len_symlink_path,
-//     char const *const restrict symlink_target
-// ) {
-//     if (len_symlink_path >= PATH_MAX) {
-//         pr_error("Symlink path too long\n");
-//         return -1;
-//     }
-//     char path[PATH_MAX];
-//     ssize_t len = readlink(symlink_path, path, PATH_MAX);
-//     if (len < 0) {
-//         switch (errno) {
-//         case ENOENT:
-//             break;
-//         default:
-//             pr_error_with_errno("Failed to read link at '%s'", symlink_path);
-//             return -1;
-//         }
-//     } else {
-//         path[len] = '\0';
-//         if (strcmp(path, symlink_target)) {
-//             pr_warn("Symlink at '%s' points to '%s' instead of '%s', "
-//             "if you see this message for too many times, you've probably set "
-//             "too many repos with same path but different schemes.\n",
-//             symlink_path, path, symlink_target);
-//             if (unlink(symlink_path) < 0) {
-//                 pr_error_with_errno("Faild to unlink '%s'", symlink_path);
-//                 return -1;
-//             }
-//         } else {
-//             pr_debug("Symlink '%s' -> '%s' already existing\n",
-//                 symlink_path, symlink_target);
-//             return 0;
-//         }
-//     }
-//     if (symlink(symlink_target, symlink_path) < 0) {
-//         switch (errno) {
-//         case ENOENT:
-//             break;
-//         default:
-//             pr_error_with_errno(
-//                 "Failed to create symlink '%s' -> '%s'",
-//                 symlink_path, symlink_target);
-//             return -1;
-//         }
-//     } else {
-//         pr_debug("Created symlink '%s' -> '%s'\n",
-//             symlink_path, symlink_target);
-//         return 0;
-//     }
-//     char symlink_path_dup[PATH_MAX];
-//     memcpy(symlink_path_dup, symlink_path, len_symlink_path);
-//     symlink_path_dup[len_symlink_path] = '\0';
-//     unsigned short last_sep = 0;
-//     for (unsigned short i = len_symlink_path; i > 0; --i) {
-//         char *c = symlink_path_dup + i;
-//         if (*c == '/') {
-//             if (!last_sep) {
-//                 last_sep = i;
-//             }
-//             *c = '\0';
-//             if (mkdir(symlink_path_dup, 0755)) {
-//                 if (errno != ENOENT) {
-//                     pr_error_with_errno(
-//                         "Failed to create folder '%s' as parent of symlink "
-//                         "'%s' -> '%s'",
-//                         symlink_path_dup, symlink_path, symlink_target);
-//                     return -1;
-//                 }
-//             } else {
-//                 for (unsigned short j = i; j < last_sep; ++j) {
-//                     c = symlink_path_dup + j;
-//                     if (*c == '\0') {
-//                         *c = '/';
-//                         if (mkdir(symlink_path_dup, 0755)) {
-//                             pr_error_with_errno(
-//                                 "Failed to create folder '%s' as parent of "
-//                                 "symlink '%s' -> '%s'",
-//                                 symlink_path_dup, symlink_path, symlink_target);
-//                             return -1;
-//                         }
-//                     }
-//                 }
-//                 break;
-//             }
-//         }
-//     }
-//     if (symlink(symlink_target, symlink_path) < 0) {
-//         pr_error_with_errno(
-//             "Failed to create symlink '%s' -> '%s'",
-//             symlink_path, symlink_target);
-//         return -1;
-//     }
-//     pr_debug("Created symlink '%s' -> '%s'\n",
-//         symlink_path, symlink_target);
-//     return 0;
-// }
-
-// int repo_guarantee_symlink(
-//     struct repo *const restrict repo,
-//     int const links_dirfd
-// ) {
-//     if (repo->url_no_scheme_sanitized_parts * 3 + HASH_STRING_LEN + 1
-//              >= PATH_MAX) {
-//         pr_error("Link target would be too long");
-//         return -1;
-//     }
-//     char symlink_target[PATH_MAX] = "";
-//     char *symlink_target_current = symlink_target;
-//     for (unsigned short i = 0; i < repo->url_no_scheme_sanitized_parts; ++i) {
-//         symlink_target_current = stpcpy(symlink_target_current, "../");
-//     }
-//     symlink_target_current = stpcpy(symlink_target_current, repo->hash_name);
-//     if (guarantee_symlink_at(links_dirfd, repo->url_no_scheme_sanitized,
-//         repo->len_url_no_scheme_sanitized, symlink_target)) {
-//         pr_error("Failed to guarantee a symlink at '%s' pointing to '%s'\n",
-//             repo->url_no_scheme_sanitized, symlink_target);
-//         return -1;
-//     }
-//     return 0;
-// }
-
-// int repo_finish_bare(
-//     struct repo *const restrict repo,
-//     char const *const restrict dir_repos,
-//     unsigned short len_dir_repos
-// ) {
-//     if (repo == NULL || dir_repos == NULL || len_dir_repos == 0 ||
-//         repo->wanted_objects_count > 0) {
-//         pr_error("Internal: invalid arguments\n");
-//         return -1;
-//     }
-//     repo->len_dir_path = len_dir_repos + HASH_STRING_LEN + 1;
-//     if (snprintf(repo->dir_path, repo->len_dir_path + 1, "%s/"HASH_FORMAT,
-//         dir_repos, repo->url_hash) < 0) {
-//         pr_error_with_errno(
-//             "Failed to format dir path of repo '%s'\n",
-//             repo->url);
-//         return -1;
-//     }
-//     pr_debug("Repo '%s' will be stored at '%s'\n", repo->url, repo->dir_path);
-//     return 0;
-// }
-
 // int work_directory_add_keep(
 //     struct work_directory *const restrict work_directory,
 //     char const *const restrict keep,
@@ -4984,17 +4788,6 @@ free_map:
 //     keep_last[len_keep] = '\0';
 //     return 0;
 // }
-
-// // static inline
-// // void work_directories_free(
-// //     struct work_directory *const restrict workdir_repos,
-// //     struct work_directory *const restrict workdir_archives,
-// //     struct work_directory *const restrict workdir_checkouts
-// // ) {
-// //     work_directory_free(workdir_repos);
-// //     work_directory_free(workdir_archives);
-// //     work_directory_free(workdir_checkouts);
-// // }
 
 // static inline
 // void keep_list_swap_item(
@@ -5310,47 +5103,6 @@ free_map:
 //     return r;
 // }
 
-// void *repo_update_thread(void *arg) {
-//     struct repo_update_thread_arg *private_arg =
-//         (struct repo_update_thread_arg *)arg;
-//     pr_debug("Thread called for repo '%s'\n", private_arg->repo->url);
-//     return (void *)(long)repo_update(private_arg->repo,
-//         &private_arg->fetch_options, private_arg->proxy_after);
-// }
-
-// // Will also create symlink
-// int repo_prepare_open_or_create_if_needed(
-//     struct repo *const restrict repo,
-//     int const links_dirfd,
-//     git_fetch_options *const restrict fetch_options,
-//     unsigned short const proxy_after,
-//     bool const delay_update
-// ) {
-//     if (repo->repository != NULL) return 0;
-//     if (repo_guarantee_symlink(repo, links_dirfd)) {
-//         pr_error("Failed to create symlink\n");
-//         return -1;
-//     }
-//     switch (repo_open_or_init_bare(repo)) {
-//     case -1:
-//         pr_error("Failed to open or init bare repo for '%s'\n", repo->url);
-//         return -1;
-//     case 0:
-//         break;
-//     case 1:
-//         pr_warn(
-//             "Repo '%s' just created locally, need to update\n", repo->url);
-//         if (delay_update) repo->wanted_dynamic = true;
-//         else if (repo_update(repo, fetch_options, proxy_after)) {
-//             pr_error(
-//                 "Failed to update freshly created repo '%s'\n", repo->url);
-//             return -1;
-//         }
-//         break;
-//     }
-//     return 0;
-// }
-
 // void parsed_commit_free(
 //     struct parsed_commit *const restrict parsed_commit
 // ) {
@@ -5361,24 +5113,6 @@ free_map:
 //         git_commit_free(parsed_commit->commit);
 //     }
 //     *parsed_commit = PARSED_COMMIT_INIT;
-// }
-
-// void repo_free(
-//     struct repo *const restrict repo
-// ) {
-//     if (repo->parsed_commits) {
-//         for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
-//             parsed_commit_free(repo->parsed_commits + i);
-//         }
-//         free (repo->parsed_commits);
-//     }
-//     if (repo->wanted_objects) {
-//         free (repo->wanted_objects);
-//     }
-//     if (repo->repository) {
-//         git_repository_free(repo->repository);
-//     }
-//     *repo = REPO_INIT;
 // }
 
 // int parsed_commit_add_submodule_and_init_with_path_and_url(
