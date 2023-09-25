@@ -8793,7 +8793,6 @@ int gmr_set_timeout(int const timeout) {
 
 static inline
 int gmr_work(char const *const restrict config_path) {
-    printf("\e[?25l"); // Hide cursor
     int r = setvbuf(stdout, NULL, _IOLBF, 0);
     if (r) {
         pr_error_with_errno(
@@ -8850,7 +8849,6 @@ free_work_handle:
     work_handle_free(&work_handle);
 free_config:
     config_free(&config);
-    printf("\e[?25h"); // Re-enable cursor
     return r;
 }
 
