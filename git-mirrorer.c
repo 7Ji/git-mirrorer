@@ -4103,7 +4103,6 @@ int repo_domain_map_update(
                             r = -1;
                             goto wait_threads;
                         }
-                        bad_ret = true;
                     }
                 }
             }
