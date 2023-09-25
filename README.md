@@ -1,6 +1,7 @@
+**WARNING: MAJOR REWORK WIP, DEAMON AND EXPORTING ARE NOT IMPLEMENTED IN THE CURRENT TREE, USE TAG v0.1 (COMMIT 3c0b3e1d7bedf8c7876b981b0fc6d26d751c327a) IF YOU WANT TO USE THAT**
+
 # git-mirrorer
 To **mirror**, **archive** and **checkout** git repos **even across submodules**.
-
 
 # Usage
 ## Basic
