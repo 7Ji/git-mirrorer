@@ -4027,14 +4027,11 @@ int repo_domain_map_update(
     }
     for (unsigned long i = 0; i < map->groups_count; ++i) {
         void *const chunk = chunks + chunk_size * i;
-        threads_count = chunk;
-        *threads_count = 0;
+        *(unsigned short *)chunk = 0;
         thread_helpers = chunk + sizeof *threads_count;
         for (unsigned long j = 0; j < max_connections; ++j) {
-            struct thread_helper *const restrict thread_helper = 
-                thread_helpers + j;
-            thread_helper->used = false;
-            thread_helper->arg = *thread_arg_init;
+            thread_helpers[j].used = false;
+            thread_helpers[j].arg = *thread_arg_init;
         }
     }
     int r;
@@ -4049,7 +4046,7 @@ int repo_domain_map_update(
             void *const chunk = chunks_actual + chunk_size * i;
             threads_count = chunk;
             thread_helpers = chunk + sizeof *threads_count;
-            if (*threads_count) {
+            if (*threads_count) { // Check finished threads
                 for (unsigned short j = 0; j < max_connections; ++j) {
                     struct thread_helper *thread_helper = thread_helpers + j;
                     if (!thread_helper->used) continue;
@@ -4177,47 +4174,45 @@ wait_threads:
     }
     for (unsigned long i = 0; i < map->groups_count; ++i) {
         void *const chunk = chunks + chunk_size * i;
-        threads_count = chunk;
-        if (!*threads_count) continue;
+        if (!*(unsigned short *)chunk) continue;
         thread_helpers = chunk + sizeof *threads_count;
         for (unsigned long j = 0; j < max_connections; ++j) {
             struct thread_helper *const restrict thread_helper
                 = thread_helpers + j;
-            if (thread_helper->used) {
-                pr_info("Waiting for updater for '%s'...\n", 
-                        thread_helper->arg.url);
-                time_t time_current = time(NULL);
-                while (!thread_helper->arg.finished && 
-                    time_current - thread_helper->arg.last_transfer < 600) 
-                {
-                    time_current = time(NULL);
-                    usleep(100000);
-                }
-                if (thread_helper->arg.finished) {
-                    if (thread_helper->arg.r) {
-                        pr_error("Updater for '%s' bad return %d...\n", 
-                            thread_helper->arg.url, thread_helper->arg.r);
-                        r = -1;
-                    }
-                } else {
-                    pr_warn(
-                        "Repo updater for '%s' took too long without "
-                        "transfter, cancelling it\n", thread_helper->arg.url);
-                    int pr = pthread_cancel(thread_helper->thread);
-                    if (pr) {
-                        pr_error("Failed to cancel thread, "
-                            "pthread return %d\n", pr);
-                        r = -1;
-                    }
-                }
-                int pr = pthread_join(thread_helper->thread, NULL);
-                if (pr) {
-                    pr_error(
-                        "Failed to join supposed finished thread %ld, "
-                        "pthread return %d\n", 
-                        thread_helper->thread, r);
+            if (!thread_helper->used) continue;
+            pr_info("Waiting for updater for '%s'...\n", 
+                    thread_helper->arg.url);
+            time_t time_current = time(NULL);
+            while (!thread_helper->arg.finished && 
+                time_current - thread_helper->arg.last_transfer < 600) 
+            {
+                time_current = time(NULL);
+                usleep(100000);
+            }
+            if (thread_helper->arg.finished) {
+                if (thread_helper->arg.r) {
+                    pr_error("Updater for '%s' bad return %d...\n", 
+                        thread_helper->arg.url, thread_helper->arg.r);
                     r = -1;
                 }
+            } else {
+                pr_warn(
+                    "Repo updater for '%s' took too long without "
+                    "transfter, cancelling it\n", thread_helper->arg.url);
+                int pr = pthread_cancel(thread_helper->thread);
+                if (pr) {
+                    pr_error("Failed to cancel thread, "
+                        "pthread return %d\n", pr);
+                    r = -1;
+                }
+            }
+            int pr = pthread_join(thread_helper->thread, NULL);
+            if (pr) {
+                pr_error(
+                    "Failed to join supposed finished thread %ld, "
+                    "pthread return %d\n", 
+                    thread_helper->thread, r);
+                r = -1;
             }
         }
     }
