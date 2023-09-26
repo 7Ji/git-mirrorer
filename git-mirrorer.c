@@ -4013,6 +4013,7 @@ int repo_domain_map_update(
     struct thread_helper {
         bool used;
         pthread_t thread;
+        struct repo_work *repo;
         struct gmr_repo_update_thread_arg arg;
     };
     struct thread_helper *thread_helpers;
@@ -4058,6 +4059,8 @@ int repo_domain_map_update(
                                 thread_helper->arg.url, 
                                 thread_helper->arg.r);
                             bad_ret = true;
+                        } else {
+                            thread_helper->repo->updated = true;
                         }
                         if ((r = pthread_join(thread_helper->thread, NULL))) {
                             pr_error(
@@ -4122,6 +4125,7 @@ int repo_domain_map_update(
                 thread_helper->arg.repo = repo->git_repository;
                 thread_helper->arg.url = sbuffer + repo->url_offset;
                 thread_helper->arg.last_transfer = time_current;
+                thread_helper->repo = repo;
                 thread_helper->used = true;
                 if ((r = pthread_create(&thread_helper->thread, NULL, 
                     gmr_repo_update_thread, &thread_helper->arg))) {
@@ -4192,6 +4196,8 @@ wait_threads:
                     pr_error("Updater for '%s' bad return %d...\n", 
                         thread_helper->arg.url, thread_helper->arg.r);
                     r = -1;
+                } else {
+                    thread_helper->repo->updated = true;
                 }
             } else {
                 pr_warn(
