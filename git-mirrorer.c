@@ -4298,6 +4298,14 @@ free_map:
     return r;
 }
 
+int work_handle_check_all_repos(
+    struct work_handle *const restrict work_handle
+) {
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        struct repo_work *const restrict repo = work_handle->repos + i;
+    }
+    return 0;
+}
 // int remove_dir_recursively(
 //     DIR * const restrict dir_p
 // ) {
@@ -8828,16 +8836,12 @@ int gmr_work(char const *const restrict config_path) {
         }
         goto free_work_handle;
     }
-    if ((r = gmr_set_timeout(config.timeout_connect))) {
-        goto shutdown;
-    }
-    if ((r = work_handle_open_all_repos(&work_handle))) {
-        goto shutdown;
-    }
-    if ((r = work_handle_link_all_repos(&work_handle))) {
-        goto shutdown;
-    }
-    if ((r = work_handle_update_all_repos(&work_handle))) {
+    if (gmr_set_timeout(config.timeout_connect) ||
+        work_handle_open_all_repos(&work_handle) || 
+        work_handle_link_all_repos(&work_handle) ||
+        work_handle_update_all_repos(&work_handle) ||
+        work_handle_check_all_repos(&work_handle)) {
+        r = -1;
         goto shutdown;
     }
     r = 0;
