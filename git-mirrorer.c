@@ -4254,8 +4254,8 @@ int work_handle_update_all_repos(
     }
     int r;
     if (!map.groups_count) {
-        pr_error("Repos map is empty");
-        r = -1;
+        pr_warn("Repos map is empty\n");
+        r = 0;
         goto free_map;
     }
     repo_domain_map_print(&map, work_handle->string_buffer.buffer);
