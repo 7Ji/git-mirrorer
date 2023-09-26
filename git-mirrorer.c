@@ -4042,7 +4042,7 @@ int repo_domain_map_update(
     for (;;) {
         time_t time_current = time(NULL);
         unsigned short active_threads = 0;
-        for (unsigned long i = 0; i < map->groups_count;) {
+        for (unsigned long i = 0; i < map->groups_count; ++i) {
             void *const chunk = chunks_actual + chunk_size * i;
             threads_count = chunk;
             thread_helpers = chunk + sizeof *threads_count;
@@ -4136,19 +4136,17 @@ int repo_domain_map_update(
             active_threads += *threads_count;
             if (*threads_count + group->repos_count) {
                 // Group not exhausted
-                ++i;
-            } else if (i == 0) { 
+            } else if (i == 0) {
                 // Group exhausted at head
                 chunks_actual += chunk_size;
                 groups_actual += 1;
                 --map->groups_count;
+                --i;
             } else if (i == map->groups_count - 1) {
                 // Group exhausted at end
                 --map->groups_count;
-                ++i;
             } else {
                 // Group exhuasted in the middle
-                ++i;
             }
         }
         if (active_threads != active_threads_last) {
