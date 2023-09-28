@@ -5234,6 +5234,9 @@ int work_handle_check_repo(
         // In case work_handle->repos was realloc'd during the above logic
         repo = work_handle->repos + repo_id;
     }
+    for (unsigned long i = 0; i < repo->commits_count; ++i) {
+        
+    }
     return r;
 }
 
