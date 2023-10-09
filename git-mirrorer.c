@@ -4486,6 +4486,11 @@ int repo_work_check_wanted_reference(
     struct wanted_reference *const restrict wanted_reference,
     struct string_buffer *const restrict sbuffer
 ) {
+    char const *const refname = buffer_get_string(
+        sbuffer, wanted_reference->name);
+    git_reference *reference;
+    git_reference_lookup(&reference, repo->git_repository, refname);
+
 
 }
 
@@ -5173,17 +5178,18 @@ int work_handle_check_repo(
                 r = -1;
             }
             break;
-        // case WANTED_TYPE_REFERENCE:
-        //     if (repo_parse_wanted_reference(repo,
-        //         (struct wanted_reference *)wanted_object,
-        //         fetch_options, proxy_after)) {
-        //         pr_error(
-        //             "Failed to parsed wanted reference '%s'  for "
-        //             "repo '%s'\n",
-        //             wanted_object->name, repo->url);
-        //         return -1;
-        //     }
-        //     break;
+        case WANTED_TYPE_REFERENCE:
+            if (repo_work_check_wanted_reference(repo,
+                (struct wanted_reference *)wanted_object,
+                &work_handle->string_buffer)) {
+                pr_error(
+                    "Failed to parsed wanted reference '%s'  for "
+                    "repo '%s'\n",
+                    work_handle_get_string(wanted_object->name), 
+                    work_handle_get_string(repo->url));
+                return -1;
+            }
+            break;
         // case WANTED_TYPE_BRANCH:
         //     if (repo_parse_wanted_branch(repo,
         //         (struct wanted_reference *)wanted_object,
@@ -5259,6 +5265,9 @@ int work_handle_check_all_repos(
     // Update the new repos that needs update
     if (need_update) {
         if (work_handle_update_all_repos(work_handle)) r = -1;
+        for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+            if (work_handle_check_repo(work_handle, i)) r = -1;
+        }
     }
     return r;
 }
