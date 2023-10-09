@@ -4644,25 +4644,22 @@ int repo_work_parse_wanted_reference_common(
         pr_error_with_libgit_error(
             "Failed to peel reference '%s' into a commit object",
             git_reference_name(reference));
+        repo->need_update = true;
         return -1;
     }
     git_commit *commit = (git_commit *)object;
     wanted_reference->oid = *git_commit_id(commit);
     git_object_free(object);
     wanted_reference->commit_parsed = true;
-    char oid_hex[GIT_OID_HEXSZ];
-    r = git_oid_fmt(oid_hex, &wanted_reference->oid);
-    if (r) {
-        pr_error_with_libgit_error("Failed to format git oid hex string");
-        return -1;
-    }
-    pr_info("Reference parsed: '%s' => %s\n", 
-        git_reference_name(reference), oid_hex);
     wanted_reference->oid_hex_offset = sbuffer->used;
-    if (string_buffer_add(sbuffer, oid_hex, GIT_OID_HEXSZ)) {
-        pr_error("Failed to add parsed OID to buffer");
+    if (format_oid_to_string_buffer(&wanted_reference->oid, sbuffer)) {
+        pr_error("Failed to format git oid string to buffer\n");
         return -1;
     }
+    pr_info("Repo '%s' reference parsed: '%s' => %s\n", 
+        buffer_get_string(sbuffer, repo->url),
+        git_reference_name(reference),
+        buffer_get_string(sbuffer, wanted_reference->oid_hex));
     return repo_work_parse_wanted_commit(repo,
             (struct wanted_commit *)wanted_reference, sbuffer);
 }
@@ -4687,6 +4684,7 @@ int repo_work_parse_wanted_reference_looked_up(
         case GIT_ENOTFOUND:
             pr_error("Failed to lookup %s '%s' from '%s': not found\n",
                         reftype, refname, url);
+            repo->need_update = true;
             break;
         case GIT_EINVALID:
             pr_error("Failed to lookup %s '%s' from '%s': invalid ref\n",
@@ -4768,15 +4766,19 @@ int repo_work_parse_wanted_head(
     int r = git_repository_head(&head, repo->git_repository);
     switch (r) {
         case 0:
+            pr_info("Repo '%s' HEAD parsed: '%s'\n", url, 
+                git_reference_name(head));
             r = repo_work_parse_wanted_reference_common(
                 repo, wanted_head, head, sbuffer);
             git_reference_free(head);
             return r;
         case GIT_EUNBORNBRANCH:
             pr_error("Failed to lookup HEAD from '%s': unborn\n", url);
+            repo->need_update = true;
             break;
         case GIT_ENOTFOUND:
             pr_error("Failed to lookup HEAD from '%s': not found\n", url);
+            repo->need_update = true;
             break;
         default:
             pr_error_with_libgit_error("Failed to lookup HEAD from '%s'", url);
@@ -5390,8 +5392,6 @@ int work_handle_check_repo(
                 work_handle_get_string(repo->url));
             r = -1;
         }
-        // In case work_handle->repos was realloc'd during the above logic
-        repo = work_handle->repos + repo_id;
     }
     for (unsigned long i = 0; i < repo->commits_count; ++i) {
         
