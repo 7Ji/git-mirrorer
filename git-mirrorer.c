@@ -3100,6 +3100,24 @@ int work_handle_cwd_open_or_dup(
     return 0;
 }
 
+pthread_mutex_t console_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static inline
+bool console_trylock() { // true locked, false not
+    int r = pthread_mutex_trylock(&console_mutex);
+    switch (r) {
+        case 0:
+            printf("\33[2K\r");
+            return true;
+        case EBUSY:
+            break;
+        default:
+            pr_error("Failed to try lock console, pthread return %d\n", r);
+            break;
+    }
+    return false;
+}
+
 static inline
 int gcb_sideband_progress_headless(
     char const *string, int len, void *payload
@@ -3112,8 +3130,12 @@ int gcb_sideband_progress_headless(
 
 int gcb_sideband_progress(char const *string, int len, void *payload) {
     gcb_sideband_progress_headless(string, len, payload);
+    if (!console_trylock()) {
+        return 0;
+    }
     pr_info("Repo '%s': Remote: %.*s",
         ((struct gmr_payload *)payload)->url, len, string);
+    pthread_mutex_unlock(&console_mutex);
 	return 0;
 }
 
@@ -3138,6 +3160,9 @@ static inline void gcb_print_progress(
     git_indexer_progress const *const restrict stats,
     struct gmr_payload const *const restrict payload
 ) {
+    if (!console_trylock()) {
+        return;
+    }
 	if (stats->total_objects &&
 		stats->received_objects == stats->total_objects) {
 		pr_info("Repo '%s': Resolving deltas %u%% (%u/%u)\r",
@@ -3177,6 +3202,7 @@ static inline void gcb_print_progress(
             stats->indexed_objects,
             stats->total_objects);
 	}
+    pthread_mutex_unlock(&console_mutex);
 }
 
 static inline
