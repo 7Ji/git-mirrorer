@@ -5305,13 +5305,11 @@ int repo_work_parse_wanted_head(
 //         wanted_reference->name);
 // }
 
-int work_handle_check_repo(
-    struct work_handle *const restrict work_handle,
-    unsigned long const repo_id
+int work_repo_parse(
+    struct repo_work *const restrict repo,
+    struct string_buffer *const restrict sbuffer
 ) {
-
-    struct repo_work *restrict repo = work_handle->repos + repo_id;
-    char const *const restrict url = work_handle_get_string(repo->url);
+    char const *const restrict url = buffer_get_string(sbuffer, repo->url);
     int r = 0;
     for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
         struct wanted_object *const restrict wanted_object
@@ -5319,8 +5317,7 @@ int work_handle_check_repo(
         switch (wanted_object->type) {
         case WANTED_TYPE_ALL_BRANCHES:
             if (repo_work_parse_wanted_all_branches(repo, 
-                (struct wanted_base *)wanted_object,
-                &work_handle->string_buffer)) 
+                (struct wanted_base *)wanted_object, sbuffer)) 
             {
                 pr_error("Failed to parse wanted all branches for repo '%s'\n",
                         url);
@@ -5329,77 +5326,73 @@ int work_handle_check_repo(
             break;
         case WANTED_TYPE_ALL_TAGS:
             if (repo_work_parse_wanted_all_tags(repo,
-                (struct wanted_base *)wanted_object,
-                &work_handle->string_buffer)) {
+                (struct wanted_base *)wanted_object, sbuffer)) 
+            {
                 pr_error("Failed to parse wanted all tags for repo '%s'\n",url);
                 r = -1;
             }
             break;
         case WANTED_TYPE_REFERENCE:
             if (repo_work_parse_wanted_reference(repo,
-                (struct wanted_reference *)wanted_object,
-                &work_handle->string_buffer)) {
+                (struct wanted_reference *)wanted_object, sbuffer)) 
+            {
                 pr_error(
                     "Failed to parsed wanted reference '%s'  for repo '%s'\n",
-                    work_handle_get_string(wanted_object->name), url);
+                    buffer_get_string(sbuffer, wanted_object->name), url);
                 return -1;
             }
             break;
         case WANTED_TYPE_BRANCH:
             if (repo_work_parse_wanted_branch(repo,
-                (struct wanted_reference *)wanted_object,
-                &work_handle->string_buffer)) {
+                (struct wanted_reference *)wanted_object, sbuffer)) 
+            {
                 pr_error(
                     "Failed to parsed wanted branch '%s'  for repo '%s'\n",
-                    work_handle_get_string(wanted_object->name), url);
+                    buffer_get_string(sbuffer, wanted_object->name), url);
                 return -1;
             }
             break;
         case WANTED_TYPE_TAG:
             if (repo_work_parse_wanted_tag(repo,
-                (struct wanted_reference *)wanted_object,
-                &work_handle->string_buffer)) {
+                (struct wanted_reference *)wanted_object, sbuffer)) 
+            {
                 pr_error(
                     "Failed to parsed wanted tag '%s'  for repo '%s'\n",
-                    work_handle_get_string(wanted_object->name), url);
+                    buffer_get_string(sbuffer, wanted_object->name), url);
                 return -1;
             }
             break;
         case WANTED_TYPE_HEAD:
             if (repo_work_parse_wanted_head(repo,
-                (struct wanted_reference *)wanted_object,
-                &work_handle->string_buffer)) {
+                (struct wanted_reference *)wanted_object, sbuffer)) 
+            {
                 pr_error("Failed to parsed wanted HEAD for repo '%s'\n", url);
                 return -1;
             }
             break;
         case WANTED_TYPE_COMMIT:
             if (repo_work_parse_wanted_commit(repo,
-                (struct wanted_commit *)wanted_object,
-                &work_handle->string_buffer)) {
+                (struct wanted_commit *)wanted_object, sbuffer)) 
+            {
                 pr_error(
                     "Failed to parse wanted commit %s for repo '%s'\n",
-                    work_handle_get_string(wanted_object->oid_hex), url);
+                    buffer_get_string(sbuffer, wanted_object->oid_hex), url);
                 return -1;
             }
             break;
         case WANTED_TYPE_UNKNOWN:
         default:
-            pr_error(
-                "Impossible wanted type unknown for wanted object '%s' "
-                "for repo '%s'\n",
-                work_handle_get_string(wanted_object->name), 
-                work_handle_get_string(repo->url));
+            pr_error("Impossible wanted type unknown for wanted object '%s' "
+                    "for repo '%s'\n",
+                    buffer_get_string(sbuffer, wanted_object->name), 
+                    url);
             r = -1;
         }
-    }
-    for (unsigned long i = 0; i < repo->commits_count; ++i) {
-        
     }
     return r;
 }
 
-int work_handle_check_all_repos(
+int work_handle_parse_all_repos(
     struct work_handle *const restrict work_handle
 ) {
     // Go first loop to reset the update flags
@@ -5409,28 +5402,30 @@ int work_handle_check_all_repos(
         repo->updated = false;
     }
     int r = 0;
-    bool need_update = false;
+    // bool need_update = false;
     // Go second loop to actually check them, and potentially also set flags
     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-        if (work_handle_check_repo(work_handle, i)) r = -1;
-        if (work_handle->repos[i].need_update) need_update = true;
+        if (work_repo_parse(work_handle->repos + i, 
+                            &work_handle->string_buffer)) 
+            r = -1;
+        // if (work_handle->repos[i].need_update) need_update = true;
     }
     // Update the new repos that needs update
-    if (need_update) {
-        r = 0;
-        if (work_handle_update_all_repos(work_handle)) {
-            pr_error("Failed to re-udpate all repos");
-            return -1;
-        };
-        // for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-        //     struct repo_work *const restrict repo = work_handle->repos + i;
-        //     repo->commits_count = 0;
-        //     if (work_handle_check_repo(work_handle, i)) r = -1;
-        // }
-        for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-            if (work_handle_check_repo(work_handle, i)) r = -1;
-        }
-    }
+    // if (need_update) {
+    //     r = 0;
+    //     if (work_handle_update_all_repos(work_handle)) {
+    //         pr_error("Failed to re-udpate all repos");
+    //         return -1;
+    //     };
+    //     // for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+    //     //     struct repo_work *const restrict repo = work_handle->repos + i;
+    //     //     repo->commits_count = 0;
+    //     //     if (work_handle_check_repo(work_handle, i)) r = -1;
+    //     // }
+    //     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+    //         if (work_handle_check_repo(work_handle, i)) r = -1;
+    //     }
+    // }
     return r;
 }
 
@@ -9175,7 +9170,7 @@ int gmr_work(char const *const restrict config_path) {
         work_handle_open_all_repos(&work_handle) || 
         work_handle_link_all_repos(&work_handle) ||
         work_handle_update_all_repos(&work_handle) ||
-        work_handle_check_all_repos(&work_handle)) {
+        work_handle_parse_all_repos(&work_handle)) {
         r = -1;
         goto shutdown;
     }
