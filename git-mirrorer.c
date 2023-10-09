@@ -262,7 +262,7 @@ struct wanted_commit const WANTED_COMMIT_INIT = {
         struct wanted_commit commit; \
         struct WANTED_COMMIT_DECLARE; \
     }; \
-    bool commit_resolved; \
+    bool commit_parsed; \
 }
 
 struct wanted_reference WANTED_REFERENCE_DECLARE;
@@ -2959,7 +2959,7 @@ int wanted_object_complete_from_base(
         pr_error("Failed to guess type of wanted object\n");
         return -1;
     }
-    wanted_object->commit_resolved = false;
+    wanted_object->commit_parsed = false;
     wanted_object->parsed_commit_id = (unsigned long) -1;
     if (wanted_object->type != WANTED_TYPE_COMMIT) {
         memset(&wanted_object->oid, 0, sizeof wanted_object->oid);
@@ -4365,7 +4365,7 @@ int repo_work_add_wanted_reference_common(
     struct wanted_reference *wanted_reference = 
         (struct wanted_reference *)(get_last(repo->wanted_objects));
     wanted_reference->type = type;
-    wanted_reference->commit_resolved = false;
+    wanted_reference->commit_parsed = false;
     wanted_reference->archive = archive;
     wanted_reference->checkout = checkout;
     wanted_reference->type = type;
@@ -4596,14 +4596,14 @@ int repo_work_parse_wanted_reference_common(
     git_commit *commit = (git_commit *)object;
     wanted_reference->oid = *git_commit_id(commit);
     git_object_free(object);
-    wanted_reference->commit_resolved = true;
+    wanted_reference->commit_parsed = true;
     char oid_hex[GIT_OID_HEXSZ];
     r = git_oid_fmt(oid_hex, &wanted_reference->oid);
     if (r) {
         pr_error_with_libgit_error("Failed to format git oid hex string");
         return -1;
     }
-    pr_info("Reference resolved: '%s' => %s\n", 
+    pr_info("Reference parsed: '%s' => %s\n", 
         git_reference_name(reference), oid_hex);
     wanted_reference->oid_hex_offset = sbuffer->used;
     if (string_buffer_add(sbuffer, oid_hex, GIT_OID_HEXSZ)) {
@@ -5672,15 +5672,15 @@ int work_handle_check_all_repos(
 //     case WANTED_TYPE_BRANCH:
 //     case WANTED_TYPE_TAG:
 //     case WANTED_TYPE_REFERENCE:
-//         if (!wanted_object->commit_resolved) {
-// #ifdef ALL_REFERENCES_MUST_BE_RESOLVED
+//         if (!wanted_object->commit_parsed) {
+// #ifdef ALL_REFERENCES_MUST_BE_parsed
 //             pr_error(
 // #else
 //             pr_warn(
 // #endif
-//                 "Commit not resolved for wanted object '%s' yet\n",
+//                 "Commit not parsed for wanted object '%s' yet\n",
 //                     wanted_object->name);
-// #ifdef ALL_REFERENCES_MUST_BE_RESOLVED
+// #ifdef ALL_REFERENCES_MUST_BE_parsed
 //             return -1;
 // #else
 //             return 0;
@@ -8195,16 +8195,16 @@ int tar_finish(
 //     case WANTED_TYPE_TAG:
 //     case WANTED_TYPE_REFERENCE:
 //         if (!((struct wanted_reference const *)wanted_object)
-//             ->commit_resolved) {
-//             pr_error("Reference '%s' is not resolved into commit\n",
+//             ->commit_parsed) {
+//             pr_error("Reference '%s' is not parsed into commit\n",
 //                     wanted_object->name);
 //             return -1;
 //         }
 //         __attribute__((fallthrough));
 //     case WANTED_TYPE_HEAD:
 //         if (!((struct wanted_reference const *)wanted_object)
-//             ->commit_resolved) {
-//             pr_warn("Reference '%s' is not resolved into commit\n",
+//             ->commit_parsed) {
+//             pr_warn("Reference '%s' is not parsed into commit\n",
 //                     wanted_object->name);
 //             break;
 //         }
@@ -8973,7 +8973,7 @@ int tar_finish(
 //                 case WANTED_TYPE_TAG:
 //                 case WANTED_TYPE_REFERENCE:
 //                 case WANTED_TYPE_HEAD:
-//                     wanted_object->commit_resolved = false;
+//                     wanted_object->commit_parsed = false;
 //                     wanted_object->parsed_commit_id = (unsigned long) -1;
 //                     wanted_object->hex_string[0] = '\0';
 //                     memset(&wanted_object->oid, 0, sizeof wanted_object->oid);
