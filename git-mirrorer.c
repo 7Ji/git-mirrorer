@@ -4375,7 +4375,7 @@ int repo_work_add_wanted_tag(
         name, len_name, archive, checkout);
 }
 
-int repo_work_check_wanted_all_branches(
+int repo_work_parse_wanted_all_branches(
     struct repo_work *const restrict repo,
     struct wanted_base *const restrict wanted_all_branches,
     struct string_buffer *const restrict sbuffer
@@ -4443,7 +4443,7 @@ int repo_work_check_wanted_all_branches(
     return 0;
 }
 
-int repo_work_check_wanted_all_tags(
+int repo_work_parse_wanted_all_tags(
     struct repo_work *const restrict repo,
     struct wanted_base *const restrict wanted_all_tags,
     struct string_buffer *const restrict sbuffer
@@ -4481,17 +4481,114 @@ int repo_work_check_wanted_all_tags(
     return r;
 }
 
-int repo_work_check_wanted_reference(
+int repo_work_add_commit(
+    struct repo_work *const restrict repo,
+    git_oid const *const restrict oid
+) {
+    // if (repo_add_parsed_commit_no_init(repo)) {
+    //     pr_error("Failed to add parsed commit without init\n");
+    //     return -1;
+    // }
+    // struct parsed_commit *const restrict parsed_commit =
+    //     get_last(repo->parsed_commits);
+    // *parsed_commit = PARSED_COMMIT_INIT;
+    // parsed_commit->id = *oid;
+    // if (git_oid_tostr(
+    //         parsed_commit->id_hex_string,
+    //         sizeof parsed_commit->id_hex_string,
+    //         &parsed_commit->id
+    //     )[0] == '\0') {
+    //     pr_error("Failed to format commit id into hex string\n");
+    //     return -1;
+    // }
+    return 0;
+}
+
+// May re-allocate repo->parsed_commits
+int repo_work_parse_wanted_commit(
+    struct repo_work *const restrict repo,
+    struct wanted_commit *const restrict wanted_commit
+) {
+    for (unsigned long i = 0; i < repo->commits_count; ++i) {
+        if (!git_oid_cmp(&repo->commits[i].oid, &wanted_commit->oid)) {
+            wanted_commit->parsed_commit_id = i;
+            goto sync_export_setting;
+        }
+    }
+    if (repo_work_add_commit(repo, &wanted_commit->oid)) {
+        pr_error("Failed to add parsed commit\n");
+        return -1;
+    }
+    wanted_commit->parsed_commit_id = repo->commits_count - 1;
+sync_export_setting:
+    struct commit *commit =
+        repo->commits + wanted_commit->parsed_commit_id;
+    if (wanted_commit->archive) commit->archive = true;
+    if (wanted_commit->checkout) commit->checkout = true;
+    return 0;
+}
+
+
+// May re-allocate repo->parsed_commits
+int repo_work_parse_wanted_reference_common(
+    struct repo_work *const restrict repo,
+    struct wanted_reference *const restrict wanted_reference,
+    git_reference *reference
+) {
+    git_object *object;
+    int r = git_reference_peel(&object, reference, GIT_OBJECT_COMMIT);
+    if (r) {
+        pr_error_with_libgit_error(
+            "Failed to peel reference '%s' into a commit object",
+            git_reference_name(reference));
+        return -1;
+    }
+    git_commit *commit = (git_commit *)object;
+    wanted_reference->oid = *git_commit_id(commit);
+    git_object_free(object);
+    wanted_reference->commit_resolved = true;
+    r = git_oid_fmt(wanted_reference->hex_string, &wanted_reference->oid);
+    if (r) {
+        pr_error_with_libgit_error("Failed to format git oid hex string");
+        return -1;
+    }
+    wanted_reference->hex_string[GIT_OID_HEXSZ] = '\0';
+    pr_info("Reference resolved: '%s' => %s\n", 
+        git_reference_name(reference), wanted_reference->hex_string);
+    return repo_work_parse_wanted_commit(repo,
+                                (struct wanted_commit *)wanted_reference);
+}
+
+int repo_work_parse_wanted_reference(
     struct repo_work *const restrict repo,
     struct wanted_reference *const restrict wanted_reference,
     struct string_buffer *const restrict sbuffer
 ) {
     char const *const refname = buffer_get_string(
         sbuffer, wanted_reference->name);
+    char const *const url = buffer_get_string(sbuffer, repo->url);
     git_reference *reference;
-    git_reference_lookup(&reference, repo->git_repository, refname);
-
-
+    int r = git_reference_lookup(&reference, repo->git_repository, refname);
+    switch (r) {
+        case 0:
+            r = repo_work_parse_wanted_reference_common(
+                repo, wanted_reference, reference);
+            git_reference_free(reference);
+            return r;
+        case GIT_ENOTFOUND:
+            pr_error("Failed to lookup reference '%s' from '%s': not found\n",
+                        refname, url);
+            break;
+        case GIT_EINVALID:
+            pr_error("Failed to lookup reference '%s' from '%s': invalid ref\n",
+                        refname, url);
+            break;
+        default:
+            pr_error_with_libgit_error(
+                "Failed to lookup reference '%s' from '%s'", refname, url);
+            break;
+    }
+    return -1;
 }
 
 // void commit_free(
@@ -4582,30 +4679,6 @@ int repo_work_check_wanted_reference(
 // free_entry:
 //     git_tree_entry_free(entry);
 //     return r;
-// }
-
-// // May re-allocate repo->parsed_commits
-// int repo_add_parsed_commit(
-//     struct repo *const restrict repo,
-//     git_oid const *const restrict oid
-// ) {
-//     if (repo_add_parsed_commit_no_init(repo)) {
-//         pr_error("Failed to add parsed commit without init\n");
-//         return -1;
-//     }
-//     struct parsed_commit *const restrict parsed_commit =
-//         get_last(repo->parsed_commits);
-//     *parsed_commit = PARSED_COMMIT_INIT;
-//     parsed_commit->id = *oid;
-//     if (git_oid_tostr(
-//             parsed_commit->id_hex_string,
-//             sizeof parsed_commit->id_hex_string,
-//             &parsed_commit->id
-//         )[0] == '\0') {
-//         pr_error("Failed to format commit id into hex string\n");
-//         return -1;
-//     }
-//     return 0;
 // }
 
 // // May re-allocate config->repos
@@ -4877,86 +4950,6 @@ int repo_work_check_wanted_reference(
 //     return r;
 // }
 
-// // May re-allocate repo->parsed_commits
-// int repo_parse_wanted_commit(
-//     struct repo *const restrict repo,
-//     struct wanted_commit *const restrict wanted_commit
-// ) {
-//     for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
-//         if (!git_oid_cmp(&repo->parsed_commits[i].id, &wanted_commit->oid)) {
-//             wanted_commit->parsed_commit_id = i;
-//             goto sync_export_setting;
-//         }
-//     }
-//     if (repo_add_parsed_commit(repo, &wanted_commit->oid)) {
-//         pr_error("Failed to add parsed commit\n");
-//         return -1;
-//     }
-//     wanted_commit->parsed_commit_id = repo->parsed_commits_count - 1;
-// sync_export_setting:
-//     struct parsed_commit *parsed_commit =
-//         repo->parsed_commits + wanted_commit->parsed_commit_id;
-//     if (wanted_commit->archive) parsed_commit->archive = true;
-//     if (wanted_commit->checkout) parsed_commit->checkout = true;
-//     return 0;
-// }
-
-
-// // May re-allocate repo->parsed_commits
-// int repo_parse_wanted_reference_common(
-//     struct repo *const restrict repo,
-//     struct wanted_reference *const restrict wanted_reference,
-//     git_reference *reference,
-//     git_fetch_options *const restrict fetch_options,
-//     unsigned short const proxy_after
-// ) {
-//     git_object *object;
-//     int r;
-//     if ((r = git_reference_peel(&object, reference, GIT_OBJECT_COMMIT))) {
-//         if (repo->updated) {
-//             pr_error(
-//                 "Failed to peel reference '%s' into a commit object, "
-//                 "libgit return %d\n",
-//                 wanted_reference->name, r);
-// #ifdef ALL_REFERENCES_MUST_BE_RESOLVED
-//             return -1;
-// #else
-//             return 0;
-// #endif
-//         }
-//         pr_warn("Failed to peel reference '%s' into a commit object, "
-//                 "libgit return %d, but repo not updated yet, update to retry\n",
-//                 wanted_reference->name, r);
-//         if (repo_update(repo, fetch_options, proxy_after)) {
-//             pr_error("Failed to update\n");
-//             return -1;
-//         }
-//         if ((r = git_reference_peel(&object, reference, GIT_OBJECT_COMMIT))) {
-//             pr_error("Failed to peel reference '%s' into commit object even "
-//             "after updating, libgit return %d\n", wanted_reference->name, r);
-//             return -1;
-//         }
-//     }
-//     git_commit *commit = (git_commit *)object;
-//     wanted_reference->commit_resolved = true;
-//     wanted_reference->commit.oid = *git_commit_id(commit);
-//     if (git_oid_tostr(
-//             wanted_reference->commit.hex_string,
-//             sizeof wanted_reference->commit.hex_string,
-//             &wanted_reference->commit.oid
-//         )[0] == '\0') {
-//         pr_error("Failed to format git oid hex string\n");
-//         git_object_free(object);
-//         return -1;
-//     }
-//     git_object_free(object);
-//     pr_info("Reference resolved: '%s': '%s' => %s\n",
-//         repo->url, wanted_reference->name,
-//         wanted_reference->commit.hex_string);
-//     return repo_parse_wanted_commit(repo,
-//                                 (struct wanted_commit *)wanted_reference);
-// }
-
 // void repo_parse_wanted_head_explain_libgit_return(int const r) {
 //     switch (r) {
 //     case GIT_EUNBORNBRANCH:
@@ -5160,7 +5153,7 @@ int work_handle_check_repo(
             = repo->wanted_objects + i;
         switch (wanted_object->type) {
         case WANTED_TYPE_ALL_BRANCHES:
-            if (repo_work_check_wanted_all_branches(repo, 
+            if (repo_work_parse_wanted_all_branches(repo, 
                 (struct wanted_base *)wanted_object,
                 &work_handle->string_buffer)) 
             {
@@ -5170,7 +5163,7 @@ int work_handle_check_repo(
             }
             break;
         case WANTED_TYPE_ALL_TAGS:
-            if (repo_work_check_wanted_all_tags(repo,
+            if (repo_work_parse_wanted_all_tags(repo,
                 (struct wanted_base *)wanted_object,
                 &work_handle->string_buffer)) {
                 pr_error("Failed to parse wanted all tags for repo '%s'\n",
@@ -5179,7 +5172,7 @@ int work_handle_check_repo(
             }
             break;
         case WANTED_TYPE_REFERENCE:
-            if (repo_work_check_wanted_reference(repo,
+            if (repo_work_parse_wanted_reference(repo,
                 (struct wanted_reference *)wanted_object,
                 &work_handle->string_buffer)) {
                 pr_error(
