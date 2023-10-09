@@ -716,6 +716,21 @@ struct gmr_payload {
     time_t *last_transfer;
 };
 
+/* Console lock */
+pthread_mutex_t console_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+#define console_with_trylock(job) \
+    console_locked = console_trylock(); \
+    job; \
+    if (console_locked) console_unlock() \
+
+#define console_with_lock(job) \
+    console_locked = console_lock(); \
+    if (console_locked) { \
+        job; \
+        console_unlock(); \
+    }
+
 /* Functions */
 
 // Dumb help message
@@ -3100,8 +3115,6 @@ int work_handle_cwd_open_or_dup(
     return 0;
 }
 
-pthread_mutex_t console_mutex = PTHREAD_MUTEX_INITIALIZER;
-
 static inline
 bool console_trylock() { // true locked, false not
     int r = pthread_mutex_trylock(&console_mutex);
@@ -3885,7 +3898,9 @@ int gmr_repo_update(
     unsigned short const proxy_after,
     time_t *last_transfer
 ) {
-    pr_info("Updating repo '%s'\n", url);
+    bool console_locked;
+    console_with_lock(
+        pr_info("Updating repo '%s'\n", url));
     git_remote *remote;
     int r = git_remote_create_anonymous(&remote, repo, url);
     if (r) {
@@ -3902,17 +3917,19 @@ int gmr_repo_update(
     fetch_opts.callbacks.payload = (void *)&payload;
     for (unsigned short try = 0; try < max_try; ++try) {
         if (try == proxy_after) {
-            if (try)
-                pr_warn(
-                    "Failed to fetch from '%s' for %hu times, use proxy\n",
-                    url, proxy_after);
+            if (try) {
+                console_with_lock(
+                    pr_warn("Failed to fetch from '%s' for %hu times, "
+                        "use proxy\n", url, proxy_after));
+            }
             fetch_opts.proxy_opts.type = GIT_PROXY_SPECIFIED;
         }
         if (!(r = gmr_remote_update(remote, &fetch_opts))) break;
     }
     if (r) {
-        pr_error("Failed to update repo '%s' after %hu tries, "
-                "considered failure\n", url, max_try);
+        console_with_lock(
+            pr_error("Failed to update repo '%s' after %hu tries, "
+                    "considered failure\n", url, max_try));
         r = -1;
         goto free_remote;
     }
@@ -3920,7 +3937,8 @@ int gmr_repo_update(
         r = -1;
         goto free_remote;
     }
-    pr_info("Updated repo '%s'\n", url);
+    console_with_lock(
+        pr_info("Updated repo '%s'\n", url));
     r = 0;
 free_remote:
     git_remote_free(remote);
@@ -4100,6 +4118,7 @@ int repo_domain_map_update(
     void *chunks_actual = chunks;
     struct repo_domain_group* groups_actual = map->groups;
     unsigned short active_threads_last = 0;
+    bool console_locked;
     for (;;) {
         time_t time_current = time(NULL);
         unsigned short active_threads = 0;
@@ -4113,20 +4132,22 @@ int repo_domain_map_update(
                     if (!thread_helper->used) continue;
                     if (thread_helper->arg.finished) {
                         if (thread_helper->arg.r) {
+                            console_with_lock(
                             pr_error(
                                 "Repo updater %lu for '%s' returned with %d\n",
                                 thread_helper->thread,
                                 thread_helper->arg.url, 
-                                thread_helper->arg.r);
+                                thread_helper->arg.r));
                             bad_ret = true;
                         } else {
                             thread_helper->repo->updated = true;
                         }
                         if ((r = pthread_join(thread_helper->thread, NULL))) {
+                            console_with_lock(
                             pr_error(
                                 "Failed to join supposed finished thread %ld, "
                                 "pthread return %d\n", 
-                                thread_helper->thread, r);
+                                thread_helper->thread, r));
                             r = -1;
                             goto wait_threads;
                         }
@@ -4134,22 +4155,25 @@ int repo_domain_map_update(
                         thread_helper->used = false;
                     } else if (time_current - 
                                 thread_helper->arg.last_transfer > 600) {
+                        console_with_lock(
                         pr_warn(
                             "Repo updater for '%s' took too long without "
                             "transfter, restarting it\n", 
-                            thread_helper->arg.url);
+                            thread_helper->arg.url));
                         if ((r = pthread_cancel(thread_helper->thread))) {
+                            console_with_lock(
                             pr_error("Failed to cancel updater %lu for '%s', "
                                 "pthread return %d\n", thread_helper->thread,
-                                thread_helper->arg.url, r);
+                                thread_helper->arg.url, r));
                             r = -1;
                             goto wait_threads;
                         }
                         if ((r = pthread_join(thread_helper->thread, NULL))) {
+                            console_with_lock(
                             pr_error(
                                 "Failed to join cancelled thread %ld, "
                                 "pthread return %d\n", 
-                                thread_helper->thread, r);
+                                thread_helper->thread, r));
                             r = -1;
                             goto wait_threads;
                         }
@@ -4157,8 +4181,9 @@ int repo_domain_map_update(
                         thread_helper->arg.last_transfer = time_current;
                         if ((r = pthread_create(&thread_helper->thread, NULL, 
                             gmr_repo_update_thread, &thread_helper->arg))) {
-                            pr_error(
-                                "Failed to create thread, pthread return %d\n", r);
+                            console_with_lock(
+                            pr_error("Failed to create thread, pthread return "
+                                    "%d\n", r));
                             thread_helper->used = false;
                             r = -1;
                             goto wait_threads;
@@ -4177,7 +4202,8 @@ int repo_domain_map_update(
                     }
                 }
                 if (!thread_helper) {
-                    pr_error("FATAL: failed to find free thread slot\n");
+                    console_with_lock(
+                    pr_error("FATAL: failed to find free thread slot\n"));
                     r = -1;
                     goto wait_threads;
                 }
@@ -4189,8 +4215,9 @@ int repo_domain_map_update(
                 thread_helper->used = true;
                 if ((r = pthread_create(&thread_helper->thread, NULL, 
                     gmr_repo_update_thread, &thread_helper->arg))) {
+                    console_with_lock(
                     pr_error(
-                        "Failed to create thread, pthread return %d\n", r);
+                        "Failed to create thread, pthread return %d\n", r));
                     thread_helper->used = false;
                     r = -1;
                     goto wait_threads;
@@ -4215,11 +4242,8 @@ int repo_domain_map_update(
         }
         if (active_threads != active_threads_last) {
             active_threads_last = active_threads;
-            bool locked = console_lock();
-            pr_info("%hu updaters running...\n", active_threads);
-            if (locked) {
-                console_unlock();
-            }
+            console_with_lock(
+            pr_info("%hu updaters running...\n", active_threads));
         }
         if (active_threads == 0) {
             break;
@@ -4236,7 +4260,9 @@ int repo_domain_map_update(
     }
 wait_threads:
     if (active_threads_last) {
-        pr_info("Waiting for %hu remaining updaters...\n", active_threads_last);
+        console_with_lock(
+        pr_info("Waiting for %hu remaining updaters...\n", 
+                active_threads_last));
     }
     for (unsigned long i = 0; i < map->groups_count; ++i) {
         void *const chunk = chunks + chunk_size * i;
@@ -4246,8 +4272,9 @@ wait_threads:
             struct thread_helper *const restrict thread_helper
                 = thread_helpers + j;
             if (!thread_helper->used) continue;
+            console_with_lock(
             pr_info("Waiting for updater for '%s'...\n", 
-                    thread_helper->arg.url);
+                    thread_helper->arg.url));
             time_t time_current = time(NULL);
             while (!thread_helper->arg.finished && 
                 time_current - thread_helper->arg.last_transfer < 600) 
@@ -4257,8 +4284,9 @@ wait_threads:
             }
             if (thread_helper->arg.finished) {
                 if (thread_helper->arg.r) {
+                    console_with_lock(
                     pr_error("Updater for '%s' bad return %d...\n", 
-                        thread_helper->arg.url, thread_helper->arg.r);
+                        thread_helper->arg.url, thread_helper->arg.r));
                     r = -1;
                 } else {
                     thread_helper->repo->updated = true;
@@ -4269,17 +4297,19 @@ wait_threads:
                     "transfter, cancelling it\n", thread_helper->arg.url);
                 int pr = pthread_cancel(thread_helper->thread);
                 if (pr) {
+                    console_with_lock(
                     pr_error("Failed to cancel thread, "
-                        "pthread return %d\n", pr);
+                        "pthread return %d\n", pr));
                     r = -1;
                 }
             }
             int pr = pthread_join(thread_helper->thread, NULL);
             if (pr) {
+                console_with_lock(
                 pr_error(
                     "Failed to join supposed finished thread %ld, "
                     "pthread return %d\n", 
-                    thread_helper->thread, r);
+                    thread_helper->thread, r));
                 r = -1;
             }
         }
