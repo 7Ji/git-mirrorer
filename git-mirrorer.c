@@ -161,7 +161,7 @@ struct string_buffer {
 
 #define COMMIT_ID_DECLARE { \
     git_oid oid; \
-    char hex_string[GIT_OID_MAX_HEXSIZE + 1]; \
+    unsigned int oid_hex_offset; \
 }
 
 struct commit_id COMMIT_ID_DECLARE;
@@ -2929,9 +2929,26 @@ void work_handle_work_directories_free(
 }
 
 static inline
+int format_oid_to_string_buffer(
+    git_oid const *const restrict oid,
+    struct string_buffer *const restrict sbuffer
+) {
+    char oid_hex[GIT_OID_HEXSZ];
+    if (git_oid_fmt(oid_hex, oid)) {
+        pr_error("Failed to format git oid hex string\n");
+        return -1;
+    }
+    if (string_buffer_add(sbuffer, oid_hex, GIT_OID_HEXSZ)) {
+        pr_error("Failed to add git oid hex string to buffer\n");
+        return -1;
+    }
+    return 0;
+}
+
+static inline
 int wanted_object_complete_from_base(
     struct wanted_object *const restrict wanted_object,
-    struct string_buffer const *const restrict sbuffer
+    struct string_buffer *const restrict sbuffer
 ) {
     char const *const restrict name =
         buffer_get_string(sbuffer, wanted_object->name);
@@ -2946,20 +2963,18 @@ int wanted_object_complete_from_base(
     wanted_object->parsed_commit_id = (unsigned long) -1;
     if (wanted_object->type != WANTED_TYPE_COMMIT) {
         memset(&wanted_object->oid, 0, sizeof wanted_object->oid);
-        wanted_object->hex_string[0] = '\0';
+        wanted_object->oid_hex_offset = 0;
         return 0;
     }
     if (git_oid_fromstr(&wanted_object->oid, name)) {
         pr_error("Failed to convert '%s' to a git oid\n", name);
         return -1;
     }
-    if (git_oid_fmt(
-            wanted_object->hex_string,
-            &wanted_object->oid)) {
-        pr_error("Failed to format git oid hex string\n");
+    wanted_object->oid_hex_offset = sbuffer->used;
+    if (format_oid_to_string_buffer(&wanted_object->oid, sbuffer)) {
+        pr_error("Failed to format git oid hex string to buffer\n");
         return -1;
     }
-    wanted_object->hex_string[sizeof wanted_object->hex_string - 1] = '\0';
     return 0;
 }
 
@@ -2967,7 +2982,7 @@ static inline
 int wanted_object_work_from_config(
     struct wanted_object *const restrict wanted_work,
     struct wanted_base const *const restrict wanted_config,
-    struct string_buffer const *const restrict sbuffer
+    struct string_buffer *const restrict sbuffer
 ) {
     wanted_work->base = *wanted_config;
     return wanted_object_complete_from_base(wanted_work, sbuffer);
@@ -2977,7 +2992,7 @@ static inline
 int repo_work_from_config(
     struct repo_work *restrict repo_work,
     struct repo_config const *const restrict repo_config,
-    struct string_buffer const *const restrict sbuffer
+    struct string_buffer *const restrict sbuffer
 ) {
     repo_work->wanted_dynamic = false;
     if (repo_config->wanted_objects_count) {
@@ -3732,7 +3747,7 @@ void work_handle_need_update_all_repos(
             if (r) {
                 pr_error_with_libgit_error(
                     "Failed to lookup commit '%s' from repo '%s', need update",
-                    wanted_commit->hex_string, 
+                    work_handle_get_string(wanted_commit->oid_hex), 
                     work_handle_get_string(repo->url));
                 repo->need_update = true;
             } else {
@@ -4318,7 +4333,7 @@ int repo_work_add_wanted_reference_common(
                           &repo->wanted_objects_count,
                           &repo->wanted_objects_allocated)) 
     {
-        pr_error("Failed to append to allocate new wanted object\n");
+        pr_error("Failed to allocate new wanted object\n");
         return -1;
     }
     struct wanted_reference *wanted_reference = 
@@ -4391,7 +4406,7 @@ int repo_work_parse_wanted_all_branches(
     }
     git_reference *reference = NULL;
     git_branch_t branch_t;
-    pr_info("Enumerating all branches of repo '%s' to create "
+    pr_info("Iterating through all branches of repo '%s' to create "
             "individual wanted branches\n", url);
     unsigned long i = repo->wanted_objects_count;
     bool bad_branch = false;
@@ -4456,7 +4471,7 @@ int repo_work_parse_wanted_all_tags(
         return -1;
     }
     r = 0;
-    pr_info("Enumerating all tags of repo '%s' to create "
+    pr_info("Iterating through all tags of repo '%s' to create "
             "individual wanted tags\n", url);
     // The tags do not have refs/tags prefix, but just simply tag names
     unsigned long i = repo->wanted_objects_count;
@@ -4483,31 +4498,37 @@ int repo_work_parse_wanted_all_tags(
 
 int repo_work_add_commit(
     struct repo_work *const restrict repo,
-    git_oid const *const restrict oid
+    git_oid const *const restrict oid,
+    unsigned int oid_hex_offset,
+    struct string_buffer *const restrict sbuffer
 ) {
-    // if (repo_add_parsed_commit_no_init(repo)) {
-    //     pr_error("Failed to add parsed commit without init\n");
-    //     return -1;
-    // }
-    // struct parsed_commit *const restrict parsed_commit =
-    //     get_last(repo->parsed_commits);
-    // *parsed_commit = PARSED_COMMIT_INIT;
-    // parsed_commit->id = *oid;
-    // if (git_oid_tostr(
-    //         parsed_commit->id_hex_string,
-    //         sizeof parsed_commit->id_hex_string,
-    //         &parsed_commit->id
-    //     )[0] == '\0') {
-    //     pr_error("Failed to format commit id into hex string\n");
-    //     return -1;
-    // }
+    if (dynamic_array_add((void **)&repo->commits,
+                        sizeof *repo->commits,
+                        &repo->commits_count,
+                        &repo->commits_allocated))
+    {
+        pr_error("Failed to allocate new parsed commit\n");
+        return -1;
+    }
+    struct commit *commit = get_last(repo->commits);
+    memset(commit, 0, sizeof *commit);
+    if (!oid_hex_offset) {
+        oid_hex_offset = sbuffer->used;
+        if (format_oid_to_string_buffer(oid, sbuffer)) {
+            pr_error("Failed to format git oid string to buffer\n");
+            return -1;
+        }
+    }
+    commit->oid = *oid;
+    commit->oid_hex_offset = oid_hex_offset;
     return 0;
 }
 
 // May re-allocate repo->parsed_commits
 int repo_work_parse_wanted_commit(
     struct repo_work *const restrict repo,
-    struct wanted_commit *const restrict wanted_commit
+    struct wanted_commit *const restrict wanted_commit,
+    struct string_buffer *const restrict sbuffer
 ) {
     for (unsigned long i = 0; i < repo->commits_count; ++i) {
         if (!git_oid_cmp(&repo->commits[i].oid, &wanted_commit->oid)) {
@@ -4515,7 +4536,9 @@ int repo_work_parse_wanted_commit(
             goto sync_export_setting;
         }
     }
-    if (repo_work_add_commit(repo, &wanted_commit->oid)) {
+    if (repo_work_add_commit(repo, &wanted_commit->oid, 
+            wanted_commit->oid_hex_offset, sbuffer)) 
+    {
         pr_error("Failed to add parsed commit\n");
         return -1;
     }
@@ -4533,7 +4556,8 @@ sync_export_setting:
 int repo_work_parse_wanted_reference_common(
     struct repo_work *const restrict repo,
     struct wanted_reference *const restrict wanted_reference,
-    git_reference *reference
+    git_reference *reference,
+    struct string_buffer *const restrict sbuffer
 ) {
     git_object *object;
     int r = git_reference_peel(&object, reference, GIT_OBJECT_COMMIT);
@@ -4547,16 +4571,54 @@ int repo_work_parse_wanted_reference_common(
     wanted_reference->oid = *git_commit_id(commit);
     git_object_free(object);
     wanted_reference->commit_resolved = true;
-    r = git_oid_fmt(wanted_reference->hex_string, &wanted_reference->oid);
+    char oid_hex[GIT_OID_HEXSZ];
+    r = git_oid_fmt(oid_hex, &wanted_reference->oid);
     if (r) {
         pr_error_with_libgit_error("Failed to format git oid hex string");
         return -1;
     }
-    wanted_reference->hex_string[GIT_OID_HEXSZ] = '\0';
     pr_info("Reference resolved: '%s' => %s\n", 
-        git_reference_name(reference), wanted_reference->hex_string);
+        git_reference_name(reference), oid_hex);
+    wanted_reference->oid_hex_offset = sbuffer->used;
+    if (string_buffer_add(sbuffer, oid_hex, GIT_OID_HEXSZ)) {
+        pr_error("Failed to add parsed OID to buffer");
+        return -1;
+    }
     return repo_work_parse_wanted_commit(repo,
-                                (struct wanted_commit *)wanted_reference);
+            (struct wanted_commit *)wanted_reference, sbuffer);
+}
+
+static inline
+int repo_work_parse_wanted_reference_looked_up(
+    struct repo_work *const restrict repo,
+    struct wanted_reference *const restrict wanted_reference,
+    git_reference *reference,
+    struct string_buffer *const restrict sbuffer,
+    char const *const restrict reftype,
+    char const *const restrict refname,
+    int r
+) {
+    char const *const url = buffer_get_string(sbuffer, repo->url);
+    switch (r) {
+        case 0:
+            r = repo_work_parse_wanted_reference_common(
+                repo, wanted_reference, reference, sbuffer);
+            git_reference_free(reference);
+            return r;
+        case GIT_ENOTFOUND:
+            pr_error("Failed to lookup %s '%s' from '%s': not found\n",
+                        reftype, refname, url);
+            break;
+        case GIT_EINVALID:
+            pr_error("Failed to lookup %s '%s' from '%s': invalid ref\n",
+                        reftype, refname, url);
+            break;
+        default:
+            pr_error_with_libgit_error(
+                "Failed to lookup %s '%s' from '%s'", reftype, refname, url);
+            break;
+    }
+    return -1;
 }
 
 int repo_work_parse_wanted_reference(
@@ -4566,30 +4628,84 @@ int repo_work_parse_wanted_reference(
 ) {
     char const *const refname = buffer_get_string(
         sbuffer, wanted_reference->name);
-    char const *const url = buffer_get_string(sbuffer, repo->url);
     git_reference *reference;
     int r = git_reference_lookup(&reference, repo->git_repository, refname);
+    return repo_work_parse_wanted_reference_looked_up(
+        repo, wanted_reference, reference, sbuffer, "reference", refname, r);
+}
+
+int repo_work_parse_wanted_branch(
+    struct repo_work *const restrict repo,
+    struct wanted_reference *const restrict wanted_branch,
+    struct string_buffer *const restrict sbuffer
+) {
+    char const *const branch = buffer_get_string(
+        sbuffer, wanted_branch->name);
+    git_reference *reference;
+    int r = git_branch_lookup(&reference, repo->git_repository, branch, 
+                            GIT_BRANCH_LOCAL);
+    return repo_work_parse_wanted_reference_looked_up(
+        repo, wanted_branch, reference, sbuffer, "branch", branch, r);
+}
+
+
+int repo_work_parse_wanted_tag(
+    struct repo_work *const restrict repo,
+    struct wanted_reference *const restrict wanted_tag,
+    struct string_buffer *const restrict sbuffer
+) {
+    char const *const tag = buffer_get_string(sbuffer, wanted_tag->name);
+    char refname_stack[0x100];
+    char *refname_heap = NULL;
+    char *refname = refname_stack;
+    unsigned short const len_refname = wanted_tag->len_name + 10; // refs/tags/
+    if (len_refname >= 0x100) {
+        if (!(refname_heap = malloc(len_refname))) {
+            pr_error_with_errno("Failed to allocate name for long tag '%s'",
+                                tag);
+            return -1;
+        }
+        refname = refname_heap;
+    }
+    memcpy(refname, "refs/tags/", 10);
+    memcpy(refname + 10, tag, wanted_tag->len_name);
+    refname[len_refname] = '\0';
+    git_reference *reference;
+    int r = git_reference_lookup(&reference, repo->git_repository, refname);
+    r = repo_work_parse_wanted_reference_looked_up(
+        repo, wanted_tag, reference, sbuffer, "tag", tag, r);
+    free_if_allocated(refname_heap);
+    return r;
+}
+
+// May re-allocate repo->parsed_commits
+int repo_work_parse_wanted_head(
+    struct repo_work *const restrict repo,
+    struct wanted_reference *const restrict wanted_head,
+    struct string_buffer *const restrict sbuffer
+) {
+    char const *const url = buffer_get_string(sbuffer, repo->url);
+    git_reference *head;
+    int r = git_repository_head(&head, repo->git_repository);
     switch (r) {
         case 0:
             r = repo_work_parse_wanted_reference_common(
-                repo, wanted_reference, reference);
-            git_reference_free(reference);
+                repo, wanted_head, head, sbuffer);
+            git_reference_free(head);
             return r;
-        case GIT_ENOTFOUND:
-            pr_error("Failed to lookup reference '%s' from '%s': not found\n",
-                        refname, url);
+        case GIT_EUNBORNBRANCH:
+            pr_error("Failed to lookup HEAD from '%s': unborn\n", url);
             break;
-        case GIT_EINVALID:
-            pr_error("Failed to lookup reference '%s' from '%s': invalid ref\n",
-                        refname, url);
+        case GIT_ENOTFOUND:
+            pr_error("Failed to lookup HEAD from '%s': not found\n", url);
             break;
         default:
-            pr_error_with_libgit_error(
-                "Failed to lookup reference '%s' from '%s'", refname, url);
+            pr_error_with_libgit_error("Failed to lookup HEAD from '%s'", url);
             break;
     }
     return -1;
 }
+
 
 // void commit_free(
 //     struct commit *const restrict commit
@@ -4965,39 +5081,6 @@ int repo_work_parse_wanted_reference(
 //     }
 // }
 
-// // May re-allocate repo->parsed_commits
-// int repo_parse_wanted_head(
-//     struct repo *const restrict repo,
-//     struct wanted_reference *const restrict wanted_head,
-//     git_fetch_options *const restrict fetch_options,
-//     unsigned short const proxy_after
-// ) {
-//     git_reference *head;
-//     int r = git_repository_head(&head, repo->repository);
-//     if (r) {
-//         repo_parse_wanted_head_explain_libgit_return(r);
-//         if (repo->updated) {
-//             pr_error("Failed to find HEAD\n");
-//             return -1;
-//         }
-//         pr_warn("Failed to find HEAD, but repo not updated yet, "
-//                 "update to retry");
-//         if (repo_update(repo, fetch_options, proxy_after)) {
-//             pr_error("Failed to update\n");
-//             return -1;
-//         }
-//         if ((r = git_repository_head(&head, repo->repository))) {
-//             repo_parse_wanted_head_explain_libgit_return(r);
-//             pr_error("Still failed to find HEAD after updating\n");
-//             return -1;
-//         }
-//     }
-//     r = repo_parse_wanted_reference_common(
-//         repo, wanted_head, head, fetch_options, proxy_after);
-//     git_reference_free(head);
-//     return r;
-// }
-
 // void repo_parse_wanted_branch_explain_libgit_return(
 //     int const r,
 //     char const *const restrict branch,
@@ -5147,6 +5230,7 @@ int work_handle_check_repo(
 ) {
 
     struct repo_work *restrict repo = work_handle->repos + repo_id;
+    char const *const restrict url = work_handle_get_string(repo->url);
     int r = 0;
     for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
         struct wanted_object *const restrict wanted_object
@@ -5158,7 +5242,7 @@ int work_handle_check_repo(
                 &work_handle->string_buffer)) 
             {
                 pr_error("Failed to parse wanted all branches for repo '%s'\n",
-                    work_handle_get_string(repo->url));
+                        url);
                 r = -1;
             }
             break;
@@ -5166,8 +5250,7 @@ int work_handle_check_repo(
             if (repo_work_parse_wanted_all_tags(repo,
                 (struct wanted_base *)wanted_object,
                 &work_handle->string_buffer)) {
-                pr_error("Failed to parse wanted all tags for repo '%s'\n",
-                    work_handle_get_string(repo->url));
+                pr_error("Failed to parse wanted all tags for repo '%s'\n",url);
                 r = -1;
             }
             break;
@@ -5176,51 +5259,49 @@ int work_handle_check_repo(
                 (struct wanted_reference *)wanted_object,
                 &work_handle->string_buffer)) {
                 pr_error(
-                    "Failed to parsed wanted reference '%s'  for "
-                    "repo '%s'\n",
-                    work_handle_get_string(wanted_object->name), 
-                    work_handle_get_string(repo->url));
+                    "Failed to parsed wanted reference '%s'  for repo '%s'\n",
+                    work_handle_get_string(wanted_object->name), url);
                 return -1;
             }
             break;
-        // case WANTED_TYPE_BRANCH:
-        //     if (repo_parse_wanted_branch(repo,
-        //         (struct wanted_reference *)wanted_object,
-        //         fetch_options, proxy_after)) {
-        //         pr_error(
-        //             "Failed to parsed wanted branch '%s'  for repo '%s'\n",
-        //             wanted_object->name, repo->url);
-        //         return -1;
-        //     }
-        //     break;
-        // case WANTED_TYPE_TAG:
-        //     if (repo_parse_wanted_tag(repo,
-        //         (struct wanted_reference *)wanted_object,
-        //         fetch_options, proxy_after)) {
-        //         pr_error(
-        //             "Failed to parsed wanted tag '%s'  for repo '%s'\n",
-        //             wanted_object->name, repo->url);
-        //         return -1;
-        //     }
-        //     break;
-        // case WANTED_TYPE_HEAD:
-        //     if (repo_parse_wanted_head(repo,
-        //         (struct wanted_reference *)wanted_object,
-        //         fetch_options, proxy_after)) {
-        //         pr_error("Failed to parsed wanted HEAD for repo '%s'\n",
-        //         repo->url);
-        //         return -1;
-        //     }
-        //     break;
-        // case WANTED_TYPE_COMMIT:
-        //     if (repo_parse_wanted_commit(repo,
-        //         (struct wanted_commit *)wanted_object)) {
-        //         pr_error(
-        //             "Failed to parse wanted commit %s for repo '%s'\n",
-        //             wanted_object->hex_string, repo->url);
-        //         return -1;
-        //     }
-        //     break;
+        case WANTED_TYPE_BRANCH:
+            if (repo_work_parse_wanted_branch(repo,
+                (struct wanted_reference *)wanted_object,
+                &work_handle->string_buffer)) {
+                pr_error(
+                    "Failed to parsed wanted branch '%s'  for repo '%s'\n",
+                    work_handle_get_string(wanted_object->name), url);
+                return -1;
+            }
+            break;
+        case WANTED_TYPE_TAG:
+            if (repo_work_parse_wanted_tag(repo,
+                (struct wanted_reference *)wanted_object,
+                &work_handle->string_buffer)) {
+                pr_error(
+                    "Failed to parsed wanted tag '%s'  for repo '%s'\n",
+                    work_handle_get_string(wanted_object->name), url);
+                return -1;
+            }
+            break;
+        case WANTED_TYPE_HEAD:
+            if (repo_work_parse_wanted_head(repo,
+                (struct wanted_reference *)wanted_object,
+                &work_handle->string_buffer)) {
+                pr_error("Failed to parsed wanted HEAD for repo '%s'\n", url);
+                return -1;
+            }
+            break;
+        case WANTED_TYPE_COMMIT:
+            if (repo_work_parse_wanted_commit(repo,
+                (struct wanted_commit *)wanted_object,
+                &work_handle->string_buffer)) {
+                pr_error(
+                    "Failed to parse wanted commit %s for repo '%s'\n",
+                    work_handle_get_string(wanted_object->oid_hex), url);
+                return -1;
+            }
+            break;
         case WANTED_TYPE_UNKNOWN:
         default:
             pr_error(
