@@ -3119,6 +3119,25 @@ bool console_trylock() { // true locked, false not
 }
 
 static inline
+bool console_lock() { // true locked, false not
+    int r = pthread_mutex_lock(&console_mutex);
+    switch (r) {
+        case 0:
+            printf("\33[2K\r");
+            return true;
+        default:
+            pr_error("Failed to try lock console, pthread return %d\n", r);
+            break;
+    }
+    return false;
+}
+
+static inline
+void console_unlock() {
+    pthread_mutex_unlock(&console_mutex);
+}
+
+static inline
 int gcb_sideband_progress_headless(
     char const *string, int len, void *payload
 ) {
@@ -3135,7 +3154,7 @@ int gcb_sideband_progress(char const *string, int len, void *payload) {
     }
     pr_info("Repo '%s': Remote: %.*s",
         ((struct gmr_payload *)payload)->url, len, string);
-    pthread_mutex_unlock(&console_mutex);
+    console_unlock();
 	return 0;
 }
 
@@ -3202,7 +3221,7 @@ static inline void gcb_print_progress(
             stats->indexed_objects,
             stats->total_objects);
 	}
-    pthread_mutex_unlock(&console_mutex);
+    console_unlock();
 }
 
 static inline
@@ -4196,7 +4215,11 @@ int repo_domain_map_update(
         }
         if (active_threads != active_threads_last) {
             active_threads_last = active_threads;
+            bool locked = console_lock();
             pr_info("%hu updaters running...\n", active_threads);
+            if (locked) {
+                console_unlock();
+            }
         }
         if (active_threads == 0) {
             break;
@@ -5364,7 +5387,16 @@ int work_handle_check_all_repos(
     }
     // Update the new repos that needs update
     if (need_update) {
-        if (work_handle_update_all_repos(work_handle)) r = -1;
+        r = 0;
+        if (work_handle_update_all_repos(work_handle)) {
+            pr_error("Failed to re-udpate all repos");
+            return -1;
+        };
+        // for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        //     struct repo_work *const restrict repo = work_handle->repos + i;
+        //     repo->commits_count = 0;
+        //     if (work_handle_check_repo(work_handle, i)) r = -1;
+        // }
         for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
             if (work_handle_check_repo(work_handle, i)) r = -1;
         }
