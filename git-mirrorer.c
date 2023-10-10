@@ -334,6 +334,7 @@ struct repo_work {
     };
     DYNAMIC_ARRAY_DECLARE_SAME(wanted_object);
     DYNAMIC_ARRAY_DECLARE_SAME(commit);
+    unsigned long wanted_objects_count_original;
     git_repository *git_repository;
     bool from_config, wanted_dynamic, need_update, updated;
 };
@@ -3044,6 +3045,7 @@ int repo_work_from_config(
         repo_work->wanted_objects_allocated = 0;
         repo_work->wanted_objects_count = 0;
     }
+    repo_work->wanted_objects_count_original = repo_work->wanted_objects_count;
     repo_work->commits = NULL;
     repo_work->commits_count = 0;
     repo_work->commits_allocated = 0;
@@ -3787,7 +3789,7 @@ free_target_heap:
 
 // check if non-dynamic wanted objects are OK
 static inline
-void work_handle_need_update_all_repos(
+void work_handle_set_need_update_all_repos(
     struct work_handle *const restrict work_handle
 ) {
     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
@@ -4321,7 +4323,7 @@ int work_handle_update_all_repos(
         pr_error("No repos defined\n");
         return -1;
     }
-    work_handle_need_update_all_repos(work_handle);
+    work_handle_set_need_update_all_repos(work_handle);
     struct repo_domain_map map;
     if (repo_domain_map_init(&map, work_handle->repos, 
                             work_handle->repos_count)) 
@@ -5288,7 +5290,7 @@ int repo_work_parse_wanted_head(
 //         wanted_reference->name);
 // }
 
-int work_repo_parse(
+int work_repo_parse_wanted_objects(
     struct repo_work *const restrict repo,
     struct string_buffer *const restrict sbuffer
 ) {
@@ -5375,40 +5377,81 @@ int work_repo_parse(
     return r;
 }
 
-int work_handle_parse_all_repos(
+static inline
+void work_handle_unset_need_update_all_repos(
     struct work_handle *const restrict work_handle
 ) {
-    // Go first loop to reset the update flags
     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
         struct repo_work *const restrict repo = work_handle->repos + i;
         repo->need_update = false;
         repo->updated = false;
     }
-    int r = 0;
-    // bool need_update = false;
-    // Go second loop to actually check them, and potentially also set flags
+}
+
+static inline
+void work_handle_deparse_all_repos(
+    struct work_handle *const restrict work_handle,
+    unsigned long const repos_count_original
+) {
+    for (unsigned long i = repos_count_original - 1; 
+        i < work_handle->repos_count; ++i) 
+    {
+        repo_work_free(work_handle->repos + i);
+    }
+    work_handle->repos_count = repos_count_original;
     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-        if (work_repo_parse(work_handle->repos + i, 
+        struct repo_work *const restrict repo = work_handle->repos + i;
+        repo->wanted_objects_count = repo->wanted_objects_count_original;
+        repo->commits_count = 0;
+        repo->need_update = false;
+        repo->updated = false;
+    }
+}
+
+static inline
+bool work_handle_need_update(
+    struct work_handle *const restrict work_handle
+) {
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        if (work_handle->repos[i].need_update) return true;
+    }
+    return false;
+}
+
+static inline
+int work_handle_parse_all_repos_simple(
+    struct work_handle *const restrict work_handle
+) {
+    int r = 0;
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        if (work_repo_parse_wanted_objects(work_handle->repos + i, 
                             &work_handle->string_buffer)) 
             r = -1;
-        // if (work_handle->repos[i].need_update) need_update = true;
     }
-    // Update the new repos that needs update
-    // if (need_update) {
-    //     r = 0;
-    //     if (work_handle_update_all_repos(work_handle)) {
-    //         pr_error("Failed to re-udpate all repos");
-    //         return -1;
-    //     };
-    //     // for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-    //     //     struct repo_work *const restrict repo = work_handle->repos + i;
-    //     //     repo->commits_count = 0;
-    //     //     if (work_handle_check_repo(work_handle, i)) r = -1;
-    //     // }
-    //     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-    //         if (work_handle_check_repo(work_handle, i)) r = -1;
-    //     }
+
+    // for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+    //     if (work_repo_parse_commits(work_handle->repos + i, 
+    //                         &work_handle->string_buffer)) 
+    //         r = -1;
     // }
+    return r;
+}
+
+int work_handle_parse_all_repos(
+    struct work_handle *const restrict work_handle
+) {
+    work_handle_unset_need_update_all_repos(work_handle);
+    unsigned long const repos_count_original = work_handle->repos_count;
+    int r = work_handle_parse_all_repos_simple(work_handle);
+    if (!work_handle_need_update(work_handle)) return r;
+    if (work_handle_update_all_repos(work_handle)) {
+        pr_error("Failed to re-udpate all repos");
+        return -1;
+    };
+    work_handle_deparse_all_repos(work_handle, repos_count_original);
+    if ((r = work_handle_parse_all_repos_simple(work_handle))) {
+        pr_error("Repos still cannot be parsed even after re-update");
+    }
     return r;
 }
 
