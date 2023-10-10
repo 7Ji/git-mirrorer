@@ -5218,6 +5218,56 @@ int work_repo_parse_wanted_objects(
     return r;
 }
 
+int work_handle_parse_repo_commit(
+    struct work_handle *const restrict work_handle,
+    unsigned long const repo_id,
+    unsigned long const commit_id
+) {
+    git_commit *commit;
+    int r = repo_lookup_commit_and_update_if_failed(
+                &commit, config, repo_id, commit_id);
+
+    struct repo *restrict repo = config->repos + repo_id;
+    struct parsed_commit *restrict parsed_commit =
+        repo->parsed_commits + commit_id;
+    if (r) {
+        pr_error("Failed to lookup commit %s in repo '%s'\n",
+            parsed_commit->id_hex_string, repo->url);
+        return -1;
+    }
+    if (!parsed_commit->submodules_parsed) {
+        r = (repo_ensure_parsed_commit_submodules(
+            config, repo_id, commit_id, commit));
+        repo = config->repos + repo_id;
+        parsed_commit = repo->parsed_commits + commit_id;
+        if (r) {
+            pr_error("Failed to parse repo '%s' commit %s submodules\n",
+                repo->url, parsed_commit->id_hex_string);
+            r = -1;
+            goto free_commit;
+        }
+    }
+    pr_info("Commit robust: '%s': %s\n",
+        repo->url, parsed_commit->id_hex_string);
+    r = 0;
+free_commit:
+    git_commit_free(commit);
+    return r;
+}
+
+
+int work_handle_parse_repo_commits(
+    struct work_handle *const restrict work_handle,
+    unsigned long const repo_id
+) {
+    struct repo_work *restrict repo = work_handle->repos + repo_id;
+    for (unsigned long i = 0; i < repo->commits_count; ++i) {
+
+        repo = work_handle->repos + repo_id;
+    }
+    return 0;
+}
+
 static inline
 void work_handle_unset_need_update_all_repos(
     struct work_handle *const restrict work_handle
@@ -5269,12 +5319,9 @@ int work_handle_parse_all_repos_simple(
                             &work_handle->string_buffer)) 
             r = -1;
     }
-
-    // for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-    //     if (work_repo_parse_commits(work_handle->repos + i, 
-    //                         &work_handle->string_buffer)) 
-    //         r = -1;
-    // }
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        if (work_handle_parse_repo_commits(work_handle, i)) r = 1;
+    }
     return r;
 }
 
