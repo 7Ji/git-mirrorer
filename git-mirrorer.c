@@ -4925,6 +4925,12 @@ reduce_count:
     return r;
 }
 
+int work_handle_parse_repo_commit(
+    struct work_handle *const restrict work_handle,
+    unsigned long const repo_id,
+    unsigned long const commit_id
+);
+
 // // May re-allocate config->repos
 int work_handle_parse_repo_commit_submodule_in_tree(
     struct work_handle *const restrict work_handle,
@@ -4969,45 +4975,41 @@ int work_handle_parse_repo_commit_submodule_in_tree(
         repo = work_handle->repos + repo_id;
         submodule->target_repo_id = work_handle->repos_count - 1;
     }
-    // if (submodule->target_repo_id == (unsigned long) -1) {
-    //     pr_error("Submodule '%s' with url '%s' for commmit %s of repo '%s' "
-    //     "still missing target repo id, refuse to continue\n",
-    //         path, url, submodule->id_hex_string, repo->url);
-    //     return -1;
-    // }
-    // if (submodule->target_commit_id != (unsigned long) -1) return 0;
-    // struct repo *repo_target =
-    //     config->repos + submodule->target_repo_id;
-    // // The repo is either completely new, or we found it but not found commit
-    // // There is no need to check for commit duplication here
-    // int r = repo_add_parsed_commit(repo_target, &submodule->id);
-    // // The above function may re-allocate repo_target, the re-assign here
-    // // is in case repo == repo_target
-    // parsed_commit = repo->parsed_commits + commit_id;
-    // if (r) {
-    //     pr_error("Failed to add parsed commit to repo\n");
-    //     return -1;
-    // }
-    // submodule->target_commit_id = repo_target->parsed_commits_count - 1;
-    // if (submodule->target_repo_id >= repo_id) {
-    //     pr_debug("Added commit %s as wanted to repo '%s', will handle "
-    //         "that repo later\n", submodule->id_hex_string, repo_target->url);
-    //     return 0;
-    // }
-    // pr_warn("Added commit %s as wanted to parsaed repo '%s', need to go back "
-    //         "to handle that specific commit\n",
-    //         submodule->id_hex_string, repo_target->url);
-    // r = repo_ensure_parsed_commit(config, submodule->target_repo_id,
-    //                                 submodule->target_commit_id);
-    // repo = config->repos + repo_id;
-    // parsed_commit = repo->parsed_commits + commit_id;
-    // if (r) {
-    //     pr_error("Failed to ensure repo '%s' commit %s 's submodule at '%s' "
-    //             "from '%s' commit %s in target repo\n",
-    //             repo->url, parsed_commit->id_hex_string, path, url,
-    //             submodule->id_hex_string);
-    //     return 1;
-    // };
+    if (submodule->target_repo_id == (unsigned long) -1) {
+        pr_error("Submodule '%s' with url '%s' for commmit %s of repo '%s' "
+        "still missing target repo id, refuse to continue\n",
+            path, url, work_handle_get_string(submodule->oid_hex), 
+            work_handle_get_string(repo->url));
+        r = -1;
+        goto reduce_count;
+    }
+    if (submodule->target_commit_id != (unsigned long) -1) return 0;
+    struct repo_work *repo_target =
+        work_handle->repos + submodule->target_repo_id;
+    // The repo is either completely new, or we found it but not found commit
+    // There is no need to check for commit duplication here
+    if (repo_work_add_commit(repo_target, &submodule->oid, 
+        submodule->oid_hex_offset, &work_handle->string_buffer)) 
+    {
+        pr_error("Failed to add parsed commit to repo\n");
+        r = -1;
+        goto reduce_count;
+    }
+    submodule->target_commit_id = repo_target->commits_count - 1;
+    if (submodule->target_repo_id >= repo_id) {
+        return 0;
+    }
+    pr_warn("Added commit %s as wanted to parsaed repo '%s', need to go back "
+            "to handle that specific commit\n",
+            work_handle_get_string(submodule->oid_hex),
+            work_handle_get_string(repo_target->url));
+    if (work_handle_parse_repo_commit(work_handle, submodule->target_repo_id, 
+        submodule->target_commit_id)) 
+    {
+        pr_error("Failed to go back to parse commit in a parsed repo\n");
+        r = -1;
+        goto reduce_count;
+    }
     r = 0;
 reduce_count:
     if (r) {
