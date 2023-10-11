@@ -5348,7 +5348,7 @@ free_commit:
         commit = repo->commits + commit_id;
         oid_hex = work_handle_get_string(commit->oid_hex);
         url = work_handle_get_string(repo->url);
-        pr_info("Commit robust: '%s': %s\n", url, oid_hex);
+        pr_info("Repo '%s' commit robust: %s\n", url, oid_hex);
     }
     return r;
 }
