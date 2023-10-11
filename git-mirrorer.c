@@ -5464,13 +5464,13 @@ int work_handle_parse_all_repos(
             pr_error("Failed to hash need-update flags\n");
             return -1;
         }
-        hash_need_update_last = hash_need_update;
         if (i) {
             if (hash_need_update == hash_need_update_last) {
                 pr_error("Hash of need-update flags same as last, giving up\n");
                 return -1;
             }
         }
+        hash_need_update_last = hash_need_update;
         if (work_handle_update_all_repos(work_handle)) {
             pr_error("Failed to re-udpate all repos");
             return -1;
