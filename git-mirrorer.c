@@ -1674,7 +1674,6 @@ impossible_status:
     return -1;
 }
 
-static inline
 int repo_common_init_from_url(
     struct repo_common *const restrict repo,
     struct string_buffer *const restrict sbuffer,
@@ -3018,6 +3017,22 @@ int wanted_object_work_from_config(
     return wanted_object_complete_from_base(wanted_work, sbuffer);
 }
 
+
+/* Non-common attribute that's not set:  wanted_objects{,_count,_allocated},
+  from_config, wanted_dynamic */
+static inline
+void repo_work_finish_bare(
+    struct repo_work *restrict repo_work
+) {
+    repo_work->wanted_objects_count_original = repo_work->wanted_objects_count;
+    repo_work->commits = NULL;
+    repo_work->commits_count = 0;
+    repo_work->commits_allocated = 0;
+    repo_work->git_repository = NULL;
+    repo_work->need_update = repo_work->wanted_dynamic;
+    repo_work->updated = false;
+}
+
 static inline
 int repo_work_from_config(
     struct repo_work *restrict repo_work,
@@ -3059,15 +3074,9 @@ int repo_work_from_config(
         repo_work->wanted_objects_allocated = 0;
         repo_work->wanted_objects_count = 0;
     }
-    repo_work->wanted_objects_count_original = repo_work->wanted_objects_count;
-    repo_work->commits = NULL;
-    repo_work->commits_count = 0;
-    repo_work->commits_allocated = 0;
-    repo_work->git_repository = NULL;
-    repo_work->need_update = repo_work->wanted_dynamic;
-    repo_work->updated = false;
     repo_work->common = repo_config->common;
     repo_work->from_config = true;
+    repo_work_finish_bare(repo_work);
     return 0;
 }
 
@@ -4886,6 +4895,36 @@ reduce_count:
     return r;
 }
 
+int work_handle_add_repo_bare(
+    struct work_handle *const restrict work_handle,
+    char const *const restrict url,
+    unsigned short const len_url
+) {
+    if (dynamic_array_add_to(work_handle->repos)) {
+        pr_error("Failed to allocate memory for new repo");
+        return -1;
+    }
+    struct repo_work *const restrict repo = get_last(work_handle->repos);
+    int r;
+    if (repo_common_init_from_url(&repo->common, &work_handle->string_buffer, 
+        url, len_url)) 
+    {
+        pr_error("Failed to init common part of new repo\n");
+        r = -1;
+        goto reduce_count;
+    }
+    repo->wanted_objects = NULL;
+    repo->wanted_objects_allocated = 0;
+    repo->wanted_objects_count = 0;
+    repo->from_config = false;
+    repo->wanted_dynamic = false;
+    repo_work_finish_bare(repo);
+    r = 0;
+reduce_count:
+    if (r) --work_handle->repos_count;
+    return r;
+}
+
 // // May re-allocate config->repos
 int work_handle_parse_repo_commit_submodule_in_tree(
     struct work_handle *const restrict work_handle,
@@ -4905,35 +4944,31 @@ int work_handle_parse_repo_commit_submodule_in_tree(
         pr_error("Failed to add submodule from commit tree\n");
         return -1;
     }
-    // struct submodule *const restrict submodule = get_last(commit->submodules);
-    // for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-    //     struct repo_work *const repo_cmp = work_handle->repos + i;
-    //     if (repo_cmp->hash_url == submodule->hash_url) {
-    //         submodule->target_repo_id = i;
-    //         for (unsigned long j = 0; j < repo_cmp->commits_count; ++j) {
-    //             if (git_oid_cmp(&submodule->oid, &repo_cmp->commits[j].oid)) 
-    //                 continue;
-    //             submodule->target_commit_id = j;
-    //             return 0;
-    //         }
-    //         break;
-    //     }
-    // }
-    // if (submodule->target_repo_id == (unsigned long) -1) {
-    //     pr_warn("Repo '%s' was not seen before, need to add it\n", url);
-    //     if (config_add_repo_and_init_with_url(config, url, len_url,
-    //         REPO_ADDED_FROM_SUBMODULE)) {
-    //         pr_error("Failed to add repo '%s'\n", url);
-    //         return -1;
-    //     }
-    //     repo = config->repos + repo_id;
-    //     submodule->target_repo_id = config->repos_count - 1;
-    //     if (repo_finish_bare(
-    //         get_last(config->repos), config->dir_repos, config->len_dir_repos)){
-    //         pr_error("Failed to finish bare repo\n");
-    //         return -1;
-    //     }
-    // }
+    struct submodule *const restrict submodule = get_last(commit->submodules);
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        struct repo_work *const repo_cmp = work_handle->repos + i;
+        if (repo_cmp->hash_url == submodule->hash_url) {
+            submodule->target_repo_id = i;
+            for (unsigned long j = 0; j < repo_cmp->commits_count; ++j) {
+                if (git_oid_cmp(&submodule->oid, &repo_cmp->commits[j].oid)) 
+                    continue;
+                submodule->target_commit_id = j;
+                return 0;
+            }
+            break;
+        }
+    }
+    int r;
+    if (submodule->target_repo_id == (unsigned long) -1) {
+        pr_warn("Repo '%s' was not seen before, need to add it\n", url);
+        if (work_handle_add_repo_bare(work_handle, url, len_url)) {
+            pr_error("Failed to add repo\n");
+            r = -1;
+            goto reduce_count;
+        }
+        repo = work_handle->repos + repo_id;
+        submodule->target_repo_id = work_handle->repos_count - 1;
+    }
     // if (submodule->target_repo_id == (unsigned long) -1) {
     //     pr_error("Submodule '%s' with url '%s' for commmit %s of repo '%s' "
     //     "still missing target repo id, refuse to continue\n",
@@ -4973,6 +5008,11 @@ int work_handle_parse_repo_commit_submodule_in_tree(
     //             submodule->id_hex_string);
     //     return 1;
     // };
+    r = 0;
+reduce_count:
+    if (r) {
+        --commit->submodules_count;
+    }
     return 0;
 }
 
