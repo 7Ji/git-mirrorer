@@ -181,7 +181,7 @@ struct submodule {
     COMMIT_ID_UNION_DECLARE;
     STRING_DECLARE(path);
     STRING_DECLARE(url);
-    XXH64_hash_t url_hash;
+    XXH64_hash_t hash_url;
     unsigned long   target_repo_id,
                     target_commit_id;
 };
@@ -4412,11 +4412,7 @@ int repo_work_add_wanted_reference_common(
                     name);
         return -1;
     }
-    if (dynamic_array_add((void **)&repo->wanted_objects, 
-                          sizeof *repo->wanted_objects,
-                          &repo->wanted_objects_count,
-                          &repo->wanted_objects_allocated)) 
-    {
+    if (dynamic_array_add_to(repo->wanted_objects)) {
         pr_error("Failed to allocate new wanted object\n");
         return -1;
     }
@@ -4816,154 +4812,169 @@ int repo_work_parse_wanted_head(
 
 // // May re-allocate the config->repos array, must re-assign repo after calling
 
-// int parsed_commit_add_submodule_from_commit_tree(
-//     struct parsed_commit *const restrict parsed_commit,
-//     git_tree const *const restrict tree,
-//     char const *const restrict path,
-//     unsigned short const len_path,
-//     char const *const restrict url,
-//     unsigned short const len_url
-// ) {
-//     for (unsigned long i = 0; i < parsed_commit->submodules_count; ++i) {
-//         if (!strcmp(parsed_commit->submodules[i].path, path)) {
-//             pr_warn(
-//                 "Already defined a submodule at path '%s' for commit %s\n",
-//                 path, parsed_commit->id_hex_string);
-//             return -1;
-//         }
-//     }
-//     if (parsed_commit_add_submodule_and_init_with_path_and_url(
-//         parsed_commit, path, len_path, url, len_url)) {
-//         pr_error("Failed to init submodule for commit %s with path "
-//                 "'%s' and url '%s'\n",
-//                 parsed_commit->id_hex_string, path, url);
-//         return -1;
-//     }
-//     struct parsed_commit_submodule *const restrict submodule =
-//         get_last(parsed_commit->submodules);
-//     git_tree_entry *entry;
-//     if (git_tree_entry_bypath(&entry, tree, path)) {
-//         pr_error("Path '%s' of submodule does not exist in tree\n", path);
-//         return -1;
-//     }
-//     int r = -1;
-//     if (git_tree_entry_type(entry) != GIT_OBJECT_COMMIT) {
-//         pr_error("Object at path '%s' in tree is not a commit\n", path);
-//         goto free_entry;
-//     }
-//     submodule->id = *git_tree_entry_id(entry);
-//     if (git_oid_tostr(
-//             submodule->id_hex_string,
-//             sizeof submodule->id_hex_string,
-//             &submodule->id
-//         )[0] == '\0') {
-//         pr_error("Failed to format commit id into hex string\n");
-//         goto free_entry;
-//     }
-//     pr_info(
-//         "Submodule needed: '%s' <= '%s': %s\n",
-//         path, url, submodule->id_hex_string);
-//     r = 0;
-// free_entry:
-//     git_tree_entry_free(entry);
-//     return r;
-// }
+int commit_add_submodule_in_tree(
+    struct commit *const restrict commit,
+    git_tree const *const restrict tree,
+    char const *const restrict path,
+    unsigned short const len_path,
+    char const *const restrict url,
+    unsigned short const len_url,
+    struct string_buffer *const restrict sbuffer
+) {
+    for (unsigned long i = 0; i < commit->submodules_count; ++i) {
+        if (!strcmp(buffer_get_string(sbuffer, commit->submodules[i].path),
+                     path)) 
+        {
+            pr_error("Already defined a submodule at path '%s' for commit %s\n",
+                    path, buffer_get_string(sbuffer, commit->oid_hex));
+            return -1;
+        }
+    }
+    unsigned path_offset = sbuffer->used;
+    if (string_buffer_add(sbuffer, path, len_path)) {
+        pr_error("Failed to add path to string buffer");
+        return -1;
+    }
+    unsigned url_offset = sbuffer->used;
+    if (string_buffer_add(sbuffer, url, len_url)) {
+        pr_error("Failed to add url to string buffer");
+        return -1;
+    }
+    if (dynamic_array_add_to(commit->submodules)) {
+        pr_error("Failed to allocate new submodule\n");
+        return -1;
+    }
+    struct submodule *const restrict submodule = get_last(commit->submodules);
+    git_tree_entry *entry;
+    int r;
+    if (git_tree_entry_bypath(&entry, tree, path)) {
+        pr_error("Path '%s' of submodule does not exist in tree\n", path);
+        r = -1;
+        goto reduce_count;
+    }
+    if (git_tree_entry_type(entry) != GIT_OBJECT_COMMIT) {
+        pr_error("Object at path '%s' in tree is not a commit\n", path);
+        r = -1;
+        goto free_entry;
+    }
+    submodule->oid = *git_tree_entry_id(entry);
+    submodule->oid_hex_offset = sbuffer->used;
+    if (format_oid_to_string_buffer(&submodule->oid, sbuffer)) {
+        pr_error("Failed to format submdoule ID to string buffer\n");
+        r = -1;
+        goto free_entry;
+    }
+    submodule->target_commit_id = -1;
+    submodule->target_repo_id = -1;
+    submodule->hash_url = hash_calculate(url, len_url);
+    submodule->path_offset = path_offset;
+    submodule->url_offset = url_offset;
+    submodule->len_path = len_path;
+    submodule->len_url = len_url;
+    pr_info("Submodule added: '%s' <= '%s': %s\n",
+            buffer_get_string(sbuffer, submodule->path),
+            buffer_get_string(sbuffer, submodule->url),
+            buffer_get_string(sbuffer, submodule->oid_hex));
+    r = 0;
+free_entry:
+    git_tree_entry_free(entry);
+reduce_count:
+    if (r) {
+        sbuffer->used = path_offset;
+        --commit->submodules_count;
+    }
+    return r;
+}
 
 // // May re-allocate config->repos
-// int repo_parse_commit_submodule_in_tree(
-//     struct config *const restrict config,
-//     unsigned long const repo_id,
-//     unsigned long const commit_id,
-//     git_tree const *const restrict tree,
-//     char const *const restrict path,
-//     unsigned short const len_path,
-//     char const *const restrict url,
-//     unsigned short const len_url
-// ) {
-//     struct repo const *repo = config->repos + repo_id;
-//     struct parsed_commit *parsed_commit =
-//         repo->parsed_commits + commit_id;
-//     if (parsed_commit_add_submodule_from_commit_tree(
-//         parsed_commit, tree, path, len_path, url, len_url)) {
-//         pr_error("Failed to add submodule from commit tree\n");
-//         return -1;
-//     }
-//     struct parsed_commit_submodule *const restrict submodule =
-//         get_last(parsed_commit->submodules);
-
-//     for (unsigned long i = 0; i < config->repos_count; ++i) {
-//         struct repo *const repo_cmp = config->repos + i;
-//         if (repo_cmp->url_hash == submodule->url_hash) {
-//             submodule->target_repo_id = i;
-//             for (unsigned long j = 0; j < repo_cmp->parsed_commits_count; ++j) {
-//                 if (git_oid_cmp(
-//                     &submodule->id,
-//                     &repo_cmp->parsed_commits[j].id)) continue;
-//                 pr_debug(
-//                     "Already added commit %s to repo '%s', skipped\n",
-//                     submodule->id_hex_string, repo_cmp->url);
-//                 submodule->target_commit_id = j;
-//                 return 0;
-//             }
-//             break;
-//         }
-//     }
-//     if (submodule->target_repo_id == (unsigned long) -1) {
-//         pr_warn("Repo '%s' was not seen before, need to add it\n", url);
-//         if (config_add_repo_and_init_with_url(config, url, len_url,
-//             REPO_ADDED_FROM_SUBMODULE)) {
-//             pr_error("Failed to add repo '%s'\n", url);
-//             return -1;
-//         }
-//         repo = config->repos + repo_id;
-//         submodule->target_repo_id = config->repos_count - 1;
-//         if (repo_finish_bare(
-//             get_last(config->repos), config->dir_repos, config->len_dir_repos)){
-//             pr_error("Failed to finish bare repo\n");
-//             return -1;
-//         }
-//     }
-//     if (submodule->target_repo_id == (unsigned long) -1) {
-//         pr_error("Submodule '%s' with url '%s' for commmit %s of repo '%s' "
-//         "still missing target repo id, refuse to continue\n",
-//             path, url, submodule->id_hex_string, repo->url);
-//         return -1;
-//     }
-//     if (submodule->target_commit_id != (unsigned long) -1) return 0;
-//     struct repo *repo_target =
-//         config->repos + submodule->target_repo_id;
-//     // The repo is either completely new, or we found it but not found commit
-//     // There is no need to check for commit duplication here
-//     int r = repo_add_parsed_commit(repo_target, &submodule->id);
-//     // The above function may re-allocate repo_target, the re-assign here
-//     // is in case repo == repo_target
-//     parsed_commit = repo->parsed_commits + commit_id;
-//     if (r) {
-//         pr_error("Failed to add parsed commit to repo\n");
-//         return -1;
-//     }
-//     submodule->target_commit_id = repo_target->parsed_commits_count - 1;
-//     if (submodule->target_repo_id >= repo_id) {
-//         pr_debug("Added commit %s as wanted to repo '%s', will handle "
-//             "that repo later\n", submodule->id_hex_string, repo_target->url);
-//         return 0;
-//     }
-//     pr_warn("Added commit %s as wanted to parsaed repo '%s', need to go back "
-//             "to handle that specific commit\n",
-//             submodule->id_hex_string, repo_target->url);
-//     r = repo_ensure_parsed_commit(config, submodule->target_repo_id,
-//                                     submodule->target_commit_id);
-//     repo = config->repos + repo_id;
-//     parsed_commit = repo->parsed_commits + commit_id;
-//     if (r) {
-//         pr_error("Failed to ensure repo '%s' commit %s 's submodule at '%s' "
-//                 "from '%s' commit %s in target repo\n",
-//                 repo->url, parsed_commit->id_hex_string, path, url,
-//                 submodule->id_hex_string);
-//         return 1;
-//     };
-//     return 0;
-// }
+int work_handle_parse_repo_commit_submodule_in_tree(
+    struct work_handle *const restrict work_handle,
+    unsigned long const repo_id,
+    unsigned long const commit_id,
+    git_tree const *const restrict tree,
+    char const *const restrict path,
+    unsigned short const len_path,
+    char const *const restrict url,
+    unsigned short const len_url
+) {
+    struct repo_work const *repo = work_handle->repos + repo_id;
+    struct commit *commit = repo->commits + commit_id;
+    if (commit_add_submodule_in_tree(commit, tree, path, len_path, url, len_url,
+         &work_handle->string_buffer)) 
+    {
+        pr_error("Failed to add submodule from commit tree\n");
+        return -1;
+    }
+    // struct submodule *const restrict submodule = get_last(commit->submodules);
+    // for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+    //     struct repo_work *const repo_cmp = work_handle->repos + i;
+    //     if (repo_cmp->hash_url == submodule->hash_url) {
+    //         submodule->target_repo_id = i;
+    //         for (unsigned long j = 0; j < repo_cmp->commits_count; ++j) {
+    //             if (git_oid_cmp(&submodule->oid, &repo_cmp->commits[j].oid)) 
+    //                 continue;
+    //             submodule->target_commit_id = j;
+    //             return 0;
+    //         }
+    //         break;
+    //     }
+    // }
+    // if (submodule->target_repo_id == (unsigned long) -1) {
+    //     pr_warn("Repo '%s' was not seen before, need to add it\n", url);
+    //     if (config_add_repo_and_init_with_url(config, url, len_url,
+    //         REPO_ADDED_FROM_SUBMODULE)) {
+    //         pr_error("Failed to add repo '%s'\n", url);
+    //         return -1;
+    //     }
+    //     repo = config->repos + repo_id;
+    //     submodule->target_repo_id = config->repos_count - 1;
+    //     if (repo_finish_bare(
+    //         get_last(config->repos), config->dir_repos, config->len_dir_repos)){
+    //         pr_error("Failed to finish bare repo\n");
+    //         return -1;
+    //     }
+    // }
+    // if (submodule->target_repo_id == (unsigned long) -1) {
+    //     pr_error("Submodule '%s' with url '%s' for commmit %s of repo '%s' "
+    //     "still missing target repo id, refuse to continue\n",
+    //         path, url, submodule->id_hex_string, repo->url);
+    //     return -1;
+    // }
+    // if (submodule->target_commit_id != (unsigned long) -1) return 0;
+    // struct repo *repo_target =
+    //     config->repos + submodule->target_repo_id;
+    // // The repo is either completely new, or we found it but not found commit
+    // // There is no need to check for commit duplication here
+    // int r = repo_add_parsed_commit(repo_target, &submodule->id);
+    // // The above function may re-allocate repo_target, the re-assign here
+    // // is in case repo == repo_target
+    // parsed_commit = repo->parsed_commits + commit_id;
+    // if (r) {
+    //     pr_error("Failed to add parsed commit to repo\n");
+    //     return -1;
+    // }
+    // submodule->target_commit_id = repo_target->parsed_commits_count - 1;
+    // if (submodule->target_repo_id >= repo_id) {
+    //     pr_debug("Added commit %s as wanted to repo '%s', will handle "
+    //         "that repo later\n", submodule->id_hex_string, repo_target->url);
+    //     return 0;
+    // }
+    // pr_warn("Added commit %s as wanted to parsaed repo '%s', need to go back "
+    //         "to handle that specific commit\n",
+    //         submodule->id_hex_string, repo_target->url);
+    // r = repo_ensure_parsed_commit(config, submodule->target_repo_id,
+    //                                 submodule->target_commit_id);
+    // repo = config->repos + repo_id;
+    // parsed_commit = repo->parsed_commits + commit_id;
+    // if (r) {
+    //     pr_error("Failed to ensure repo '%s' commit %s 's submodule at '%s' "
+    //             "from '%s' commit %s in target repo\n",
+    //             repo->url, parsed_commit->id_hex_string, path, url,
+    //             submodule->id_hex_string);
+    //     return 1;
+    // };
+    return 0;
+}
 
 
 // May re-allocate the config->repos array, must re-assign repo after calling
@@ -4974,6 +4985,11 @@ int work_handle_parse_repo_commit_blob_gitmodules(
     git_tree const *const restrict tree,
     git_blob *const restrict blob
 ) {
+    struct repo_work const *const restrict repo = work_handle->repos + repo_id;
+    struct commit const *const restrict commit = repo->commits + commit_id;
+    pr_info("Parsing submodule of repo '%s' commit %s\n", 
+            work_handle_get_string(repo->url), 
+            work_handle_get_string(commit->oid_hex));
     char const *buffer_all = git_blob_rawcontent(blob);
     if (!buffer_all) {
         pr_error("Failed to get a ro buffer for gitmodules\n");
@@ -5110,16 +5126,13 @@ int work_handle_parse_repo_commit_blob_gitmodules(
             (*value)[*len_value] = '\0';
             if (path[0] && url[0]); else break;
             pr_info("Submodule '%s', path '%s', url '%s'\n", name, path, url);
-            // if (repo_parse_commit_in_tree(
-            //     config, repo_id, commit_id, tree,
-            //             path, len_path,
-            //             url, len_url)) {
-            //     pr_error(
-            //         "Failed to recursively clone or update "
-            //         "submodule '%s' (url '%s')\n",
-            //         name, url);
-            //     return -1;
-            // }
+            if (work_handle_parse_repo_commit_submodule_in_tree(work_handle, 
+                repo_id, commit_id, tree, path, len_path, url, len_url)) 
+            {
+                pr_error("Failed to add parse commit submodule in tree");
+                r = -1;
+                goto free_heap;
+            }
             name[0] = '\0';
             path[0] = '\0';
             url[0] = '\0';
