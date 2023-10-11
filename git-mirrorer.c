@@ -5383,7 +5383,7 @@ void work_handle_deparse_all_repos(
     struct work_handle *const restrict work_handle,
     unsigned long const repos_count_original
 ) {
-    for (unsigned long i = repos_count_original - 1; 
+    for (unsigned long i = repos_count_original; 
         i < work_handle->repos_count; ++i) 
     {
         repo_work_free(work_handle->repos + i);
@@ -5415,7 +5415,7 @@ int work_handle_parse_all_repos_simple(
         if (work_repo_parse_wanted_objects(work_handle->repos + i, 
                             &work_handle->string_buffer)) 
             r = -1;
-    for (unsigned long i = 0; i < work_handle->repos_count; ++i) 
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i)
         for (unsigned long j = 0; j < work_handle->repos[i].commits_count; ++j)
             if (work_handle_parse_repo_commit(work_handle, i, j)) r = 1;
     return r;
