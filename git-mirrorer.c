@@ -5428,6 +5428,8 @@ int work_handle_parse_all_repos(
     unsigned long const repos_count_original = work_handle->repos_count;
     int r = work_handle_parse_all_repos_simple(work_handle);
     if (!work_handle_need_update(work_handle)) return r;
+    pr_warn("Some repos is not robust and some needs to be updated, re-update "
+        "the repos before we re-check the rebostness\n");
     if (work_handle_update_all_repos(work_handle)) {
         pr_error("Failed to re-udpate all repos");
         return -1;
