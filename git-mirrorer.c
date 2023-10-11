@@ -5051,6 +5051,8 @@ int work_handle_parse_repo_commit_blob_gitmodules(
                     if (!(name_heap = malloc(name_allocated))) {
                         pr_error_with_errno("Failed to allocate memory for long"
                             " submodule name");
+                        r = -1;
+                        goto free_heap;
                     }
                     name = name_heap;
                 }
@@ -5099,6 +5101,8 @@ int work_handle_parse_repo_commit_blob_gitmodules(
                 if (!(*value_heap = malloc(*value_allocated))) {
                     pr_error_with_errno("Failed to allocate memory for long"
                         " submodule value");
+                    r = -1;
+                    goto free_heap;
                 }
                 *value = *value_heap;
             }
