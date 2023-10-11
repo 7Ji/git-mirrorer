@@ -4918,6 +4918,7 @@ int work_handle_add_repo_bare(
     repo->wanted_objects_count = 0;
     repo->from_config = false;
     repo->wanted_dynamic = false;
+    repo->git_repository = NULL;
     repo_work_finish_bare(repo);
     r = 0;
 reduce_count:
@@ -4969,6 +4970,14 @@ int work_handle_parse_repo_commit_submodule_in_tree(
         pr_warn("Repo '%s' was not seen before, need to add it\n", url);
         if (work_handle_add_repo_bare(work_handle, url, len_url)) {
             pr_error("Failed to add repo\n");
+            r = -1;
+            goto reduce_count;
+        }
+        if (repo_work_open_one(get_last(work_handle->repos), 
+            work_handle->string_buffer.buffer, work_handle->dir_repos.datafd, 
+            work_handle->cwd)) 
+        {
+            pr_error("Failed to open added repo");
             r = -1;
             goto reduce_count;
         }
