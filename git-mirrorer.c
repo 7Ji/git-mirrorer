@@ -157,6 +157,11 @@ struct string_buffer {
 #define free_if_allocated(name) if (name) free(name)
 #define free_if_allocated_to_null(name) if (name) { free(name); name = NULL; }
 
+#define dynamic_array_free(name) \
+    free_if_allocated_to_null(name); \
+    name##_count = 0; \
+    name##_allocated = 0;
+
 /* Commit */
 
 #define COMMIT_ID_DECLARE { \
@@ -196,6 +201,9 @@ struct commit {
 
 struct commit const COMMIT_INIT = {0};
 
+#define git_commit_free_if_allocated(name) if (name) git_commit_free(name)
+#define git_commit_free_if_allocated_to_null(name) \
+    if (name) { git_commit_free(name); name = NULL; }
 
 /* Wanted objects */
 
@@ -338,6 +346,11 @@ struct repo_work {
     git_repository *git_repository;
     bool from_config, wanted_dynamic, need_update, updated;
 };
+
+#define git_repository_free_if_allocated(name) \
+    if (name) git_repository_free(name)
+#define git_repository_free_if_allocated_to_null(name) \
+    if (name) { git_repository_free(name); name = NULL; }
 
 struct repo_domain_group {
     hash_type domain;
@@ -3299,16 +3312,22 @@ free_cwd:
     return -1;
 }
 
-static inline
-void repo_work_free(
-    struct repo_work *const restrict repo_work
+void commit_free(
+    struct commit *const restrict commit
 ) {
-    free_if_allocated_to_null(repo_work->commits);
-    free_if_allocated_to_null(repo_work->wanted_objects);
-    if (repo_work->git_repository) {
-        git_repository_free(repo_work->git_repository);
-        repo_work->git_repository = NULL;
+    git_commit_free_if_allocated_to_null(commit->git_commit);
+    dynamic_array_free(commit->submodules);
+}
+
+void repo_work_free(
+    struct repo_work *const restrict repo
+) {
+    for (unsigned long i = 0; i < repo->commits_count; ++i) {
+        commit_free(repo->commits + i);
     }
+    dynamic_array_free(repo->commits);
+    dynamic_array_free(repo->wanted_objects);
+    git_repository_free_if_allocated_to_null(repo->git_repository);
 }
 
 void work_handle_free(
@@ -4772,19 +4791,6 @@ int repo_work_parse_wanted_head(
     return -1;
 }
 
-// void commit_free(
-//     struct commit *const restrict commit
-// ) {
-//     if (commit->submodules) {
-//         free(commit->submodules);
-//         commit->submodules_allocated = 0;
-//     }
-//     if (parsed_commit->commit) {
-//         git_commit_free(parsed_commit->commit);
-//     }
-//     *parsed_commit = PARSED_COMMIT_INIT;
-// }
-
 // int parsed_commit_add_submodule_and_init_with_path_and_url(
 //     struct parsed_commit *const restrict parsed_commit,
 //     char const *const restrict path,
@@ -5218,42 +5224,42 @@ int work_repo_parse_wanted_objects(
     return r;
 }
 
-int work_handle_parse_repo_commit(
-    struct work_handle *const restrict work_handle,
-    unsigned long const repo_id,
-    unsigned long const commit_id
-) {
-    git_commit *commit;
-    int r = repo_lookup_commit_and_update_if_failed(
-                &commit, config, repo_id, commit_id);
+// int work_handle_parse_repo_commit(
+//     struct work_handle *const restrict work_handle,
+//     unsigned long const repo_id,
+//     unsigned long const commit_id
+// ) {
+//     git_commit *commit;
+//     int r = repo_lookup_commit_and_update_if_failed(
+//                 &commit, config, repo_id, commit_id);
 
-    struct repo *restrict repo = config->repos + repo_id;
-    struct parsed_commit *restrict parsed_commit =
-        repo->parsed_commits + commit_id;
-    if (r) {
-        pr_error("Failed to lookup commit %s in repo '%s'\n",
-            parsed_commit->id_hex_string, repo->url);
-        return -1;
-    }
-    if (!parsed_commit->submodules_parsed) {
-        r = (repo_ensure_parsed_commit_submodules(
-            config, repo_id, commit_id, commit));
-        repo = config->repos + repo_id;
-        parsed_commit = repo->parsed_commits + commit_id;
-        if (r) {
-            pr_error("Failed to parse repo '%s' commit %s submodules\n",
-                repo->url, parsed_commit->id_hex_string);
-            r = -1;
-            goto free_commit;
-        }
-    }
-    pr_info("Commit robust: '%s': %s\n",
-        repo->url, parsed_commit->id_hex_string);
-    r = 0;
-free_commit:
-    git_commit_free(commit);
-    return r;
-}
+//     struct repo *restrict repo = config->repos + repo_id;
+//     struct parsed_commit *restrict parsed_commit =
+//         repo->parsed_commits + commit_id;
+//     if (r) {
+//         pr_error("Failed to lookup commit %s in repo '%s'\n",
+//             parsed_commit->id_hex_string, repo->url);
+//         return -1;
+//     }
+//     if (!parsed_commit->submodules_parsed) {
+//         r = (repo_ensure_parsed_commit_submodules(
+//             config, repo_id, commit_id, commit));
+//         repo = config->repos + repo_id;
+//         parsed_commit = repo->parsed_commits + commit_id;
+//         if (r) {
+//             pr_error("Failed to parse repo '%s' commit %s submodules\n",
+//                 repo->url, parsed_commit->id_hex_string);
+//             r = -1;
+//             goto free_commit;
+//         }
+//     }
+//     pr_info("Commit robust: '%s': %s\n",
+//         repo->url, parsed_commit->id_hex_string);
+//     r = 0;
+// free_commit:
+//     git_commit_free(commit);
+//     return r;
+// }
 
 
 int work_handle_parse_repo_commits(
@@ -5277,6 +5283,20 @@ void work_handle_unset_need_update_all_repos(
         repo->need_update = false;
         repo->updated = false;
     }
+}
+
+static inline
+void repo_work_deparse(
+    struct repo_work *const restrict repo
+) {
+    if (repo->git_repository) {
+        git_repository_free(repo->git_repository);
+        repo->git_repository = NULL;
+    }
+    repo->wanted_objects_count = repo->wanted_objects_count_original;
+    repo->commits_count = 0;
+    repo->need_update = false;
+    repo->updated = false;
 }
 
 static inline
