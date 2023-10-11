@@ -5381,7 +5381,8 @@ void repo_work_deparse(
 static inline
 void work_handle_deparse_all_repos(
     struct work_handle *const restrict work_handle,
-    unsigned long const repos_count_original
+    unsigned long const repos_count_original,
+    unsigned const sbuffer_used_original
 ) {
     for (unsigned long i = repos_count_original; 
         i < work_handle->repos_count; ++i) 
@@ -5389,6 +5390,7 @@ void work_handle_deparse_all_repos(
         repo_work_free(work_handle->repos + i);
     }
     work_handle->repos_count = repos_count_original;
+    work_handle->string_buffer.used = sbuffer_used_original;
     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
         struct repo_work *const restrict repo = work_handle->repos + i;
         repo->wanted_objects_count = repo->wanted_objects_count_original;
@@ -5421,24 +5423,62 @@ int work_handle_parse_all_repos_simple(
     return r;
 }
 
+int work_handle_hash_need_update(
+    struct work_handle *const restrict work_handle,
+    hash_type *hash
+) {
+    bool flags_stack[0x100];
+    bool *flags_heap = NULL;
+    bool *flags;
+    if (work_handle->repos_count > 0x100) {
+        if (!(flags_heap = malloc(work_handle->repos_count))) {
+            pr_error_with_errno("Failed to allocate memory for flags on heap");
+            return -1;
+        }
+        flags = flags_heap;
+    } else {
+        flags = flags_stack;
+    }
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        flags[i] = work_handle->repos[i].need_update;
+    }
+    *hash = hash_calculate(flags, work_handle->repos_count);
+    free_if_allocated(flags_heap);
+    return 0;
+}
+
 int work_handle_parse_all_repos(
     struct work_handle *const restrict work_handle
 ) {
     work_handle_unset_need_update_all_repos(work_handle);
     unsigned long const repos_count_original = work_handle->repos_count;
-    int r = work_handle_parse_all_repos_simple(work_handle);
-    if (!work_handle_need_update(work_handle)) return r;
-    pr_warn("Some repos is not robust and some needs to be updated, re-update "
-        "the repos before we re-check the rebostness\n");
-    if (work_handle_update_all_repos(work_handle)) {
-        pr_error("Failed to re-udpate all repos");
-        return -1;
-    };
-    work_handle_deparse_all_repos(work_handle, repos_count_original);
-    if ((r = work_handle_parse_all_repos_simple(work_handle))) {
-        pr_error("Repos still cannot be parsed even after re-update");
+    unsigned const sbuffer_used_original = work_handle->string_buffer.used;
+    hash_type hash_need_update_last = 0, hash_need_update;
+    int r;
+    for (unsigned short i = 0; i < 100; ++i) {
+        r = work_handle_parse_all_repos_simple(work_handle);
+        if (!work_handle_need_update(work_handle)) return r;
+        pr_warn("Some repos are not robust and some need to be updated, "
+            "re-update the repos before we re-check the rebostness\n");
+        if (i) {
+            if (work_handle_hash_need_update(work_handle, &hash_need_update)) {
+                pr_error("Failed to hash need-update flags\n");
+                return -1;
+            }
+            if (hash_need_update == hash_need_update_last) {
+                pr_error("Hash of need-update flags same as last, giving up\n");
+                return -1;
+            }
+        }
+        if (work_handle_update_all_repos(work_handle)) {
+            pr_error("Failed to re-udpate all repos");
+            return -1;
+        };
+        work_handle_deparse_all_repos(work_handle, repos_count_original, 
+            sbuffer_used_original);
     }
-    return r;
+    pr_error("Too many iterations, giving up\n");
+    return -1;
 }
 
 // int remove_dir_recursively(
