@@ -8798,9 +8798,9 @@ int gmr_work(char const *const restrict config_path) {
     }
     if (gmr_set_timeout(config.timeout_connect) ||
         work_handle_open_all_repos(&work_handle) || 
-        work_handle_link_all_repos(&work_handle) ||
         work_handle_update_all_repos(&work_handle) ||
-        work_handle_parse_all_repos(&work_handle)) {
+        work_handle_parse_all_repos(&work_handle) ||
+        work_handle_link_all_repos(&work_handle)) {
         r = -1;
         goto shutdown;
     }
