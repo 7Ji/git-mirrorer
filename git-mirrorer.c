@@ -8463,6 +8463,42 @@ int tar_finish(
 //     }
 //     return r;
 // }
+static inline
+bool work_handle_all_looked_up(
+    struct work_handle const *const restrict work_handle
+) {
+    pr_info("Checking if all repos and commits are looked up\n");
+    bool looked_up = true;
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        struct repo_work *repo = work_handle->repos + i;
+        if (!repo->git_repository) {
+            pr_error("Repo '%s' not opened yet\n", 
+                work_handle_get_string(repo->url));
+            looked_up = false;
+        }
+        for (unsigned long j = 0; j < repo->commits_count; ++j) {
+            struct commit *commit = repo->commits + j;
+            if (!commit->git_commit) {
+                pr_error("Repo '%s' commit %s not looked up yet\n",
+                    work_handle_get_string(repo->url),
+                    work_handle_get_string(commit->oid_hex));
+                looked_up = false;
+            }
+        }
+    }
+    return looked_up;
+}
+
+int work_handle_export_all_repos(
+    struct work_handle const *const restrict work_handle
+) {
+    if (!work_handle_all_looked_up(work_handle)) {
+        pr_error("Refuse to export, as there's repos/commits not looked up\n");
+        return -1;
+    }
+    pr_info("ALl repos and commits looked up, exporting now\n");
+    return 0;
+}
 
 // int export_all_repos(
 //     struct config const *const restrict config,
@@ -8800,7 +8836,8 @@ int gmr_work(char const *const restrict config_path) {
         work_handle_open_all_repos(&work_handle) || 
         work_handle_update_all_repos(&work_handle) ||
         work_handle_parse_all_repos(&work_handle) ||
-        work_handle_link_all_repos(&work_handle)) {
+        work_handle_link_all_repos(&work_handle) ||
+        work_handle_export_all_repos(&work_handle)) {
         r = -1;
         goto shutdown;
     }
