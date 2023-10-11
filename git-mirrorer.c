@@ -5393,8 +5393,6 @@ void work_handle_deparse_all_repos(
         struct repo_work *const restrict repo = work_handle->repos + i;
         repo->wanted_objects_count = repo->wanted_objects_count_original;
         repo->commits_count = 0;
-        repo->need_update = false;
-        repo->updated = false;
     }
 }
 
