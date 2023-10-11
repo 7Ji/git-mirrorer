@@ -194,7 +194,7 @@ struct commit {
     COMMIT_ID_UNION_DECLARE;
     git_commit *git_commit;
     DYNAMIC_ARRAY_DECLARE_SAME(submodule);
-    bool    submodules_parsed,
+    bool    /*submodules_parsed,*/
             archive,
             checkout;
 };
@@ -204,6 +204,7 @@ struct commit const COMMIT_INIT = {0};
 #define git_commit_free_if_allocated(name) if (name) git_commit_free(name)
 #define git_commit_free_if_allocated_to_null(name) \
     if (name) { git_commit_free(name); name = NULL; }
+#define git_commit_free_to_null(name) git_commit_free(name); name = NULL;
 
 /* Wanted objects */
 
@@ -3336,8 +3337,8 @@ void work_handle_free(
     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
         repo_work_free(work_handle->repos + i);
     }
-    free_if_allocated_to_null(work_handle->repos);
-    free_if_allocated_to_null(work_handle->string_buffer.buffer);
+    dynamic_array_free(work_handle->repos);
+    string_buffer_free(&work_handle->string_buffer);
     if (close(work_handle->cwd))
         pr_error_with_errno("Failed to clsoe opened/duped cwd");
 }
@@ -4965,177 +4966,136 @@ int repo_work_parse_wanted_head(
 // }
 
 
-// // May re-allocate the config->repos array, must re-assign repo after calling
-// int repo_parse_commit_blob_gitmodules(
-//     struct config *const restrict config,
-//     unsigned long const repo_id,
-//     unsigned long const commit_id,
-//     git_tree const *const tree,
-//     git_blob *const restrict blob_gitmodules
-// ) {
-//     char const *blob_gitmodules_ro_buffer =
-//         git_blob_rawcontent(blob_gitmodules);
-//     if (blob_gitmodules_ro_buffer == NULL) {
-//         pr_error("Failed to get a ro buffer for gitmodules\n");
-//         return -1;
-//     }
-//     git_object_size_t blob_gitmodules_size =
-//         git_blob_rawsize(blob_gitmodules);
-//     if (blob_gitmodules_size == 0) {
-//         pr_error("Tree entry .gitmodules blob size is 0\n");
-//         return -1;
-//     }
-//     char    submodule_name[NAME_MAX] = "",
-//             submodule_path[PATH_MAX] = "",
-//             submodule_url[PATH_MAX] = "";
-//     unsigned short  len_submodule_name = 0,
-//                     len_submodule_path = 0,
-//                     len_submodule_url = 0;
-//     for (git_object_size_t id_start = 0; id_start < blob_gitmodules_size; ) {
-//         switch (blob_gitmodules_ro_buffer[id_start]) {
-//         case '\0':
-//         case '\n':
-//         case '\r':
-//         case '\b':
-//             ++id_start;
-//             continue;
-//         }
-//         unsigned short len_line = 0;
-//         git_object_size_t id_end = id_start + 1;
-//         for (; id_end < blob_gitmodules_size && len_line == 0;) {
-//             switch (blob_gitmodules_ro_buffer[id_end]) {
-//             case '\0':
-//             case '\n':
-//                 len_line = id_end - id_start;
-//                 break;
-//             default:
-//                 ++id_end;
-//                 break;
-//             }
-//         }
-//         if (len_line > 7) { // The shortest, "\turl = "
-//             char const *line = blob_gitmodules_ro_buffer + id_start;
-//             char const *line_end = blob_gitmodules_ro_buffer + id_end;
-//             switch (blob_gitmodules_ro_buffer[id_start]) {
-//             case '[':
-//                 if (!strncmp(line + 1, "submodule \"", 11)) {
-//                     if (submodule_name[0]) {
-//                         pr_error(
-//                             "Incomplete submodule definition for '%s'\n",
-//                             submodule_name);
-//                         return -1;
-//                     }
-//                     char const *submodule_name_start = line + 12;
-//                     char const *right_quote = submodule_name_start;
-//                     for (;
-//                         *right_quote != '"' && right_quote < line_end;
-//                         ++right_quote);
-//                     len_submodule_name = right_quote - submodule_name_start;
-//                     strncpy(
-//                         submodule_name,
-//                         submodule_name_start,
-//                         len_submodule_name);
-//                     submodule_name[len_submodule_name] = '\0';
-//                 }
-//                 break;
-//             case '\t':
-//                 char const *value = NULL;
-//                 char *submodule_value = NULL;
-//                 unsigned short *len_submodule_value = NULL;
-//                 if (!strncmp(line + 1, "path = ", 7)) {
-//                     value = line + 8;
-//                     submodule_value = submodule_path;
-//                     len_submodule_value = &len_submodule_path;
-//                 } else if (!strncmp(line + 1, "url = ", 6)) {
-//                     value = line + 7;
-//                     submodule_value = submodule_url;
-//                     len_submodule_value = &len_submodule_url;
-//                 }
-//                 if (value) {
-//                     if (submodule_name[0] == '\0') {
-//                         pr_error(
-//                             "Submodule definition begins before "
-//                             "the submodule name\n");
-//                         return -1;
-//                     }
-//                     if (submodule_value[0] != '\0') {
-//                         pr_error("Duplicated value definition for "
-//                             "submodule '%s'\n", submodule_name);
-//                         return -1;
-//                     }
-//                     *len_submodule_value = line_end - value;
-//                     strncpy(submodule_value, value, *len_submodule_value);
-//                     submodule_value[*len_submodule_value] = '\0';
-//                     if (submodule_path[0] != '\0' &&
-//                         submodule_url[0] != '\0') {
-//                         pr_debug(
-//                             "Submodule '%s', path '%s', url '%s'\n",
-//                             submodule_name, submodule_path, submodule_url);
-//                         if (repo_parse_commit_submodule_in_tree(
-//                             config, repo_id, commit_id, tree,
-//                                     submodule_path, len_submodule_path,
-//                                     submodule_url, len_submodule_url)) {
-//                             pr_error(
-//                                 "Failed to recursively clone or update "
-//                                 "submodule '%s' (url '%s')\n",
-//                                 submodule_name, submodule_url);
-//                             return -1;
-//                         }
-//                         submodule_name[0] = '\0';
-//                         submodule_path[0] = '\0';
-//                         submodule_url[0] = '\0';
-//                     }
-//                 }
-//                 break;
-//             default:
-//                 break;
-//             }
-//         }
-//         id_start = id_end + 1;
-//     }
-//     return 0;
-// }
-
-// // May re-allocate the config->repos array, must re-assign repo after calling
-// int repo_parse_commit_tree_entry_gitmodules(
-//     struct config *const restrict config,
-//     unsigned long const repo_id,
-//     unsigned long const commit_id,
-//     git_tree const *const tree,
-//     git_tree_entry const *const entry_gitmodules
-// ) {
-//     struct repo const *restrict repo = config->repos + repo_id;
-//     struct parsed_commit *restrict parsed_commit =
-//         repo->parsed_commits + commit_id;
-//     if (git_tree_entry_type(entry_gitmodules) != GIT_OBJECT_BLOB) {
-//         pr_error(
-//             "Tree entry .gitmodules in commit %s for repo '%s' "
-//             "is not a blob\n",
-//             parsed_commit->id_hex_string, repo->url);
-//         return -1;
-//     }
-//     git_object *object_gitmodules;
-//     int r = git_tree_entry_to_object(
-//         &object_gitmodules, repo->repository, entry_gitmodules);
-//     if (r) {
-//         pr_error("Failed to convert tree entry for gitmodules to object\n");
-//         return -1;
-//     }
-//     git_blob *blob_gitmodules = (git_blob *)object_gitmodules;
-//     r = repo_parse_commit_blob_gitmodules(
-//         config, repo_id, commit_id, tree, blob_gitmodules);
-//     repo = config->repos + repo_id;
-//     parsed_commit = repo->parsed_commits + commit_id;
-//     if (r) {
-//         pr_error("Failed to parse gitmodules blob\n");
-//         r = -1;
-//         goto free_object;
-//     }
-//     r = 0;
-// free_object:
-//     free(object_gitmodules);
-//     return r;
-// }
+// May re-allocate the config->repos array, must re-assign repo after calling
+int work_handle_parse_repo_commit_blob_gitmodules(
+    struct work_handle *const restrict work_handle,
+    unsigned long const repo_id,
+    unsigned long const commit_id,
+    git_tree const *const restrict tree,
+    git_blob *const restrict blob
+) {
+    // char const *blob_gitmodules_ro_buffer =
+    //     git_blob_rawcontent(blob_gitmodules);
+    // if (blob_gitmodules_ro_buffer == NULL) {
+    //     pr_error("Failed to get a ro buffer for gitmodules\n");
+    //     return -1;
+    // }
+    // git_object_size_t blob_gitmodules_size =
+    //     git_blob_rawsize(blob_gitmodules);
+    // if (blob_gitmodules_size == 0) {
+    //     pr_error("Tree entry .gitmodules blob size is 0\n");
+    //     return -1;
+    // }
+    // char    submodule_name[NAME_MAX] = "",
+    //         submodule_path[PATH_MAX] = "",
+    //         submodule_url[PATH_MAX] = "";
+    // unsigned short  len_submodule_name = 0,
+    //                 len_submodule_path = 0,
+    //                 len_submodule_url = 0;
+    // for (git_object_size_t id_start = 0; id_start < blob_gitmodules_size; ) {
+    //     switch (blob_gitmodules_ro_buffer[id_start]) {
+    //     case '\0':
+    //     case '\n':
+    //     case '\r':
+    //     case '\b':
+    //         ++id_start;
+    //         continue;
+    //     }
+    //     unsigned short len_line = 0;
+    //     git_object_size_t id_end = id_start + 1;
+    //     for (; id_end < blob_gitmodules_size && len_line == 0;) {
+    //         switch (blob_gitmodules_ro_buffer[id_end]) {
+    //         case '\0':
+    //         case '\n':
+    //             len_line = id_end - id_start;
+    //             break;
+    //         default:
+    //             ++id_end;
+    //             break;
+    //         }
+    //     }
+    //     if (len_line > 7) { // The shortest, "\turl = "
+    //         char const *line = blob_gitmodules_ro_buffer + id_start;
+    //         char const *line_end = blob_gitmodules_ro_buffer + id_end;
+    //         switch (blob_gitmodules_ro_buffer[id_start]) {
+    //         case '[':
+    //             if (!strncmp(line + 1, "submodule \"", 11)) {
+    //                 if (submodule_name[0]) {
+    //                     pr_error(
+    //                         "Incomplete submodule definition for '%s'\n",
+    //                         submodule_name);
+    //                     return -1;
+    //                 }
+    //                 char const *submodule_name_start = line + 12;
+    //                 char const *right_quote = submodule_name_start;
+    //                 for (;
+    //                     *right_quote != '"' && right_quote < line_end;
+    //                     ++right_quote);
+    //                 len_submodule_name = right_quote - submodule_name_start;
+    //                 strncpy(
+    //                     submodule_name,
+    //                     submodule_name_start,
+    //                     len_submodule_name);
+    //                 submodule_name[len_submodule_name] = '\0';
+    //             }
+    //             break;
+    //         case '\t':
+    //             char const *value = NULL;
+    //             char *submodule_value = NULL;
+    //             unsigned short *len_submodule_value = NULL;
+    //             if (!strncmp(line + 1, "path = ", 7)) {
+    //                 value = line + 8;
+    //                 submodule_value = submodule_path;
+    //                 len_submodule_value = &len_submodule_path;
+    //             } else if (!strncmp(line + 1, "url = ", 6)) {
+    //                 value = line + 7;
+    //                 submodule_value = submodule_url;
+    //                 len_submodule_value = &len_submodule_url;
+    //             }
+    //             if (value) {
+    //                 if (submodule_name[0] == '\0') {
+    //                     pr_error(
+    //                         "Submodule definition begins before "
+    //                         "the submodule name\n");
+    //                     return -1;
+    //                 }
+    //                 if (submodule_value[0] != '\0') {
+    //                     pr_error("Duplicated value definition for "
+    //                         "submodule '%s'\n", submodule_name);
+    //                     return -1;
+    //                 }
+    //                 *len_submodule_value = line_end - value;
+    //                 strncpy(submodule_value, value, *len_submodule_value);
+    //                 submodule_value[*len_submodule_value] = '\0';
+    //                 if (submodule_path[0] != '\0' &&
+    //                     submodule_url[0] != '\0') {
+    //                     pr_debug(
+    //                         "Submodule '%s', path '%s', url '%s'\n",
+    //                         submodule_name, submodule_path, submodule_url);
+    //                     if (repo_parse_commit_submodule_in_tree(
+    //                         config, repo_id, commit_id, tree,
+    //                                 submodule_path, len_submodule_path,
+    //                                 submodule_url, len_submodule_url)) {
+    //                         pr_error(
+    //                             "Failed to recursively clone or update "
+    //                             "submodule '%s' (url '%s')\n",
+    //                             submodule_name, submodule_url);
+    //                         return -1;
+    //                     }
+    //                     submodule_name[0] = '\0';
+    //                     submodule_path[0] = '\0';
+    //                     submodule_url[0] = '\0';
+    //                 }
+    //             }
+    //             break;
+    //         default:
+    //             break;
+    //         }
+    //     }
+    //     id_start = id_end + 1;
+    // }
+    return 0;
+}
 
 int work_repo_parse_wanted_objects(
     struct repo_work *const restrict repo,
@@ -5224,54 +5184,69 @@ int work_repo_parse_wanted_objects(
     return r;
 }
 
-// int work_handle_parse_repo_commit(
-//     struct work_handle *const restrict work_handle,
-//     unsigned long const repo_id,
-//     unsigned long const commit_id
-// ) {
-//     git_commit *commit;
-//     int r = repo_lookup_commit_and_update_if_failed(
-//                 &commit, config, repo_id, commit_id);
-
-//     struct repo *restrict repo = config->repos + repo_id;
-//     struct parsed_commit *restrict parsed_commit =
-//         repo->parsed_commits + commit_id;
-//     if (r) {
-//         pr_error("Failed to lookup commit %s in repo '%s'\n",
-//             parsed_commit->id_hex_string, repo->url);
-//         return -1;
-//     }
-//     if (!parsed_commit->submodules_parsed) {
-//         r = (repo_ensure_parsed_commit_submodules(
-//             config, repo_id, commit_id, commit));
-//         repo = config->repos + repo_id;
-//         parsed_commit = repo->parsed_commits + commit_id;
-//         if (r) {
-//             pr_error("Failed to parse repo '%s' commit %s submodules\n",
-//                 repo->url, parsed_commit->id_hex_string);
-//             r = -1;
-//             goto free_commit;
-//         }
-//     }
-//     pr_info("Commit robust: '%s': %s\n",
-//         repo->url, parsed_commit->id_hex_string);
-//     r = 0;
-// free_commit:
-//     git_commit_free(commit);
-//     return r;
-// }
-
-
-int work_handle_parse_repo_commits(
+int work_handle_parse_repo_commit(
     struct work_handle *const restrict work_handle,
-    unsigned long const repo_id
+    unsigned long const repo_id,
+    unsigned long const commit_id
 ) {
     struct repo_work *restrict repo = work_handle->repos + repo_id;
-    for (unsigned long i = 0; i < repo->commits_count; ++i) {
-
-        repo = work_handle->repos + repo_id;
+    struct commit *restrict commit = repo->commits + commit_id;
+    char const *restrict oid_hex = work_handle_get_string(commit->oid_hex);
+    char const *restrict url = work_handle_get_string(repo->url);
+    if (commit->git_commit) return 0; // Already looked up, skip
+    int r = git_commit_lookup(&commit->git_commit, repo->git_repository, 
+                                &commit->oid);
+    if (r) {
+        pr_error_with_libgit_error("Failed to lookup commit %s in repo '%s'",
+            oid_hex, url);
+        return -1;
     }
-    return 0;
+    // Submodules:
+    git_tree *tree;
+    if ((r = git_commit_tree(&tree, commit->git_commit))) {
+        pr_error_with_libgit_error("Failed to get the commit tree pointed by "
+            "commit %s in repo '%s'", oid_hex, url);
+        r = -1;
+        goto free_commit;
+    }
+    git_tree_entry const *const entry =
+        git_tree_entry_byname(tree, ".gitmodules");
+    if (!entry) {
+        r = 0;
+        goto free_tree;
+    }
+    if (git_tree_entry_type(entry) != GIT_OBJECT_BLOB) {
+        pr_error("Tree entry .gitmodules in commit %s for repo '%s' "
+                "is not a blob\n", oid_hex, url);
+        r = -1;
+        goto free_tree;
+    }
+    git_object *object;
+    if ((r = git_tree_entry_to_object(&object, repo->git_repository, entry))) {
+        pr_error_with_libgit_error(
+            "Failed to convert tree entry for gitmodules to object");
+        r = -1;
+        goto free_object;
+    }
+    r = work_handle_parse_repo_commit_blob_gitmodules(
+        work_handle, repo_id, commit_id, tree, (git_blob *)object);
+    if (r) {
+        pr_error("Failed to parse .gitmodules blob in tree");
+    }
+free_object:
+    git_object_free(object);
+free_tree:
+    git_tree_free(tree);
+free_commit:
+    if (r) { git_commit_free_to_null(commit->git_commit); }
+    else {
+        repo = work_handle->repos + repo_id;
+        commit = repo->commits + commit_id;
+        oid_hex = work_handle_get_string(commit->oid_hex);
+        url = work_handle_get_string(repo->url);
+        pr_info("Commit robust: '%s': %s\n", url, oid_hex);
+    }
+    return r;
 }
 
 static inline
@@ -5334,14 +5309,13 @@ int work_handle_parse_all_repos_simple(
     struct work_handle *const restrict work_handle
 ) {
     int r = 0;
-    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i)
         if (work_repo_parse_wanted_objects(work_handle->repos + i, 
                             &work_handle->string_buffer)) 
             r = -1;
-    }
-    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-        if (work_handle_parse_repo_commits(work_handle, i)) r = 1;
-    }
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) 
+        for (unsigned long j = 0; j < work_handle->repos[i].commits_count; ++j)
+            if (work_handle_parse_repo_commit(work_handle, i, j)) r = 1;
     return r;
 }
 
@@ -6233,48 +6207,6 @@ int work_handle_parse_all_repos(
 //             return -1;
 //         }
 //     }
-//     return 0;
-// }
-
-// // May re-allocate config->repos, and repo->parsed_commits
-// int repo_ensure_parsed_commit_submodules (
-//     struct config *const restrict config,
-//     unsigned long const repo_id,
-//     unsigned long const commit_id,
-//     git_commit *commit
-// ) {
-//     struct repo *restrict repo = config->repos + repo_id;
-//     struct parsed_commit *restrict parsed_commit =
-//         repo->parsed_commits + commit_id;
-//     if (parsed_commit->submodules_parsed) return 0;
-//     git_tree *tree;
-//     int r = git_commit_tree(&tree, commit);
-//     if (r) {
-//         pr_error(
-//             "Failed to get the commit tree pointed by commit %s "
-//             "in repo '%s', libgit return %d\n",
-//             parsed_commit->id_hex_string, repo->url, r);
-//         return -1;
-//     }
-//     git_tree_entry const *const entry_gitmodules =
-//         git_tree_entry_byname(tree, ".gitmodules");
-//     if (entry_gitmodules != NULL) {
-//         pr_debug(
-//             "Found .gitmodules in commit tree of %s for repo '%s', "
-//             "parsing submodules\n", parsed_commit->id_hex_string, repo->url);
-//         r = repo_parse_commit_tree_entry_gitmodules(
-//             config, repo_id, commit_id, tree, entry_gitmodules);
-//         repo = config->repos + repo_id;
-//         parsed_commit = repo->parsed_commits + commit_id;
-//         if (r) {
-//             pr_error(
-//                 "Failed to parse submodules in commit tree of %s "
-//                 "for repo '%s'\n",
-//                 parsed_commit->id_hex_string, repo->url);
-//             return -1;
-//         }
-//     }
-//     parsed_commit->submodules_parsed = true;
 //     return 0;
 // }
 
