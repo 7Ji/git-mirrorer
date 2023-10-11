@@ -2285,7 +2285,7 @@ int config_from_yaml(
             pr_error("Failed to update config from yaml event"
 #ifdef DEBUGGING
             ", current read config:\n");
-            print_config(config);
+            config_print(config);
 #else
             "\n");
 #endif
@@ -4974,127 +4974,163 @@ int work_handle_parse_repo_commit_blob_gitmodules(
     git_tree const *const restrict tree,
     git_blob *const restrict blob
 ) {
-    // char const *blob_gitmodules_ro_buffer =
-    //     git_blob_rawcontent(blob_gitmodules);
-    // if (blob_gitmodules_ro_buffer == NULL) {
-    //     pr_error("Failed to get a ro buffer for gitmodules\n");
-    //     return -1;
-    // }
-    // git_object_size_t blob_gitmodules_size =
-    //     git_blob_rawsize(blob_gitmodules);
-    // if (blob_gitmodules_size == 0) {
-    //     pr_error("Tree entry .gitmodules blob size is 0\n");
-    //     return -1;
-    // }
-    // char    submodule_name[NAME_MAX] = "",
-    //         submodule_path[PATH_MAX] = "",
-    //         submodule_url[PATH_MAX] = "";
-    // unsigned short  len_submodule_name = 0,
-    //                 len_submodule_path = 0,
-    //                 len_submodule_url = 0;
-    // for (git_object_size_t id_start = 0; id_start < blob_gitmodules_size; ) {
-    //     switch (blob_gitmodules_ro_buffer[id_start]) {
-    //     case '\0':
-    //     case '\n':
-    //     case '\r':
-    //     case '\b':
-    //         ++id_start;
-    //         continue;
-    //     }
-    //     unsigned short len_line = 0;
-    //     git_object_size_t id_end = id_start + 1;
-    //     for (; id_end < blob_gitmodules_size && len_line == 0;) {
-    //         switch (blob_gitmodules_ro_buffer[id_end]) {
-    //         case '\0':
-    //         case '\n':
-    //             len_line = id_end - id_start;
-    //             break;
-    //         default:
-    //             ++id_end;
-    //             break;
-    //         }
-    //     }
-    //     if (len_line > 7) { // The shortest, "\turl = "
-    //         char const *line = blob_gitmodules_ro_buffer + id_start;
-    //         char const *line_end = blob_gitmodules_ro_buffer + id_end;
-    //         switch (blob_gitmodules_ro_buffer[id_start]) {
-    //         case '[':
-    //             if (!strncmp(line + 1, "submodule \"", 11)) {
-    //                 if (submodule_name[0]) {
-    //                     pr_error(
-    //                         "Incomplete submodule definition for '%s'\n",
-    //                         submodule_name);
-    //                     return -1;
-    //                 }
-    //                 char const *submodule_name_start = line + 12;
-    //                 char const *right_quote = submodule_name_start;
-    //                 for (;
-    //                     *right_quote != '"' && right_quote < line_end;
-    //                     ++right_quote);
-    //                 len_submodule_name = right_quote - submodule_name_start;
-    //                 strncpy(
-    //                     submodule_name,
-    //                     submodule_name_start,
-    //                     len_submodule_name);
-    //                 submodule_name[len_submodule_name] = '\0';
-    //             }
-    //             break;
-    //         case '\t':
-    //             char const *value = NULL;
-    //             char *submodule_value = NULL;
-    //             unsigned short *len_submodule_value = NULL;
-    //             if (!strncmp(line + 1, "path = ", 7)) {
-    //                 value = line + 8;
-    //                 submodule_value = submodule_path;
-    //                 len_submodule_value = &len_submodule_path;
-    //             } else if (!strncmp(line + 1, "url = ", 6)) {
-    //                 value = line + 7;
-    //                 submodule_value = submodule_url;
-    //                 len_submodule_value = &len_submodule_url;
-    //             }
-    //             if (value) {
-    //                 if (submodule_name[0] == '\0') {
-    //                     pr_error(
-    //                         "Submodule definition begins before "
-    //                         "the submodule name\n");
-    //                     return -1;
-    //                 }
-    //                 if (submodule_value[0] != '\0') {
-    //                     pr_error("Duplicated value definition for "
-    //                         "submodule '%s'\n", submodule_name);
-    //                     return -1;
-    //                 }
-    //                 *len_submodule_value = line_end - value;
-    //                 strncpy(submodule_value, value, *len_submodule_value);
-    //                 submodule_value[*len_submodule_value] = '\0';
-    //                 if (submodule_path[0] != '\0' &&
-    //                     submodule_url[0] != '\0') {
-    //                     pr_debug(
-    //                         "Submodule '%s', path '%s', url '%s'\n",
-    //                         submodule_name, submodule_path, submodule_url);
-    //                     if (repo_parse_commit_submodule_in_tree(
-    //                         config, repo_id, commit_id, tree,
-    //                                 submodule_path, len_submodule_path,
-    //                                 submodule_url, len_submodule_url)) {
-    //                         pr_error(
-    //                             "Failed to recursively clone or update "
-    //                             "submodule '%s' (url '%s')\n",
-    //                             submodule_name, submodule_url);
-    //                         return -1;
-    //                     }
-    //                     submodule_name[0] = '\0';
-    //                     submodule_path[0] = '\0';
-    //                     submodule_url[0] = '\0';
-    //                 }
-    //             }
-    //             break;
-    //         default:
-    //             break;
-    //         }
-    //     }
-    //     id_start = id_end + 1;
-    // }
-    return 0;
+    char const *buffer_all = git_blob_rawcontent(blob);
+    if (!buffer_all) {
+        pr_error("Failed to get a ro buffer for gitmodules\n");
+        return -1;
+    }
+    git_object_size_t len_all = git_blob_rawsize(blob);
+    if (!len_all) {
+        pr_error("Tree entry .gitmodules blob size is 0\n");
+        return -1;
+    }
+    char name_stack[0x100],
+         path_stack[0x100],
+         url_stack[0x100],
+         *name_heap = NULL,
+         *path_heap = NULL,
+         *url_heap = NULL,
+         *name = name_stack,
+         *path = path_stack,
+         *url = url_stack;
+    unsigned short  len_path = 0,
+                    len_url = 0,
+                    name_allocated = 0x100,
+                    path_allocated = 0x100,
+                    url_allocated = 0x100;
+    name[0] = '\0';
+    path[0] = '\0';
+    url[0] = '\0';
+    int r;
+    for (git_object_size_t start = 0; start < len_all; ) {
+        switch (buffer_all[start]) {
+        case '\0':
+        case '\b':
+        case '\n':
+        case '\r':
+            ++start;
+            continue;
+        }
+        unsigned short len_line = 0;
+        git_object_size_t end = start + 1;
+        for (; end < len_all && len_line == 0;) {
+            switch (buffer_all[end]) {
+            case '\0':
+            case '\n':
+                len_line = end - start;
+                break;
+            default:
+                ++end;
+                break;
+            }
+        }
+        if (len_line <= 7) {
+            start = end + 1;
+            continue;
+        }
+        char const *line = buffer_all + start;
+        char const *line_end = buffer_all + end;
+        switch (buffer_all[start]) {
+        case '[':
+            if (!strncmp(line + 1, "submodule \"", 11)) {
+                if (name[0]) {
+                    pr_error("Incomplete submodule definition for '%s'\n",name);
+                    r = -1;
+                    goto free_heap;
+                }
+                char const *name_start = line + 12;
+                char const *right_quote = name_start;
+                for (;
+                    *right_quote != '"' && right_quote < line_end;
+                    ++right_quote);
+                unsigned short len_name = 
+                    right_quote - name_start;
+                if (len_name >= name_allocated) {
+                    name_allocated = (len_name + 2) / 0x1000  * 0x1000;
+                    if (name_heap) free(name_heap);
+                    if (!(name_heap = malloc(name_allocated))) {
+                        pr_error_with_errno("Failed to allocate memory for long"
+                            " submodule name");
+                    }
+                    name = name_heap;
+                }
+                memcpy(name, name_start, len_name);
+                name[len_name] = '\0';
+            }
+            break;
+        case '\t':
+            char const *parsing_value = NULL;
+            char **value = NULL;
+            char **value_heap = NULL;
+            unsigned short *len_value = NULL;
+            unsigned short *value_allocated = NULL;
+            if (!strncmp(line + 1, "path = ", 7)) {
+                parsing_value = line + 8;
+                value = &path;
+                value_heap = &path_heap;
+                len_value = &len_path;
+                value_allocated = &path_allocated;
+            } else if (!strncmp(line + 1, "url = ", 6)) {
+                parsing_value = line + 7;
+                value = &url;
+                value_heap = &url_heap;
+                len_value = &len_url;
+                value_allocated = &url_allocated;
+            }
+            if (!value) {
+                break;
+            }
+            if (!name[0]) {
+                pr_error("Submodule definition begins before the submodule "
+                          "name\n");
+                r = -1;
+                goto free_heap;
+            }
+            if ((*value)[0]) {
+                pr_error("Duplicated value definition for submodule '%s'\n", 
+                        name);
+                r = -1;
+                goto free_heap;
+            }
+            *len_value = line_end - parsing_value;
+            if (*len_value >= *value_allocated) {
+                *value_allocated = (*len_value + 2) / 0x1000  * 0x1000;
+                if (*value_heap) free(*value_heap);
+                if (!(*value_heap = malloc(*value_allocated))) {
+                    pr_error_with_errno("Failed to allocate memory for long"
+                        " submodule value");
+                }
+                *value = *value_heap;
+            }
+            memcpy(*value, parsing_value, *len_value);
+            (*value)[*len_value] = '\0';
+            if (path[0] && url[0]); else break;
+            pr_info("Submodule '%s', path '%s', url '%s'\n", name, path, url);
+            // if (repo_parse_commit_in_tree(
+            //     config, repo_id, commit_id, tree,
+            //             path, len_path,
+            //             url, len_url)) {
+            //     pr_error(
+            //         "Failed to recursively clone or update "
+            //         "submodule '%s' (url '%s')\n",
+            //         name, url);
+            //     return -1;
+            // }
+            name[0] = '\0';
+            path[0] = '\0';
+            url[0] = '\0';
+            break;
+        default:
+            break;
+        }
+        start = end + 1;
+    }
+    r = 0;
+free_heap:
+    free_if_allocated(name_heap);
+    free_if_allocated(path_heap);
+    free_if_allocated(url_heap);
+    return r;
 }
 
 int work_repo_parse_wanted_objects(
