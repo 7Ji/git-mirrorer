@@ -5460,11 +5460,12 @@ int work_handle_parse_all_repos(
         if (!work_handle_need_update(work_handle)) return r;
         pr_warn("Some repos are not robust and some need to be updated, "
             "re-update the repos before we re-check the rebostness\n");
+        if (work_handle_hash_need_update(work_handle, &hash_need_update)) {
+            pr_error("Failed to hash need-update flags\n");
+            return -1;
+        }
+        hash_need_update_last = hash_need_update;
         if (i) {
-            if (work_handle_hash_need_update(work_handle, &hash_need_update)) {
-                pr_error("Failed to hash need-update flags\n");
-                return -1;
-            }
             if (hash_need_update == hash_need_update_last) {
                 pr_error("Hash of need-update flags same as last, giving up\n");
                 return -1;
