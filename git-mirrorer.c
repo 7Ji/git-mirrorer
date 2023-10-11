@@ -7556,54 +7556,6 @@ int tar_finish(
 //     return -1;
 // }
 
-// /* This should be only be called AFTER the repo is updated */
-// /* Updating the repo might break the commits */
-// int repo_lookup_all_parsed_commits(
-//     struct repo const *const restrict repo
-// ) {
-//     for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
-//         struct parsed_commit *const restrict parsed_commit =
-//             repo->parsed_commits + i;
-//         if (parsed_commit->commit != NULL) {
-//             pr_error("Commit '%s' already looked up, no commit should've been "
-//                     "looked up when this func is called\n",
-//                     parsed_commit->id_hex_string);
-//             return -1;
-//         }
-//         int r = git_commit_lookup(
-//             &parsed_commit->commit, repo->repository, &parsed_commit->id);
-//         if (r) {
-//             pr_error("Failed to lookup commit '%s' in repo '%s', libgit return "
-//             "%d\n", parsed_commit->id_hex_string, repo->url, r);
-//             for (unsigned long j = 0; j < i; ++j) {
-//                 git_commit_free(repo->parsed_commits[j].commit);
-//                 repo->parsed_commits[j].commit = NULL;
-//             }
-//             return -1;
-//         }
-//     }
-//     return 0;
-// }
-
-// void *repo_lookup_all_parsed_commits_thread(void *arg) {
-//     return (void *)(long)
-//         repo_lookup_all_parsed_commits((struct repo const *)arg);
-// }
-
-// int repo_free_all_parsed_commits(
-//     struct repo const *const restrict repo
-// ) {
-//     for (unsigned long i = 0; i < repo->parsed_commits_count; ++i) {
-//         struct parsed_commit *const restrict parsed_commit =
-//             repo->parsed_commits + i;
-//         if (parsed_commit->commit) {
-//             git_commit_free(parsed_commit->commit);
-//             parsed_commit->commit = NULL;
-//         }
-//     }
-//     return 0;
-// }
-
 // int export_commit_write(
 //     struct config const *const restrict config,
 //     struct repo const *const restrict repo,
@@ -8054,120 +8006,6 @@ int tar_finish(
 //                     private_arg->checkouts_links_dirfd);
 // }
 
-// int export_all_repos_multi_threaded_lookup(
-//     struct config const *const restrict config
-// ) {
-//    struct prepare_thread_handle {
-//         pthread_t thread;
-//         struct repo const *repo;
-//         bool active;
-//     };
-//     struct prepare_thread_handle *handles = calloc(
-//         config->export_threads, sizeof *handles);
-//     if (handles == NULL) {
-//         pr_error("Failed to allocate memory for prepare threads\n");
-//         return -1;
-//     }
-//     unsigned long repo_prepared_count = 0;
-//     int r = -1;
-//     long thread_ret;
-//     for (; repo_prepared_count < config->repos_count;
-//         ++repo_prepared_count) {
-//         struct repo const *const restrict repo =
-//             config->repos + repo_prepared_count;
-//         bool thread_added = false;
-//         for (;;) {
-//             unsigned short threads_active_count = 0;
-//             for (unsigned short i = 0; i < config->export_threads; ++i) {
-//                 struct prepare_thread_handle *handle = handles + i;
-//                 if (handle->active) {
-//                     r = pthread_tryjoin_np(
-//                         handle->thread, (void **)&thread_ret);
-//                     switch (r) {
-//                     case 0:
-//                         handle->active = false;
-//                         if (thread_ret) {
-//                             pr_error("Thread %ld for preparing repo '%s' "
-//                             "returned with %ld\n", handle->thread,
-//                             handle->repo->url, thread_ret);
-//                             r = -1;
-//                             goto wait_threads;
-//                         }
-//                         break;
-//                     case EBUSY:
-//                         break;
-//                     default:
-//                         pr_error("Failed to nonblocking wait for thread %ld "
-//                         "for preparing repo '%s', pthread return %d\n",
-//                         handle->thread, handle->repo->url, r);
-//                         r = -1;
-//                         goto wait_threads;
-//                     }
-//                 }
-//                 // If it's already running, ofc inc it;
-//                 // If it's not, then we put a thread to it, also inc it
-//                 ++threads_active_count;
-//                 if (!handle->active) {
-//                     handle->repo = repo;
-//                     r = pthread_create(&handle->thread, NULL,
-//                         repo_lookup_all_parsed_commits_thread, (void *)repo);
-//                     if (r) {
-//                         pr_error("Failed to create thread to prepare repo "
-//                         "'%s', pthread return '%d'\n", repo->url, r);
-//                         r = -1;
-//                         goto wait_threads;
-//                     }
-//                     handle->active = true;
-//                     thread_added = true;
-//                     break;
-//                 }
-//             }
-//             if (thread_added) break;
-//             usleep(100);
-//             if (threads_active_count == config->export_threads) {
-//                 pr_debug("Active threads reached max\n");
-//             }
-//             pr_debug("%hu threads running for looking up commits\n",
-//                             threads_active_count);
-//         }
-//     }
-//     r = 0;
-// wait_threads:
-//     if (r) pr_warn("Waiting for all exporting preparation threads to end...\n");
-//     for (unsigned short i = 0; i < config->export_threads; ++i) {
-//         struct prepare_thread_handle *handle = handles + i;
-//         if (handle->active) {
-//             int r2 = pthread_join(handle->thread, (void **)&thread_ret);
-//             if (r2) {
-//                 pr_error("Failed to join thread %ld for preparing repo '%s', "
-//                             "pthread return %d\n",
-//                             handle->thread, handle->repo->url, r);
-//                 r = -1;
-//             }
-//             handle->active = false;
-//             if (thread_ret) {
-//                 pr_error(
-//                     "Thread %ld for preparing repo '%s' returned with %ld\n",
-//                     handle->thread, handle->repo->url, thread_ret);
-//                 r = -1;
-//             }
-//         }
-//     }
-//     free(handles);
-//     if (r) {
-//         for (unsigned long i = 0; i < repo_prepared_count; ++i) {
-//             if (repo_free_all_parsed_commits(config->repos + i)) {
-//                 pr_error("Failed to free all parsed commits in repo '%s'\n",
-//                     config->repos[i].url);
-//             }
-//         }
-//     }
-//     return r;
-// }
-// struct commit_with_repo {
-//     struct parsed_commit *commit;
-//     struct repo *repo;
-// };
 
 // static inline
 // void commit_with_repo_list_swap_item(
@@ -8540,20 +8378,6 @@ int work_handle_export_all_repos(
     pr_info("ALl repos and commits looked up, exporting now\n");
     return 0;
 }
-
-// int export_all_repos(
-//     struct config const *const restrict config,
-//     struct work_directory *const restrict workdir_archives,
-//     struct work_directory *const restrict workdir_checkouts
-// ) {
-//     if (config->export_threads <= 1) {
-//         return export_all_repos_single_threaded(config,
-//             workdir_archives, workdir_checkouts);
-//     } else {
-//         return export_all_repos_multi_threaded(config,
-//             workdir_archives, workdir_checkouts);
-//     }
-// }
 
 // int raise_nofile_limit() {
 //     struct rlimit rlimit;
