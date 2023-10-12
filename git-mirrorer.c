@@ -5176,6 +5176,10 @@ int work_handle_parse_repo_commit_blob_gitmodules(
             memcpy(*value, parsing_value, *len_value);
             (*value)[*len_value] = '\0';
             if (path[0] && url[0]); else break;
+            if (memcpy(url + len_url - 4, ".git", 4)) {
+                len_url -= 4;
+                url[len_url] = '\0';
+            }
             pr_info("Submodule '%s', path '%s', url '%s'\n", name, path, url);
             if (work_handle_parse_repo_commit_submodule_in_tree(work_handle, 
                 repo_id, commit_id, tree, path, len_path, url, len_url)) 
