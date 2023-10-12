@@ -5176,7 +5176,7 @@ int work_handle_parse_repo_commit_blob_gitmodules(
             memcpy(*value, parsing_value, *len_value);
             (*value)[*len_value] = '\0';
             if (path[0] && url[0]); else break;
-            if (memcpy(url + len_url - 4, ".git", 4)) {
+            if (!memcpy(url + len_url - 4, ".git", 4)) {
                 len_url -= 4;
                 url[len_url] = '\0';
             }
