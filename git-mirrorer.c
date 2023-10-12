@@ -362,6 +362,11 @@ struct repo_domain_map {
     DYNAMIC_ARRAY_DECLARE(struct repo_domain_group, group);
 };
 
+struct repo_commit_pair {
+    struct repo_work *repo;
+    struct commit *commit;
+};
+
 /* Config */
 
 struct archive_pipe_arg {
@@ -7941,40 +7946,28 @@ int tar_finish(
 //     return 0;
 // }
 
-// int export_all_repos_single_threaded(
-//     struct config const *const restrict config,
-//     struct work_directory *const restrict workdir_archives,
-//     struct work_directory *const restrict workdir_checkouts
+// int work_handle_export_all_repos_single_threaded(
+//     struct work_handle const *const restrict work_handle
 // ) {
 //     pr_debug("Exporting all repos (single-threaded)...\n");
-//     int r = -1;
-//     unsigned long repo_free_count = config->repos_count;
-//     for (unsigned long i = 0; i < config->repos_count; ++i) {
-//         if (repo_lookup_all_parsed_commits(config->repos + i)) {
-//             repo_free_count = i;
-//             goto free_commits;
-//         }
-//     }
-//     for (unsigned long i = 0; i < config->repos_count; ++i) {
-//         struct repo const *const restrict repo = config->repos + i;
-//         for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
-//             struct wanted_object const *const restrict wanted_object =
-//                 repo->wanted_objects + j;
-//             if (export_wanted_object_with_symlinks_atomic_optional(
-//                     config, repo, wanted_object,
-//                     workdir_archives, workdir_checkouts)) {
-//                 pr_error("Failed to export wanted object '%s'\n",
-//                         wanted_object->name);
-//                 goto free_commits;
-//             }
-//         }
-//     }
-//     pr_debug("Exported all repos\n");
+//     int r ;
+    // for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+    //     struct repo_work const *const restrict repo = work_handle->repos + i;
+    //     for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
+    //         struct wanted_object const *const restrict wanted_object =
+    //             repo->wanted_objects + j;
+    //         if (export_wanted_object_with_symlinks_atomic_optional(
+    //                 config, repo, wanted_object,
+    //                 workdir_archives, workdir_checkouts)) {
+    //             pr_error("Failed to export wanted object '%s'\n",
+    //                     wanted_object->name);
+    //             goto free_commits;
+    //         }
+    //     }
+    // }
+    // pr_debug("Exported all repos\n");
 //     r = 0;
-// free_commits:
-//     for (unsigned long i = 0; i < repo_free_count; ++i) {
-//         repo_free_all_parsed_commits(config->repos + i);
-//     }
+//     pr_info("Exporting all repos\n");
 //     return r;
 // }
 
@@ -8373,6 +8366,76 @@ bool work_handle_all_looked_up(
     return looked_up;
 }
 
+static inline
+unsigned long work_handle_commits_count(
+    struct work_handle const *const restrict work_handle
+) {
+    unsigned long count = 0;
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        struct repo_work *repo = work_handle->repos + i;
+        for (unsigned long j = 0; j < repo->commits_count; ++j) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+static inline
+void work_handle_fill_repo_commit_pairs(
+    struct work_handle const *const restrict work_handle,
+    struct repo_commit_pair *const restrict pairs
+) {
+    unsigned long count = 0;
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        struct repo_work *repo = work_handle->repos + i;
+        for (unsigned long j = 0; j < repo->commits_count; ++j) {
+            struct repo_commit_pair *element = pairs + count++;
+            element->repo = repo;
+            element->commit = repo->commits + j;
+        }
+    }
+}
+
+static inline
+void repo_commit_pairs_swap_item(
+    struct repo_commit_pair *pairs,
+    unsigned long const i,
+    unsigned long const j
+) {
+    if (i ==j) return;
+    struct repo_commit_pair temp = pairs[i];
+    pairs[i] = pairs[j];
+    pairs[j] = temp;
+}
+
+static inline
+unsigned long repo_commit_pairs_partition(
+    struct repo_commit_pair *pairs,
+    unsigned long const low,
+    unsigned long const high
+) {
+    struct repo_commit_pair pivot = pairs[high];
+    unsigned long i = low - 1;
+    for (unsigned long j = low; j < high; ++j) {
+        if (git_oid_cmp(&pairs[j].commit->oid, &pivot.commit->oid) < 0) {
+            repo_commit_pairs_swap_item(pairs, ++i, j);
+        }
+    }
+    repo_commit_pairs_swap_item(pairs, ++i, high);
+    return i;
+}
+
+void repo_commit_pairs_quick_sort(
+    struct repo_commit_pair *pairs,
+    unsigned long const low,
+    unsigned long const high
+) {
+    if (low >= high) return;
+    unsigned long const pivot = repo_commit_pairs_partition(pairs, low, high);
+    if (pivot) repo_commit_pairs_quick_sort(pairs, low, pivot - 1);
+    repo_commit_pairs_quick_sort(pairs, pivot + 1, high);
+}
+
 int work_handle_export_all_repos(
     struct work_handle const *const restrict work_handle
 ) {
@@ -8381,7 +8444,88 @@ int work_handle_export_all_repos(
         return -1;
     }
     pr_info("ALl repos and commits looked up, exporting now\n");
-    return 0;
+    DYNAMIC_ARRAY_DECLARE_SAME(repo_commit_pair);
+    if (!(repo_commit_pairs_count = work_handle_commits_count(work_handle))) {
+        pr_error("No commits parsed for all repos");
+        return -1;
+    }
+    if (!(repo_commit_pairs = malloc(sizeof *repo_commit_pairs * (
+                    repo_commit_pairs_allocated = repo_commit_pairs_count)))) 
+    {
+        pr_error_with_errno("Failed to allocate memory for commits\n");
+        return -1;
+    }
+    work_handle_fill_repo_commit_pairs(work_handle, repo_commit_pairs);
+    repo_commit_pairs_quick_sort(repo_commit_pairs, 0, 
+                                repo_commit_pairs_count - 1);
+    unsigned long id_unique = 0;
+    int r;
+    for (unsigned long id_duplicatable = 1;
+        id_duplicatable < repo_commit_pairs_count; 
+        ++id_duplicatable
+    ) {
+        struct repo_commit_pair *pair_duplicatable = 
+                                        repo_commit_pairs + id_duplicatable;
+        struct repo_commit_pair *pair_unique = repo_commit_pairs + id_unique;
+        int diff = git_oid_cmp(&pair_duplicatable->commit->oid, 
+                                &pair_unique->commit->oid);
+        if (diff > 0) {
+            ++id_unique;
+            if (id_unique < id_duplicatable) {
+              repo_commit_pairs[id_unique] = repo_commit_pairs[id_duplicatable];
+            } else if (id_unique > id_duplicatable) {
+                pr_error("Deduped pairs ID pre-stepped\n");
+                r = -1;
+                goto free_pairs;
+            } // else, do nothing (self)
+        } else if (diff < 0) {
+            pr_error("Repo commit pairs wrongly sorted\n");
+            r = -1;
+            goto free_pairs;
+        } else {
+            if (pair_duplicatable->commit->archive)
+                pair_unique->commit->archive;
+            if (pair_duplicatable->commit->checkout)
+                pair_unique->commit->checkout;
+        }
+    }
+    repo_commit_pairs_count = id_unique + 1;
+    if (repo_commit_pairs_allocated > repo_commit_pairs_count) {
+        pr_info("Removed %lu duplicated commits from export list\n",
+                repo_commit_pairs_allocated - repo_commit_pairs_count);
+        struct repo_commit_pair *new_pairs = realloc(repo_commit_pairs, 
+            sizeof *new_pairs * (
+                repo_commit_pairs_allocated = repo_commit_pairs_count));
+        if (!new_pairs) {
+            pr_error_with_errno("Failed to shrink memory allocated for pairs");
+            r = -1;
+            goto free_pairs;
+        }
+        repo_commit_pairs = new_pairs;
+    }
+    for (unsigned long i = 0; i < repo_commit_pairs_count; ++i) {
+        struct repo_commit_pair *pair = repo_commit_pairs + i;
+        pr_info("Commit %s from repo '%s'\n", work_handle_get_string(pair->commit->oid_hex), work_handle_get_string(pair->repo->url));
+    }
+    r = 0;
+free_pairs:
+    free(repo_commit_pairs);
+    // struct commit *commits = NULL;
+    // unsigned long commits_count
+    // struct commit *commits = NULL;
+    // unsigned long archive_count = 0;
+    // unsigned long checkout_count = 0;
+    // unsigned long both_count = 0;
+    
+    // pr_info("%lu commits need only to be archived, "
+    //         "%lu commits need only to be checked out, %lu commits need both\n",
+            // archive_count, checkout_count, both_count);
+    // if (work_handle->export_threads <= 1) {
+    //     return work_handle_export_all_repos_single_threaded(work_handle);
+    // } else {
+    //     pr_info("MT exporting\n");
+    // }
+    return r;
 }
 
 // int raise_nofile_limit() {
