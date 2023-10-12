@@ -428,6 +428,9 @@ struct config const CONFIG_INIT = {
     .export_threads = EXPORT_THREADS_DEFAULT,
     .clean_links_pass = CLEAN_LINKS_PASS_DEFAULT,
     .daemon_interval = DAEMON_INTERVAL_DEFAULT,
+    .string_buffer = {
+        .used = 1,
+    },
 };
 
 
@@ -2381,6 +2384,15 @@ int config_finish(
     config_set_default_dir(repo, REPO);
     config_set_default_dir(archive, ARCHIVE);
     config_set_default_dir(checkout, CHECKOUT);
+    if (!config->archive_suffix_offset) {
+        config->archive_suffix_offset = config->string_buffer.used;
+        if (string_buffer_add(&config->string_buffer, ARCHIVE_SUFFIX_DEFAULT, 
+            config->len_archive_suffix = (sizeof ARCHIVE_SUFFIX_DEFAULT - 1))) 
+        {
+            pr_error("Failed to add default archive suffix to config\n");
+            return -1;
+        }
+    }
     if (!config->len_proxy_url && config->proxy_after) {
         pr_warn(
             "You've set proxy_after but not set proxy, "
@@ -8442,15 +8454,15 @@ int repo_commit_pairs_dedup(
     unsigned long *restrict count
 ) {
     unsigned long id_unique = 0;
+    struct commit *commit_unique = pairs[0].commit;
+    git_oid *oid_unique = &commit_unique->oid;
     for (unsigned long id_duplicatable = 1;
         id_duplicatable < *count; 
         ++id_duplicatable
     ) {
-        struct repo_commit_pair *pair_duplicatable = 
-                                        pairs + id_duplicatable;
-        struct repo_commit_pair *pair_unique = pairs + id_unique;
-        int diff = git_oid_cmp(&pair_duplicatable->commit->oid, 
-                                &pair_unique->commit->oid);
+        struct commit *commit_duplicatable = pairs[id_duplicatable].commit;
+        int diff = git_oid_cmp(&commit_duplicatable->oid, 
+                                oid_unique);
         if (diff > 0) {
             ++id_unique;
             if (id_unique < id_duplicatable) {
@@ -8459,14 +8471,16 @@ int repo_commit_pairs_dedup(
                 pr_error("Deduped pairs ID pre-stepped\n");
                 return -1;
             } // else, do nothing (self)
+            commit_unique = pairs[id_unique].commit;
+            oid_unique = &commit_unique->oid;
         } else if (diff < 0) {
             pr_error("Repo commit pairs wrongly sorted\n");
             return -1;
         } else {
-            if (pair_duplicatable->commit->archive)
-                pair_unique->commit->archive = true;
-            if (pair_duplicatable->commit->checkout)
-                pair_unique->commit->checkout = true;
+            if (commit_duplicatable->archive)
+                commit_unique->archive = true;
+            if (commit_duplicatable->checkout)
+                commit_unique->checkout = true;
         }
     }
     *count = id_unique + 1;
@@ -8490,45 +8504,15 @@ int repo_commit_pairs_shrink(
 }
 
 static inline
-bool commit_need_export(
-    struct commit *const restrict commit,
-    int const dirfd_archive,
-    int const dirfd_checkout,
-    char const *const restrict sbuffer
-) {
-    if (!(commit->archive || commit->checkout)) return false;
-    // char const *const name = sbuffer + commit->oid_hex_offset;
-
-
-
-    return true;
-}
-
-static inline
-bool repo_commit_pair_need_export(
-    struct repo_commit_pair *const restrict pair,
-    int const dirfd_archive,
-    int const dirfd_checkout,
-    struct string_buffer const *const restrict sbuffer
-) {
-    struct commit *const restrict commit = pair->commit;
-    if (!(commit->archive || commit->checkout)) return false;
-    // char const *name = 
-
-    // return false;
-}
-
-static inline
 int repo_commit_pairs_filter_need_export(
-    struct repo_commit_pair **const restrict pairs,
+    struct repo_commit_pair *const restrict pairs,
     unsigned long *restrict count,
     int const dirfd_archive,
     int const dirfd_checkout,
-    struct string_buffer const *const restrict sbuffer,
+    char const *const restrict sbuffer,
     char const *const restrict archive_suffix,
     unsigned short const len_archive_suffix
 ) {
-    unsigned long id_need_export = 0;
     char name_archive_stack[0x100];
     char *name_archive_heap = NULL;
     char *name_archive;
@@ -8543,23 +8527,59 @@ int repo_commit_pairs_filter_need_export(
     }
     memcpy(name_archive + GIT_OID_HEXSZ, archive_suffix, len_archive_suffix);
     name_archive[len_name_archive] = '\0';
-    for (;;) {
-        struct repo_commit_pair *pair = pairs + id_need_export;
-        if (repo_commit_pair_need_export(pair, dirfd_archive, dirfd_checkout, 
-            sbuffer)) break;
-        ++id_need_export;
-        if (id_need_export >= *count) {
-            pr_warn("No commit needs to be exported\n");
-            *count = 0;
-            return 0;
-        }
-    }
-
+    unsigned long id_need_export = -1;
+    int r;
     for (unsigned long i = 0; i < *count; ++i) {
-
+        struct commit *commit = (pairs + i)->commit;
+        if (!commit->archive && !commit->checkout) continue;
+        struct stat stat_buffer;
+        char const *const oid_hex = sbuffer + commit->oid_hex_offset;
+        if (commit->archive) {
+            memcpy(name_archive, oid_hex, GIT_OID_HEXSZ);
+            if (fstatat(dirfd_archive, name_archive, &stat_buffer, 
+                AT_SYMLINK_NOFOLLOW)) 
+            {
+                if (errno != ENOENT) {
+                    pr_error_with_errno("Failed to get stat");
+                    r = -1;
+                    goto free_heap;
+                }
+            } else {
+                if ((stat_buffer.st_mode & S_IFMT) == S_IFREG) {
+                    commit->archive = false;
+                }
+            }
+        }
+        if (commit->checkout) {
+            if (fstatat(dirfd_checkout, oid_hex, &stat_buffer, 
+                AT_SYMLINK_NOFOLLOW)) 
+            {
+                if (errno != ENOENT) {
+                    pr_error_with_errno("Failed to get stat");
+                    r = -1;
+                    goto free_heap;
+                }
+            } else {
+                if ((stat_buffer.st_mode & S_IFMT) == S_IFDIR) {
+                    commit->checkout = false;
+                }
+            }
+        }
+        if (!commit->archive && !commit->checkout) continue;
+        ++id_need_export;
+        if (id_need_export < i) {
+            pairs[id_need_export] = pairs[i];
+        } else if (id_need_export > i) {
+            pr_error("Need export pairs ID pre-stepped\n");
+            r = -1;
+            goto free_heap;
+        } // else, do nothing
     }
+    *count = id_need_export + 1;
+    r = 0;
+free_heap:
     free_if_allocated(name_archive_heap);
-    return 0;
+    return r;
 }
 
 int work_handle_export_all_repos(
@@ -8595,9 +8615,24 @@ int work_handle_export_all_repos(
         r = -1;
         goto free_pairs;
     }
+    if (repo_commit_pairs_filter_need_export(pairs, &pairs_count, 
+        work_handle->dir_archives.datafd, work_handle->dir_checkouts.datafd, 
+        work_handle->string_buffer.buffer, 
+        work_handle_get_string(work_handle->archive_suffix), 
+        work_handle->len_archive_suffix)) 
+    {
+        pr_error("Failed to filter commit pairs to only keep need export\n");
+        r = -1;
+        goto free_pairs;
+    }
+    if (!pairs_count) {
+        pr_error("No commit need be exported\n");
+        r = 0;
+        goto free_pairs;
+    }
     if (pairs_allocated > pairs_count) {
         if (repo_commit_pairs_shrink(&pairs, pairs_count, &pairs_allocated)) {
-            pr_error("Failed to shrink pairs list after dedup\n");
+            pr_error("Failed to shrink pairs list after dedup and filter\n");
             r = -1;
             goto free_pairs;
         }
