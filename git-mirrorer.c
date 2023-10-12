@@ -8436,6 +8436,43 @@ void repo_commit_pairs_quick_sort(
     repo_commit_pairs_quick_sort(pairs, pivot + 1, high);
 }
 
+static inline
+int repo_commit_pairs_dedup(
+    struct repo_commit_pair *restrict repo_commit_pairs,
+    unsigned long *restrict repo_commit_pairs_count
+) {
+    unsigned long id_unique = 0;
+    for (unsigned long id_duplicatable = 1;
+        id_duplicatable < *repo_commit_pairs_count; 
+        ++id_duplicatable
+    ) {
+        struct repo_commit_pair *pair_duplicatable = 
+                                        repo_commit_pairs + id_duplicatable;
+        struct repo_commit_pair *pair_unique = repo_commit_pairs + id_unique;
+        int diff = git_oid_cmp(&pair_duplicatable->commit->oid, 
+                                &pair_unique->commit->oid);
+        if (diff > 0) {
+            ++id_unique;
+            if (id_unique < id_duplicatable) {
+              repo_commit_pairs[id_unique] = repo_commit_pairs[id_duplicatable];
+            } else if (id_unique > id_duplicatable) {
+                pr_error("Deduped pairs ID pre-stepped\n");
+                return -1;
+            } // else, do nothing (self)
+        } else if (diff < 0) {
+            pr_error("Repo commit pairs wrongly sorted\n");
+            return -1;
+        } else {
+            if (pair_duplicatable->commit->archive)
+                pair_unique->commit->archive = true;
+            if (pair_duplicatable->commit->checkout)
+                pair_unique->commit->checkout = true;
+        }
+    }
+    *repo_commit_pairs_count = id_unique + 1;
+    return 0;
+}
+
 int work_handle_export_all_repos(
     struct work_handle const *const restrict work_handle
 ) {
@@ -8458,38 +8495,17 @@ int work_handle_export_all_repos(
     work_handle_fill_repo_commit_pairs(work_handle, repo_commit_pairs);
     repo_commit_pairs_quick_sort(repo_commit_pairs, 0, 
                                 repo_commit_pairs_count - 1);
-    unsigned long id_unique = 0;
     int r;
-    for (unsigned long id_duplicatable = 1;
-        id_duplicatable < repo_commit_pairs_count; 
-        ++id_duplicatable
-    ) {
-        struct repo_commit_pair *pair_duplicatable = 
-                                        repo_commit_pairs + id_duplicatable;
-        struct repo_commit_pair *pair_unique = repo_commit_pairs + id_unique;
-        int diff = git_oid_cmp(&pair_duplicatable->commit->oid, 
-                                &pair_unique->commit->oid);
-        if (diff > 0) {
-            ++id_unique;
-            if (id_unique < id_duplicatable) {
-              repo_commit_pairs[id_unique] = repo_commit_pairs[id_duplicatable];
-            } else if (id_unique > id_duplicatable) {
-                pr_error("Deduped pairs ID pre-stepped\n");
-                r = -1;
-                goto free_pairs;
-            } // else, do nothing (self)
-        } else if (diff < 0) {
-            pr_error("Repo commit pairs wrongly sorted\n");
-            r = -1;
-            goto free_pairs;
-        } else {
-            if (pair_duplicatable->commit->archive)
-                pair_unique->commit->archive;
-            if (pair_duplicatable->commit->checkout)
-                pair_unique->commit->checkout;
-        }
+    if (repo_commit_pairs_dedup(repo_commit_pairs, &repo_commit_pairs_count)) {
+        pr_error("Failed to dedup repo commit pairs\n");
+        r = -1;
+        goto free_pairs;
     }
-    repo_commit_pairs_count = id_unique + 1;
+    if (!repo_commit_pairs_count) {
+        pr_error("No commit could be exported\n");
+        r = -1;
+        goto free_pairs;
+    }
     if (repo_commit_pairs_allocated > repo_commit_pairs_count) {
         pr_info("Removed %lu duplicated commits from export list\n",
                 repo_commit_pairs_allocated - repo_commit_pairs_count);
