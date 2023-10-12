@@ -8489,6 +8489,79 @@ int repo_commit_pairs_shrink(
     return 0;
 }
 
+static inline
+bool commit_need_export(
+    struct commit *const restrict commit,
+    int const dirfd_archive,
+    int const dirfd_checkout,
+    char const *const restrict sbuffer
+) {
+    if (!(commit->archive || commit->checkout)) return false;
+    // char const *const name = sbuffer + commit->oid_hex_offset;
+
+
+
+    return true;
+}
+
+static inline
+bool repo_commit_pair_need_export(
+    struct repo_commit_pair *const restrict pair,
+    int const dirfd_archive,
+    int const dirfd_checkout,
+    struct string_buffer const *const restrict sbuffer
+) {
+    struct commit *const restrict commit = pair->commit;
+    if (!(commit->archive || commit->checkout)) return false;
+    // char const *name = 
+
+    // return false;
+}
+
+static inline
+int repo_commit_pairs_filter_need_export(
+    struct repo_commit_pair **const restrict pairs,
+    unsigned long *restrict count,
+    int const dirfd_archive,
+    int const dirfd_checkout,
+    struct string_buffer const *const restrict sbuffer,
+    char const *const restrict archive_suffix,
+    unsigned short const len_archive_suffix
+) {
+    unsigned long id_need_export = 0;
+    char name_archive_stack[0x100];
+    char *name_archive_heap = NULL;
+    char *name_archive;
+    unsigned short len_name_archive = GIT_OID_HEXSZ + len_archive_suffix;
+    if (len_name_archive >= 0x100) {
+        if (!(name_archive_heap = malloc(len_name_archive + 1))) {
+            pr_error_with_errno("Failed to allocate memory for archive name");
+            return -1;
+        }
+    } else {
+        name_archive = name_archive_stack;
+    }
+    memcpy(name_archive + GIT_OID_HEXSZ, archive_suffix, len_archive_suffix);
+    name_archive[len_name_archive] = '\0';
+    for (;;) {
+        struct repo_commit_pair *pair = pairs + id_need_export;
+        if (repo_commit_pair_need_export(pair, dirfd_archive, dirfd_checkout, 
+            sbuffer)) break;
+        ++id_need_export;
+        if (id_need_export >= *count) {
+            pr_warn("No commit needs to be exported\n");
+            *count = 0;
+            return 0;
+        }
+    }
+
+    for (unsigned long i = 0; i < *count; ++i) {
+
+    }
+    free_if_allocated(name_archive_heap);
+    return 0;
+}
+
 int work_handle_export_all_repos(
     struct work_handle const *const restrict work_handle
 ) {
