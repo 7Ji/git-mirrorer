@@ -8438,23 +8438,23 @@ void repo_commit_pairs_quick_sort(
 
 static inline
 int repo_commit_pairs_dedup(
-    struct repo_commit_pair *restrict repo_commit_pairs,
-    unsigned long *restrict repo_commit_pairs_count
+    struct repo_commit_pair *restrict pairs,
+    unsigned long *restrict count
 ) {
     unsigned long id_unique = 0;
     for (unsigned long id_duplicatable = 1;
-        id_duplicatable < *repo_commit_pairs_count; 
+        id_duplicatable < *count; 
         ++id_duplicatable
     ) {
         struct repo_commit_pair *pair_duplicatable = 
-                                        repo_commit_pairs + id_duplicatable;
-        struct repo_commit_pair *pair_unique = repo_commit_pairs + id_unique;
+                                        pairs + id_duplicatable;
+        struct repo_commit_pair *pair_unique = pairs + id_unique;
         int diff = git_oid_cmp(&pair_duplicatable->commit->oid, 
                                 &pair_unique->commit->oid);
         if (diff > 0) {
             ++id_unique;
             if (id_unique < id_duplicatable) {
-              repo_commit_pairs[id_unique] = repo_commit_pairs[id_duplicatable];
+              pairs[id_unique] = pairs[id_duplicatable];
             } else if (id_unique > id_duplicatable) {
                 pr_error("Deduped pairs ID pre-stepped\n");
                 return -1;
@@ -8469,7 +8469,23 @@ int repo_commit_pairs_dedup(
                 pair_unique->commit->checkout = true;
         }
     }
-    *repo_commit_pairs_count = id_unique + 1;
+    *count = id_unique + 1;
+    return 0;
+}
+
+static inline
+int repo_commit_pairs_shrink(
+    struct repo_commit_pair **const restrict pairs,
+    unsigned long const count,
+    unsigned long *const restrict allocated
+) {
+    struct repo_commit_pair *new_pairs = realloc(*pairs, 
+        sizeof *new_pairs * (*allocated = count));
+    if (!new_pairs) {
+        pr_error_with_errno("Failed to shrink memory allocated for pairs");
+        return -1;
+    }
+    *pairs = new_pairs;
     return 0;
 }
 
@@ -8481,51 +8497,47 @@ int work_handle_export_all_repos(
         return -1;
     }
     pr_info("ALl repos and commits looked up, exporting now\n");
-    DYNAMIC_ARRAY_DECLARE_SAME(repo_commit_pair);
-    if (!(repo_commit_pairs_count = work_handle_commits_count(work_handle))) {
+    DYNAMIC_ARRAY_DECLARE(struct repo_commit_pair, pair);
+    if (!(pairs_count = work_handle_commits_count(work_handle))) {
         pr_error("No commits parsed for all repos");
         return -1;
     }
-    if (!(repo_commit_pairs = malloc(sizeof *repo_commit_pairs * (
-                    repo_commit_pairs_allocated = repo_commit_pairs_count)))) 
+    if (!(pairs = malloc(sizeof *pairs * (
+                    pairs_allocated = pairs_count)))) 
     {
         pr_error_with_errno("Failed to allocate memory for commits\n");
         return -1;
     }
-    work_handle_fill_repo_commit_pairs(work_handle, repo_commit_pairs);
-    repo_commit_pairs_quick_sort(repo_commit_pairs, 0, 
-                                repo_commit_pairs_count - 1);
+    work_handle_fill_repo_commit_pairs(work_handle, pairs);
+    repo_commit_pairs_quick_sort(pairs, 0, 
+                                pairs_count - 1);
     int r;
-    if (repo_commit_pairs_dedup(repo_commit_pairs, &repo_commit_pairs_count)) {
+    if (repo_commit_pairs_dedup(pairs, &pairs_count)) {
         pr_error("Failed to dedup repo commit pairs\n");
         r = -1;
         goto free_pairs;
     }
-    if (!repo_commit_pairs_count) {
+    if (!pairs_count) {
         pr_error("No commit could be exported\n");
         r = -1;
         goto free_pairs;
     }
-    if (repo_commit_pairs_allocated > repo_commit_pairs_count) {
-        pr_info("Removed %lu duplicated commits from export list\n",
-                repo_commit_pairs_allocated - repo_commit_pairs_count);
-        struct repo_commit_pair *new_pairs = realloc(repo_commit_pairs, 
-            sizeof *new_pairs * (
-                repo_commit_pairs_allocated = repo_commit_pairs_count));
-        if (!new_pairs) {
-            pr_error_with_errno("Failed to shrink memory allocated for pairs");
+    if (pairs_allocated > pairs_count) {
+        if (repo_commit_pairs_shrink(&pairs, pairs_count, &pairs_allocated)) {
+            pr_error("Failed to shrink pairs list after dedup\n");
             r = -1;
             goto free_pairs;
         }
-        repo_commit_pairs = new_pairs;
     }
-    for (unsigned long i = 0; i < repo_commit_pairs_count; ++i) {
-        struct repo_commit_pair *pair = repo_commit_pairs + i;
-        pr_info("Commit %s from repo '%s'\n", work_handle_get_string(pair->commit->oid_hex), work_handle_get_string(pair->repo->url));
+    for (unsigned long i = 0; i < pairs_count; ++i) {
+        struct repo_commit_pair *pair = pairs + i;
+        pr_info("Commit %s from repo '%s'\n", 
+            work_handle_get_string(pair->commit->oid_hex), 
+            work_handle_get_string(pair->repo->url));
     }
     r = 0;
 free_pairs:
-    free(repo_commit_pairs);
+    free(pairs);
     // struct commit *commits = NULL;
     // unsigned long commits_count
     // struct commit *commits = NULL;
