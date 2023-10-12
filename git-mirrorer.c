@@ -5307,6 +5307,7 @@ int work_handle_parse_repo_commit(
     if (r) {
         pr_error_with_libgit_error("Failed to lookup commit %s in repo '%s'",
             oid_hex, url);
+        repo->need_update = true;
         return -1;
     }
     // Submodules:
