@@ -8636,7 +8636,58 @@ free_heap:
 }
 
 
-
+// Use our own implementation instead of git_tree_walk() for optimization
+int commit_export_treewalk(
+    git_tree *const restrict tree,
+    git_repository *const restrict repo
+) {
+    size_t const entries = git_tree_entrycount(tree);
+    for (size_t i = 0; i < entries; ++i) {
+        git_tree_entry const *const entry = git_tree_entry_byindex(tree, i);
+        if (!entry) {
+            pr_error("Failed to get tree entry by index\n");
+            return -1;
+        }
+        git_object_t const type = git_tree_entry_type(entry);
+        switch (type) {
+        case GIT_OBJECT_BLOB:
+        case GIT_OBJECT_TREE:
+        case GIT_OBJECT_COMMIT:
+            break;
+        default:
+            pr_error("Unexpected tree entry type %i in tree\n", type);
+            return -1;
+        }
+        git_object *object;
+        int r = git_tree_entry_to_object(&object, repo, entry);
+        if (r) {
+            pr_error_with_libgit_error("Failed to convert try entry to object");
+            return -1;
+        }
+        switch (type) {
+        case GIT_OBJECT_BLOB: 
+            git_blob *blob = (git_blob *)object;
+            r = 0;
+            break;
+        case GIT_OBJECT_TREE:
+            git_tree *subtree = (git_tree *)object;
+            r = 0;
+            break;
+        case GIT_OBJECT_COMMIT:
+            git_commit *commit = (git_commit *)object;
+            r = 0;
+            break;
+        default:
+            pr_error("Unexpected routine\n");
+            r = -1;
+        }
+        git_object_free(object);
+        if (r) {
+            return -1;
+        }
+    }
+    return 0;
+}
 // int repo_commit_pair_export(
 
 // ) {
@@ -8644,40 +8695,39 @@ free_heap:
 // }
 
 
-// int repo_commit_pairs_export(
-//     struct repo_commit_pair *const restrict pairs,
-//     struct repo_work const *const restrict repos,
-//     unsigned long const pairs_count,
-//     char const *const restrict sbuffer
-// ) {
-    
-//     char path[PATH_MAX];
-//     int archive_fd = -1;
-//     int checkout_fd = -1;
-//     path[0] = '\0';
-    
-//     for (unsigned long i = 0; i < pairs_count; ++i) {
-//         struct commit *commit = pairs[i].commit;
-//         git_tree *tree;
-//         git_commit_tree(&tree, commit);
-//         if (commit->archive) {
-//             if (commit->checkout) { // a & c
+int work_handle_export_repo_commit_pairs_some(
+    struct work_handle const *const restrict work_handle,
+    struct repo_commit_pair *const restrict pairs,
+    unsigned long const pairs_count,
+    char const *const *const restrict pipe_args
+) { 
+    char path[PATH_MAX];
+    int archive_fd = -1;
+    int checkout_fd = -1;
+    path[0] = '\0';
+    for (unsigned long i = 0; i < pairs_count; ++i) {
+        struct commit *commit = pairs[i].commit;
+        git_tree *tree;
+        git_commit_tree(&tree, commit->git_commit);
+        if (commit->archive) {
+            if (commit->checkout) { // a & c
 
-//             } else { // a
+            } else { // a
 
-//             }
-//         } else { // c
+            }
+        } else { // c
 
-//         }
-//         // git_tree_entry_byindex
-//         // git_commit_tree
-//         // git_tree *tree;
-//         // git_tree_walk
-//     }
+        }
+        // git_tree_entry_byindex
+        // git_commit_tree
+        // git_tree *tree;
+        // git_tree_walk
+    }
 
 
-//     return 0;
-// }
+    return 0;
+}
+
 static inline
 bool repo_commit_pairs_need_archive(
     struct repo_commit_pair *const restrict pairs,
@@ -8689,6 +8739,7 @@ bool repo_commit_pairs_need_archive(
     return false;
 }
 
+static inline
 int work_handle_export_repo_commit_pairs(
     struct work_handle const *const restrict work_handle,
     struct repo_commit_pair *const restrict pairs,
@@ -8698,9 +8749,9 @@ int work_handle_export_repo_commit_pairs(
 ) {
     pr_info("Exporting with %hu threads, %hu jobs per thread\n", 
             threads_count, jobs_per_thread);
-    char *archive_pipe_args_stack[0x20];
-    char **archive_pipe_args_heap = NULL;
-    char **archive_pipe_args = NULL;
+    char const *archive_pipe_args_stack[0x20];
+    char const **archive_pipe_args_heap = NULL;
+    char const **archive_pipe_args = NULL;
     if (work_handle->archive_pipe_args_count && 
         repo_commit_pairs_need_archive(pairs, pairs_count)) 
     {
@@ -8724,9 +8775,16 @@ int work_handle_export_repo_commit_pairs(
         }
         archive_pipe_args[work_handle->archive_pipe_args_count] = NULL;
     }
+    int r;
+    if (threads_count <= 1) {
+        r = work_handle_export_repo_commit_pairs_some(work_handle, pairs, 
+            pairs_count, archive_pipe_args);
+        goto free_args;
+    }
     unsigned long pairs_remaining = pairs_count;
-free_if_allocated(archive_pipe_args_heap);
-    return 0;
+free_args:
+    free_if_allocated(archive_pipe_args_heap);
+    return r;
 }
 
 int work_handle_export_all_repos(
