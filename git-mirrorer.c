@@ -402,7 +402,7 @@ struct config {
     DYNAMIC_ARRAY_DECLARE(struct repo_config, repo);
     DYNAMIC_ARRAY_DECLARE(struct wanted_base, empty_wanted_object);
     DYNAMIC_ARRAY_DECLARE(struct wanted_base, always_wanted_object);
-    DYNAMIC_ARRAY_DECLARE_SAME(archive_pipe_arg);
+    DYNAMIC_ARRAY_DECLARE_SAME(archive_pipe_arg); \
     union {
         struct config_static _static;
         struct CONFIG_STATIC_DECLARE;
@@ -455,6 +455,7 @@ struct work_directory const WORK_DIRECTORY_INIT = {
 struct work_handle {
     struct string_buffer string_buffer;
     DYNAMIC_ARRAY_DECLARE(struct repo_work, repo);
+    DYNAMIC_ARRAY_DECLARE_SAME(archive_pipe_arg); \
     struct work_directory dir_repos,
                           dir_archives,
                           dir_checkouts;
@@ -3309,10 +3310,29 @@ int work_handle_init_from_config(
         pr_error("Failed to clone string buffer from config\n");
         goto free_cwd;
     }
+    if (config->archive_pipe_args_count) {
+        work_handle->archive_pipe_args = malloc(
+            sizeof *work_handle->archive_pipe_args * 
+                config->archive_pipe_args_count);
+        if (!work_handle->archive_pipe_args) {
+            pr_error("Failed to allocate memory for archive pipe args\n");
+            goto free_string_buffer;
+        }
+        memcpy(work_handle->archive_pipe_args, config->archive_pipe_args, 
+            sizeof *work_handle->archive_pipe_args * 
+                config->archive_pipe_args_count);
+        work_handle->archive_pipe_args_count = config->archive_pipe_args_count;
+        work_handle->archive_pipe_args_allocated = 
+            config->archive_pipe_args_count;
+    } else {
+        work_handle->archive_pipe_args = NULL;
+        work_handle->archive_pipe_args_allocated = 0;
+        work_handle->archive_pipe_args_count = 0;
+    }
     work_handle->_static = config->_static;
     if (work_handle_repos_init_from_config(work_handle, config)) {
         pr_error("Failed to init repos\n");
-        goto free_string_buffer;
+        goto free_pipe_args;
     }
     if (work_handle_work_directories_init(work_handle)) {
         pr_error("Failed to init work directories\n");
@@ -3331,6 +3351,8 @@ free_repos:
         free_if_allocated(work_handle->repos[i].wanted_objects);
     }
     free_if_allocated_to_null(work_handle->repos);
+free_pipe_args:
+    dynamic_array_free(work_handle->archive_pipe_args);
 free_string_buffer:
     free_if_allocated_to_null(work_handle->string_buffer.buffer);
 free_cwd:
@@ -3365,6 +3387,7 @@ void work_handle_free(
     }
     dynamic_array_free(work_handle->repos);
     string_buffer_free(&work_handle->string_buffer);
+    free_if_allocated(work_handle->archive_pipe_args);
     if (close(work_handle->cwd))
         pr_error_with_errno("Failed to clsoe opened/duped cwd");
 }
@@ -8612,42 +8635,97 @@ free_heap:
     return r;
 }
 
-int repo_commit_pair_export(
 
-) {
+
+// int repo_commit_pair_export(
+
+// ) {
     
-}
+// }
 
 
-int repo_commit_pairs_export(
+// int repo_commit_pairs_export(
+//     struct repo_commit_pair *const restrict pairs,
+//     struct repo_work const *const restrict repos,
+//     unsigned long const pairs_count,
+//     char const *const restrict sbuffer
+// ) {
+    
+//     char path[PATH_MAX];
+//     int archive_fd = -1;
+//     int checkout_fd = -1;
+//     path[0] = '\0';
+    
+//     for (unsigned long i = 0; i < pairs_count; ++i) {
+//         struct commit *commit = pairs[i].commit;
+//         git_tree *tree;
+//         git_commit_tree(&tree, commit);
+//         if (commit->archive) {
+//             if (commit->checkout) { // a & c
+
+//             } else { // a
+
+//             }
+//         } else { // c
+
+//         }
+//         // git_tree_entry_byindex
+//         // git_commit_tree
+//         // git_tree *tree;
+//         // git_tree_walk
+//     }
+
+
+//     return 0;
+// }
+static inline
+bool repo_commit_pairs_need_archive(
     struct repo_commit_pair *const restrict pairs,
-    struct repo_work const *const restrict repos,
     unsigned long const pairs_count
 ) {
     for (unsigned long i = 0; i < pairs_count; ++i) {
-        struct commit *commit = pairs[i].commit;
+        if (pairs[i].commit->archive) return true;
     }
-
-
-    return 0;
+    return false;
 }
 
-
-int repo_commit_pairs_export_threaded(
+int work_handle_export_repo_commit_pairs(
+    struct work_handle const *const restrict work_handle,
     struct repo_commit_pair *const restrict pairs,
-    struct repo_work const *const restrict repos,
     unsigned long const pairs_count,
     unsigned short const threads_count,
     unsigned short const jobs_per_thread
 ) {
-    pr_info("Exporting with %hu threads, %lu jobs per thread\n", 
+    pr_info("Exporting with %hu threads, %hu jobs per thread\n", 
             threads_count, jobs_per_thread);
-    if (threads_count <= 1) {
-        return repo_commit_pairs_export(pairs, repos, pairs_count);
+    char *archive_pipe_args_stack[0x20];
+    char **archive_pipe_args_heap = NULL;
+    char **archive_pipe_args = NULL;
+    if (work_handle->archive_pipe_args_count && 
+        repo_commit_pairs_need_archive(pairs, pairs_count)) 
+    {
+        if (work_handle->archive_pipe_args_count >= 0x20) {
+            archive_pipe_args_heap = malloc(
+                sizeof *archive_pipe_args_heap * 
+                    (work_handle->archive_pipe_args_count + 1));
+            if (!archive_pipe_args_heap) {
+                pr_error_with_errno(
+                    "Failed to allocate memory for pipe args\n");
+                return -1;
+            }
+            archive_pipe_args = archive_pipe_args_heap;
+        } else {
+            archive_pipe_args = archive_pipe_args_stack;
+        }
+        for (unsigned long i = 0; i < work_handle->archive_pipe_args_count; ++i) 
+        {
+            archive_pipe_args[i] = work_handle->string_buffer.buffer + 
+                work_handle->archive_pipe_args[i].offset;
+        }
+        archive_pipe_args[work_handle->archive_pipe_args_count] = NULL;
     }
     unsigned long pairs_remaining = pairs_count;
-
-
+free_if_allocated(archive_pipe_args_heap);
     return 0;
 }
 
@@ -8719,7 +8797,7 @@ int work_handle_export_all_repos(
     unsigned short export_threads = work_handle->export_threads;
     while (export_threads * jobs_per_thread > pairs_count) --export_threads;
     if (export_threads * jobs_per_thread < pairs_count) ++export_threads;
-    if (repo_commit_pairs_export_threaded(pairs, work_handle->repos, 
+    if (work_handle_export_repo_commit_pairs(work_handle, pairs,
         pairs_count, export_threads, jobs_per_thread)) 
     {
         pr_error("Failed to export commits\n");
