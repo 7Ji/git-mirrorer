@@ -8612,6 +8612,45 @@ free_heap:
     return r;
 }
 
+int repo_commit_pair_export(
+
+) {
+    
+}
+
+
+int repo_commit_pairs_export(
+    struct repo_commit_pair *const restrict pairs,
+    struct repo_work const *const restrict repos,
+    unsigned long const pairs_count
+) {
+    for (unsigned long i = 0; i < pairs_count; ++i) {
+        struct commit *commit = pairs[i].commit;
+    }
+
+
+    return 0;
+}
+
+
+int repo_commit_pairs_export_threaded(
+    struct repo_commit_pair *const restrict pairs,
+    struct repo_work const *const restrict repos,
+    unsigned long const pairs_count,
+    unsigned short const threads_count,
+    unsigned short const jobs_per_thread
+) {
+    pr_info("Exporting with %hu threads, %lu jobs per thread\n", 
+            threads_count, jobs_per_thread);
+    if (threads_count <= 1) {
+        return repo_commit_pairs_export(pairs, repos, pairs_count);
+    }
+    unsigned long pairs_remaining = pairs_count;
+
+
+    return 0;
+}
+
 int work_handle_export_all_repos(
     struct work_handle const *const restrict work_handle
 ) {
@@ -8669,28 +8708,27 @@ int work_handle_export_all_repos(
     }
     for (unsigned long i = 0; i < pairs_count; ++i) {
         struct repo_commit_pair *pair = pairs + i;
-        pr_info("Commit %s from repo '%s'\n", 
+        pr_info("Need to export commit %s from repo '%s'\n", 
             work_handle_get_string(pair->commit->oid_hex), 
             work_handle_get_string(pair->repo->url));
+    }
+    unsigned short jobs_per_thread = pairs_count / work_handle->export_threads;
+    if (pairs_count % work_handle->export_threads) {
+        ++jobs_per_thread;
+    }
+    unsigned short export_threads = work_handle->export_threads;
+    while (export_threads * jobs_per_thread > pairs_count) --export_threads;
+    if (export_threads * jobs_per_thread < pairs_count) ++export_threads;
+    if (repo_commit_pairs_export_threaded(pairs, work_handle->repos, 
+        pairs_count, export_threads, jobs_per_thread)) 
+    {
+        pr_error("Failed to export commits\n");
+        r = -1;
+        goto free_pairs;
     }
     r = 0;
 free_pairs:
     free(pairs);
-    // struct commit *commits = NULL;
-    // unsigned long commits_count
-    // struct commit *commits = NULL;
-    // unsigned long archive_count = 0;
-    // unsigned long checkout_count = 0;
-    // unsigned long both_count = 0;
-    
-    // pr_info("%lu commits need only to be archived, "
-    //         "%lu commits need only to be checked out, %lu commits need both\n",
-            // archive_count, checkout_count, both_count);
-    // if (work_handle->export_threads <= 1) {
-    //     return work_handle_export_all_repos_single_threaded(work_handle);
-    // } else {
-    //     pr_info("MT exporting\n");
-    // }
     return r;
 }
 
