@@ -5504,77 +5504,6 @@ int work_handle_parse_all_repos(
     return -1;
 }
 
-// int remove_dir_recursively(
-//     DIR * const restrict dir_p
-// ) {
-//     struct dirent *entry;
-//     errno = 0;
-//     int dir_fd = dirfd(dir_p);
-//     while ((entry = readdir(dir_p)) != NULL) {
-//         if (entry->d_name[0] == '.') {
-//             switch (entry->d_name[1]) {
-//             case '\0':
-//                 continue;
-//             case '.':
-//                 if (entry->d_name[2] == '\0') continue;
-//                 break;
-//             }
-//         }
-//         switch (entry->d_type) {
-//         case DT_REG:
-//         case DT_LNK:
-//             if (unlinkat(dir_fd, entry->d_name, 0)) {
-//                 pr_error_with_errno(
-//                     "Failed to delete '%s' recursively", entry->d_name);
-//                 return -1;
-//             }
-//             break;
-//         case DT_DIR: {
-//             int dir_fd_r = openat(dir_fd, entry->d_name, O_RDONLY);
-//             if (dir_fd_r < 0) {
-//                 pr_error_with_errno(
-//                     "Failed to open dir entry '%s'", entry->d_name);
-//                 return -1;
-//             }
-//             DIR *dir_p_r = fdopendir(dir_fd_r);
-//             if (dir_p_r == NULL) {
-//                 pr_error_with_errno(
-//                     "Failed to open '%s' as subdir", entry->d_name);
-//                 if (close(dir_fd_r)) {
-//                     pr_error_with_errno("Failed to close fd for recursive dir");
-//                 }
-//                 return -1;
-//             }
-//             int r = remove_dir_recursively(dir_p_r);
-//             if (closedir(dir_p_r)) {
-//                 pr_error_with_errno("Faild to close dir");
-//             }
-//             if (r) {
-//                 pr_error("Failed to remove dir '%s' recursively\n",
-//                     entry->d_name);
-//                 return -1;
-//             }
-//             if (unlinkat(dir_fd, entry->d_name, AT_REMOVEDIR)) {
-//                 pr_error_with_errno(
-//                     "Failed to rmdir '%s' recursively", entry->d_name);
-//                 return -1;
-//             }
-//             break;
-//         }
-//         default:
-//             pr_error("Unsupported file type %d for '%s'\n",
-//                 entry->d_type, entry->d_name);
-//             return -1;
-//         }
-
-//     }
-//     if (errno) {
-//         pr_error_with_errno("Failed to read dir\n");
-//         return -1;
-//     }
-//     return 0;
-// }
-
 // int ensure_path_non_exist( // essentially rm -rf
 //     char const *const restrict path
 // ) {
@@ -7325,39 +7254,6 @@ int tar_finish(
 //     return 0;
 // }
 
-// // 1 path did not exist, or existed but we removed it,
-// // 0 exists and is of type, -1 error
-// int ensure_path_is_type_at(
-//     int dirfd,
-//     char const *const restrict path,
-//     mode_t type
-// ) {
-//     struct stat stat_buffer;
-//     if (fstatat(dirfd, path, &stat_buffer, AT_SYMLINK_NOFOLLOW)) {
-//         switch (errno) {
-//         case ENOENT:
-//             return 1;
-//         default:
-//             pr_error_with_errno(
-//                 "Failed to check stat of existing '%s'", path);
-//             return -1;
-//         }
-//     } else {
-//         if ((stat_buffer.st_mode & S_IFMT) == type) {
-//             pr_debug("'%s' is of expected type %u\n", path, type);
-//             return 0;
-//         } else {
-//             if (ensure_path_non_exist_at(dirfd, path)) {
-//                 pr_error_with_errno(
-//                     "Failed to remove existing '%s' whose type is not %u",
-//                     path, type);
-//                 return -1;
-//             }
-//             return 1;
-//         }
-//     }
-// }
-
 // struct export_handle {
 //     bool should_export;
 //     char path[PATH_MAX],
@@ -8503,6 +8399,151 @@ int repo_commit_pairs_shrink(
     return 0;
 }
 
+int remove_dir_recursively(
+    DIR * const restrict dir_p
+) {
+    struct dirent *entry;
+    int dir_fd = dirfd(dir_p);
+    errno = 0;
+    while ((entry = readdir(dir_p)) != NULL) {
+        if (entry->d_name[0] == '.') {
+            switch (entry->d_name[1]) {
+            case '\0':
+                continue;
+            case '.':
+                if (entry->d_name[2] == '\0') continue;
+                break;
+            }
+        }
+        switch (entry->d_type) {
+        case DT_REG:
+        case DT_LNK:
+            if (unlinkat(dir_fd, entry->d_name, 0)) {
+                pr_error_with_errno(
+                    "Failed to delete '%s' recursively", entry->d_name);
+                return -1;
+            }
+            break;
+        case DT_DIR: {
+            int dir_fd_r = openat(dir_fd, entry->d_name, O_RDONLY);
+            if (dir_fd_r < 0) {
+                pr_error_with_errno(
+                    "Failed to open dir entry '%s'", entry->d_name);
+                return -1;
+            }
+            DIR *dir_p_r = fdopendir(dir_fd_r);
+            if (dir_p_r == NULL) {
+                pr_error_with_errno(
+                    "Failed to open '%s' as subdir", entry->d_name);
+                if (close(dir_fd_r)) {
+                    pr_error_with_errno("Failed to close fd for recursive dir");
+                }
+                return -1;
+            }
+            int r = remove_dir_recursively(dir_p_r);
+            if (closedir(dir_p_r)) {
+                pr_error_with_errno("Faild to close dir");
+            }
+            if (r) {
+                pr_error("Failed to remove dir '%s' recursively\n",
+                    entry->d_name);
+                return -1;
+            }
+            if (unlinkat(dir_fd, entry->d_name, AT_REMOVEDIR)) {
+                pr_error_with_errno(
+                    "Failed to rmdir '%s' recursively", entry->d_name);
+                return -1;
+            }
+            break;
+        }
+        default:
+            pr_error("Unsupported file type %d for '%s'\n",
+                entry->d_type, entry->d_name);
+            return -1;
+        }
+    }
+    if (errno) {
+        pr_error_with_errno("Failed to read dir\n");
+        return -1;
+    }
+    return 0;
+}
+
+int remove_at(
+    int const atfd,
+    char const *const restrict path,
+    mode_t fmt
+) {
+    
+    if (fmt == S_IFDIR) {
+        int fd = openat(atfd, path, O_RDONLY | O_DIRECTORY);
+        if (fd < 0) {
+            pr_error_with_errno("Failed to open '%s'", path);
+            return -1;
+        }
+        DIR* dir = fdopendir(fd);
+        if (!dir) {
+            pr_error_with_errno("Failed to fdopendir '%s'", path);
+            if (close(fd)) {
+                pr_error_with_errno("Failed to close '%s'", path);
+            }
+            return -1;
+        }
+        int r = remove_dir_recursively(dir);
+        if (closedir(dir)) {
+            pr_error_with_errno("Failed to closedir '%s'", path);
+        }
+        if (r) {
+            pr_error_with_errno("Failed to remove dir '%s' recursively", path);
+            return -1;
+        }
+        if (unlinkat(atfd, path, AT_REMOVEDIR)) {
+            pr_error_with_errno("Failed to rmdir '%s'", path);
+            return -1;
+        }
+    } else {
+        if (unlinkat(atfd, path, 0)) {
+            pr_error_with_errno("Failed to unlink '%s'", path);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+// 1 path did not exist, or existed but we removed it,
+// 0 exists and is of type, -1 error
+int ensure_path_is_type_at(
+    int atfd,
+    char const *const restrict path,
+    mode_t type
+) {
+    struct stat stat_buffer;
+    if (fstatat(atfd, path, &stat_buffer, AT_SYMLINK_NOFOLLOW)) {
+        switch (errno) {
+        case ENOENT:
+            return 1;
+        default:
+            pr_error_with_errno(
+                "Failed to check stat of existing '%s'", path);
+            return -1;
+        }
+    } else {
+        mode_t fmt = stat_buffer.st_mode & S_IFMT;
+        if (fmt == type) {
+            pr_debug("'%s' is of expected type %u\n", path, type);
+            return 0;
+        } else {
+            if (remove_at(atfd, path, fmt)) {
+                pr_error_with_errno(
+                    "Failed to remove existing '%s' whose type is not %u",
+                    path, type);
+                return -1;
+            }
+            return 1;
+        }
+    }
+}
+
 static inline
 int repo_commit_pairs_filter_need_export(
     struct repo_commit_pair *const restrict pairs,
@@ -8532,37 +8573,26 @@ int repo_commit_pairs_filter_need_export(
     for (unsigned long i = 0; i < *count; ++i) {
         struct commit *commit = (pairs + i)->commit;
         if (!commit->archive && !commit->checkout) continue;
-        struct stat stat_buffer;
         char const *const oid_hex = sbuffer + commit->oid_hex_offset;
         if (commit->archive) {
             memcpy(name_archive, oid_hex, GIT_OID_HEXSZ);
-            if (fstatat(dirfd_archive, name_archive, &stat_buffer, 
-                AT_SYMLINK_NOFOLLOW)) 
-            {
-                if (errno != ENOENT) {
-                    pr_error_with_errno("Failed to get stat");
-                    r = -1;
-                    goto free_heap;
-                }
-            } else {
-                if ((stat_buffer.st_mode & S_IFMT) == S_IFREG) {
-                    commit->archive = false;
-                }
+            int r2 = ensure_path_is_type_at(dirfd_archive, name_archive, 
+                                                                S_IFREG);
+            if (r2 < 0) {
+                r = -1;
+                goto free_heap;
+            } else if (r2 == 0) {
+                commit->archive = false;
             }
+            
         }
         if (commit->checkout) {
-            if (fstatat(dirfd_checkout, oid_hex, &stat_buffer, 
-                AT_SYMLINK_NOFOLLOW)) 
-            {
-                if (errno != ENOENT) {
-                    pr_error_with_errno("Failed to get stat");
-                    r = -1;
-                    goto free_heap;
-                }
-            } else {
-                if ((stat_buffer.st_mode & S_IFMT) == S_IFDIR) {
-                    commit->checkout = false;
-                }
+            int r2 = ensure_path_is_type_at(dirfd_checkout, oid_hex, S_IFDIR);
+            if (r2 < 0) {
+                r = -1;
+                goto free_heap;
+            } else if (r2 == 0) {
+                commit->archive = false;
             }
         }
         if (!commit->archive && !commit->checkout) continue;
