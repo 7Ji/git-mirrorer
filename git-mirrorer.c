@@ -2474,7 +2474,7 @@ int config_read(
     int config_fd = STDIN_FILENO;
     if (config_path && strcmp(config_path, "-")) {
         pr_info("Using '%s' as config file\n", config_path);
-        if ((config_fd = open(config_path, O_RDONLY)) < 0) {
+        if ((config_fd = open(config_path, O_RDONLY | O_CLOEXEC)) < 0) {
             pr_error_with_errno("Failed to open config file '%s'", config_path);
             return -1;
         }
@@ -8448,7 +8448,7 @@ int remove_dir_recursively(
             }
             break;
         case DT_DIR: {
-            int dir_fd_r = openat(dir_fd, entry->d_name, O_RDONLY);
+            int dir_fd_r = openat(dir_fd, entry->d_name, O_RDONLY | O_CLOEXEC);
             if (dir_fd_r < 0) {
                 pr_error_with_errno(
                     "Failed to open dir entry '%s'", entry->d_name);
@@ -8492,14 +8492,14 @@ int remove_dir_recursively(
     return 0;
 }
 
-int remove_at(
+int remove_at_with_format(
     int const atfd,
     char const *const restrict path,
     mode_t fmt
 ) {
     
     if (fmt == S_IFDIR) {
-        int fd = openat(atfd, path, O_RDONLY | O_DIRECTORY);
+        int fd = openat(atfd, path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
         if (fd < 0) {
             pr_error_with_errno("Failed to open '%s'", path);
             return -1;
@@ -8533,6 +8533,18 @@ int remove_at(
     return 0;
 }
 
+int remove_at(
+    int const atfd,
+    char const *const restrict path
+) {
+    struct stat stat_buffer;
+    if (fstatat(atfd, path, &stat_buffer, AT_SYMLINK_NOFOLLOW)) {
+        pr_error_with_errno("Failed to stat '%s'", path);
+        return -1;
+    }
+    return remove_at_with_format(atfd, path, stat_buffer.st_mode & S_IFMT);
+}
+
 // 1 path did not exist, or existed but we removed it,
 // 0 exists and is of type, -1 error
 int ensure_path_is_type_at(
@@ -8556,7 +8568,7 @@ int ensure_path_is_type_at(
             pr_debug("'%s' is of expected type %u\n", path, type);
             return 0;
         } else {
-            if (remove_at(atfd, path, fmt)) {
+            if (remove_at_with_format(atfd, path, fmt)) {
                 pr_error_with_errno(
                     "Failed to remove existing '%s' whose type is not %u",
                     path, type);
@@ -8689,22 +8701,36 @@ int commit_export_treewalk(
     return 0;
 }
 
-struct export_handle_archive {
-    char path[PATH_MAX];
-    int fd;
-    pid_t child;
-
-};
-
-struct export_handle_checkout {
-
-};
-
 // int repo_commit_pair_export(
 
 // ) {
     
 // }
+int create_and_open_dir_at(
+    int const atfd,
+    char const *const restrict name
+) {
+    if (mkdirat(atfd, name, 0755)) {
+        if (errno == EEXIST) {
+            if (remove_at(atfd, name)) {
+                return -1;
+            }
+        } else {
+            pr_error_with_errno("Failed to mkdir '%s'", name);
+            return -1;
+        }
+    }
+    int fd = openat(atfd, name, O_WRONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) {
+        pr_error_with_errno("Failed to open created dir '%s'", name);
+        if (unlinkat(atfd, name, AT_REMOVEDIR)) {
+            pr_error_with_errno("Failed to remove created dir '%s'", name);
+        }
+        return -1;
+    }
+    return fd;
+}
+
 
 int commit_export(
     struct commit const *const restrict commit,
@@ -8726,22 +8752,16 @@ int commit_export(
     char name_checkout_temp[GIT_OID_HEXSZ + 6];
     int fd_archive = -1;
     int fd_checkout = -1;
+    pid_t child_pipe = -1;
     if (commit->checkout) {
         memcpy(name_checkout_temp, sbuffer + commit->oid_hex_offset, 
                 GIT_OID_HEXSZ);
         memcpy(name_checkout_temp + GIT_OID_HEXSZ, ".temp", 5);
         name_checkout_temp[GIT_OID_HEXSZ + 5] = '\0';
-        if (mkdirat(datafd_checkout, name_checkout_temp, 0755)) {
-            pr_error_with_errno("Failed to mkdir '%s' under checkout/data");
-            return -1;
-        }
-        if ((fd_checkout = openat(datafd_checkout, name_checkout_temp, 
-            O_WRONLY | O_DIRECTORY)) < 0) 
+        if ((fd_checkout = create_and_open_dir_at(
+            datafd_checkout, name_checkout_temp)) < 0) 
         {
-            pr_error_with_errno("Failed to open temp checkout dir");
-            if (unlinkat(datafd_checkout, name_checkout_temp, AT_REMOVEDIR)) {
-                pr_error_with_errno("Failed to remove temp checkout dir");
-            }
+            pr_error("Failed to create and open checkout dir\n");
             return -1;
         }
     }
@@ -8749,7 +8769,55 @@ int commit_export(
         memcpy(name_archive, sbuffer + commit->oid_hex_offset, GIT_OID_HEXSZ);
         memcpy(name_archive_temp, sbuffer + commit->oid_hex_offset, 
             GIT_OID_HEXSZ);
-        
+        if ((fd_archive = openat(datafd_archive, name_archive_temp, 
+                            O_WRONLY | O_CREAT, 0644)) < 0) {
+            pr_error("Failed to archive fd\n");
+            r = -1;
+            goto close;
+        }
+        if (pipe_args) {
+            int fd_pipes[2];
+            if (pipe2(fd_pipes, O_CLOEXEC)) {
+                pr_error_with_errno("Failed to create pipe");
+                r = -1;
+                goto close;
+            }
+            if (!(child_pipe = fork())) { // Child
+                if (dup2(fd_archive, STDOUT_FILENO) < 0) {
+                    fpr_error_with_errno(stderr,
+                        "[Child %ld] Failed to dup archive fd to stdout",
+                        pthread_self());
+                    exit(EXIT_FAILURE);
+                }
+                if (dup2(fd_pipes[0], STDIN_FILENO) < 0) {
+                    fpr_error_with_errno(stderr,
+                        "[Child %ld] Failed to dup pipe read end to stdin",
+                        pthread_self());
+                    exit(EXIT_FAILURE);
+                }
+                if (execvp(pipe_args[0], pipe_args)) {
+                    fpr_error_with_errno(
+                        stderr, "[Child %ld] Failed to execute piper",
+                                pthread_self());
+                    exit(EXIT_FAILURE);
+                }
+                fpr_error(stderr, "[Child %ld] We should not be here\n",
+                    pthread_self());
+                exit(EXIT_FAILURE);
+            }
+            if (close(fd_pipes[0])) {
+                pr_error_with_errno("Failed to close the read-end of pipe");
+            }
+            if (close(fd_archive)) {
+                pr_error_with_errno("Failed to close the original archive fd");
+            }
+            fd_archive = fd_pipes[1];
+            if (child_pipe < 0) {
+                pr_error_with_errno("Failed to fork");
+                r = -1;
+                goto close;
+            }
+        }
     }
     if (commit->archive) {
         if (commit->checkout) {
@@ -8763,17 +8831,24 @@ int commit_export(
         pr_error("Commit should neither be archived nor checked-out\n");
         r = -1;
     }
+close:
     // git_tree_free(tree);
     if (fd_archive >= 0) {
         if (close(fd_archive)) {
             pr_error_with_errno("Failed to close archive fd");
-            r = -1;
+            // r = -1;
+        }
+        if (r) {
+            remove_at_with_format(datafd_archive, name_archive_temp, S_IFREG);
         }
     }
     if (fd_checkout >= 0) {
         if (close(fd_checkout)) {
             pr_error_with_errno("Failed to close checkout fd");
-            r = -1;
+            // r = -1;
+        }
+        if (r) {
+            remove_at_with_format(datafd_checkout, name_checkout_temp, S_IFDIR);
         }
     }
     return r;
