@@ -8688,6 +8688,18 @@ int commit_export_treewalk(
     }
     return 0;
 }
+
+struct export_handle_archive {
+    char path[PATH_MAX];
+    int fd;
+    pid_t child;
+
+};
+
+struct export_handle_checkout {
+
+};
+
 // int repo_commit_pair_export(
 
 // ) {
@@ -8696,9 +8708,9 @@ int commit_export_treewalk(
 
 int commit_export(
     struct commit const *const restrict commit,
-    unsigned const archive_suffix_offset,
-    unsigned short const len_archive_suffix,
     char const *const *const restrict pipe_args,
+    char *const restrict name_archive,
+    char *const restrict name_archive_temp,
     int const datafd_archive,
     int const datafd_checkout,
     char const *const restrict sbuffer
@@ -8711,41 +8723,33 @@ int commit_export(
     // }
     int r;
     char path_archive[PATH_MAX];
+    char name_checkout_temp[GIT_OID_HEXSZ + 6];
     int fd_archive = -1;
     int fd_checkout = -1;
-    if (commit->archive) {
-        char name_archive_stack[0x100];
-        char *name_archive_heap = NULL;
-        char *name_archive;
-        unsigned short const len_name_archive = 
-            GIT_OID_HEXSZ + 5 + len_archive_suffix;
-        if (len_name_archive >= 0x100) {
-            if (!(name_archive_heap = malloc(len_name_archive + 1))) {
-                pr_error_with_errno(
-                    "Failed to allocate memory for archive name");
-                return -1;
-            }
-            name_archive = name_archive_heap;
-        } else {
-            name_archive = name_archive_stack;
-        }
-        memcpy(name_archive, sbuffer + commit->oid_hex_offset, GIT_OID_HEXSZ);
-        if (len_archive_suffix) memcpy(name_archive + GIT_OID_HEXSZ, 
-            sbuffer + archive_suffix_offset, len_archive_suffix);
-        memcpy(name_archive + GIT_OID_HEXSZ + len_archive_suffix, ".temp", 5);
-        name_archive[len_name_archive] = '\0';
-        free_if_allocated(name_archive_heap);
-        path_archive[0] = '\0';
-    }
     if (commit->checkout) {
-        char name_checkout[GIT_OID_HEXSZ + 6];
-        memcpy(name_checkout, sbuffer + commit->oid_hex_offset, GIT_OID_HEXSZ);
-        memcpy(name_checkout + GIT_OID_HEXSZ, ".temp", 5);
-        name_checkout[GIT_OID_HEXSZ + 5] = '\0';
-        if (mkdirat(datafd_checkout, name_checkout, 0755)) {
+        memcpy(name_checkout_temp, sbuffer + commit->oid_hex_offset, 
+                GIT_OID_HEXSZ);
+        memcpy(name_checkout_temp + GIT_OID_HEXSZ, ".temp", 5);
+        name_checkout_temp[GIT_OID_HEXSZ + 5] = '\0';
+        if (mkdirat(datafd_checkout, name_checkout_temp, 0755)) {
             pr_error_with_errno("Failed to mkdir '%s' under checkout/data");
             return -1;
         }
+        if ((fd_checkout = openat(datafd_checkout, name_checkout_temp, 
+            O_WRONLY | O_DIRECTORY)) < 0) 
+        {
+            pr_error_with_errno("Failed to open temp checkout dir");
+            if (unlinkat(datafd_checkout, name_checkout_temp, AT_REMOVEDIR)) {
+                pr_error_with_errno("Failed to remove temp checkout dir");
+            }
+            return -1;
+        }
+    }
+    if (commit->archive) {
+        memcpy(name_archive, sbuffer + commit->oid_hex_offset, GIT_OID_HEXSZ);
+        memcpy(name_archive_temp, sbuffer + commit->oid_hex_offset, 
+            GIT_OID_HEXSZ);
+        
     }
     if (commit->archive) {
         if (commit->checkout) {
@@ -8797,12 +8801,15 @@ int repo_commit_pairs_export_some(
     int const datafd_checkout,
     char const *const restrict sbuffer
 ) { 
+    char name_archive_temp_stack[0x100];
+    char *name_archive_temp_heap = NULL;
+    char *name_archive_temp = NULL;
     char name_archive_stack[0x100];
     char *name_archive_heap = NULL;
     char *name_archive = NULL;
     if (repo_commit_pairs_need_archive(pairs, pairs_count)) {
-        unsigned short const len_name_archive = 
-            GIT_OID_HEXSZ + 5 + len_archive_suffix;
+        unsigned short len_name_archive = GIT_OID_HEXSZ + len_archive_suffix;
+        // Non-temp name
         if (len_name_archive >= 0x100) {
             if (!(name_archive_heap = malloc(len_name_archive + 1))) {
                 pr_error_with_errno(
@@ -8815,8 +8822,24 @@ int repo_commit_pairs_export_some(
         }
         if (len_archive_suffix) memcpy(name_archive + GIT_OID_HEXSZ, 
             sbuffer + archive_suffix_offset, len_archive_suffix);
-        memcpy(name_archive + GIT_OID_HEXSZ + len_archive_suffix, ".temp", 5);
-        
+        name_archive[len_name_archive] = '\0';
+        // Temp name
+        len_name_archive += 5;
+        if (len_name_archive >= 0x100) {
+            if (!(name_archive_temp_heap = malloc(len_name_archive + 1))) {
+                pr_error_with_errno(
+                    "Failed to allocate memory for archive name");
+                return -1;
+            }
+            name_archive_temp = name_archive_temp_heap;
+        } else {
+            name_archive_temp = name_archive_temp_stack;
+        }
+        if (len_archive_suffix) memcpy(name_archive_temp + GIT_OID_HEXSZ, 
+            sbuffer + archive_suffix_offset, len_archive_suffix);
+        memcpy(name_archive_temp + GIT_OID_HEXSZ + len_archive_suffix, 
+                ".temp", 5);
+        name_archive_temp[len_name_archive] = '\0';
     }
     for (unsigned long i = 0; i < pairs_count; ++i) {
         struct commit *commit = pairs[i].commit;
@@ -8827,7 +8850,8 @@ int repo_commit_pairs_export_some(
         // git_tree_walk
     }
 
-
+    free_if_allocated(name_archive_heap);
+    free_if_allocated(name_archive_temp_heap);
     return 0;
 }
 
