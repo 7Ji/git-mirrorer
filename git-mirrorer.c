@@ -8836,7 +8836,19 @@ close:
     if (fd_archive >= 0) {
         if (close(fd_archive)) {
             pr_error_with_errno("Failed to close archive fd");
-            // r = -1;
+        }
+        if (child_pipe > 0) {
+            int status;
+            pid_t waited = waitpid(child_pipe, &status, 0);
+            if (waited != child_pipe) {
+                pr_error("Waited pipe child different %i != %i\n", waited, 
+                        child_pipe);
+                r = -1;
+            }
+            if (status) {
+                pr_error("Piper child bad return %i\n", status);
+                r = -1;
+            }
         }
         if (r) {
             remove_at_with_format(datafd_archive, name_archive_temp, S_IFREG);
