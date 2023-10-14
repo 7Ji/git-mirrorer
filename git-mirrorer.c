@@ -8819,6 +8819,7 @@ int commit_export(
             }
         }
     }
+    r = 0;
     if (commit->archive) {
         if (commit->checkout) {
 
