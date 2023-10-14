@@ -8694,38 +8694,85 @@ int commit_export_treewalk(
     
 // }
 
-
-int work_handle_export_repo_commit_pairs_some(
-    struct work_handle const *const restrict work_handle,
-    struct repo_commit_pair *const restrict pairs,
-    unsigned long const pairs_count,
-    char const *const *const restrict pipe_args
-) { 
-    char path[PATH_MAX];
-    int archive_fd = -1;
-    int checkout_fd = -1;
-    path[0] = '\0';
-    for (unsigned long i = 0; i < pairs_count; ++i) {
-        struct commit *commit = pairs[i].commit;
-        git_tree *tree;
-        git_commit_tree(&tree, commit->git_commit);
-        if (commit->archive) {
-            if (commit->checkout) { // a & c
-
-            } else { // a
-
+int commit_export(
+    struct commit const *const restrict commit,
+    unsigned const archive_suffix_offset,
+    unsigned short const len_archive_suffix,
+    char const *const *const restrict pipe_args,
+    int const datafd_archive,
+    int const datafd_checkout,
+    char const *const restrict sbuffer
+) {
+    // git_tree *tree;
+    // int r = git_commit_tree(&tree, commit->git_commit);
+    // if (r) {
+    //     pr_error("Failed to get tree pointed by commit\n");
+    //     return -1;
+    // }
+    int r;
+    char path_archive[PATH_MAX];
+    int fd_archive = -1;
+    int fd_checkout = -1;
+    if (commit->archive) {
+        char name_archive_stack[0x100];
+        char *name_archive_heap = NULL;
+        char *name_archive;
+        unsigned short const len_name_archive = 
+            GIT_OID_HEXSZ + 5 + len_archive_suffix;
+        if (len_name_archive >= 0x100) {
+            if (!(name_archive_heap = malloc(len_name_archive + 1))) {
+                pr_error_with_errno(
+                    "Failed to allocate memory for archive name");
+                return -1;
             }
-        } else { // c
+            name_archive = name_archive_heap;
+        } else {
+            name_archive = name_archive_stack;
+        }
+        memcpy(name_archive, sbuffer + commit->oid_hex_offset, GIT_OID_HEXSZ);
+        if (len_archive_suffix) memcpy(name_archive + GIT_OID_HEXSZ, 
+            sbuffer + archive_suffix_offset, len_archive_suffix);
+        memcpy(name_archive + GIT_OID_HEXSZ + len_archive_suffix, ".temp", 5);
+        name_archive[len_name_archive] = '\0';
+        free_if_allocated(name_archive_heap);
+        path_archive[0] = '\0';
+    }
+    if (commit->checkout) {
+        char name_checkout[GIT_OID_HEXSZ + 6];
+        memcpy(name_checkout, sbuffer + commit->oid_hex_offset, GIT_OID_HEXSZ);
+        memcpy(name_checkout + GIT_OID_HEXSZ, ".temp", 5);
+        name_checkout[GIT_OID_HEXSZ + 5] = '\0';
+        if (mkdirat(datafd_checkout, name_checkout, 0755)) {
+            pr_error_with_errno("Failed to mkdir '%s' under checkout/data");
+            return -1;
+        }
+    }
+    if (commit->archive) {
+        if (commit->checkout) {
+
+        } else {
 
         }
-        // git_tree_entry_byindex
-        // git_commit_tree
-        // git_tree *tree;
-        // git_tree_walk
+    } else if (commit->checkout) {
+
+    } else {
+        pr_error("Commit should neither be archived nor checked-out\n");
+        r = -1;
     }
-
-
-    return 0;
+    // git_tree_free(tree);
+    if (fd_archive >= 0) {
+        if (close(fd_archive)) {
+            pr_error_with_errno("Failed to close archive fd");
+            r = -1;
+        }
+    }
+    if (fd_checkout >= 0) {
+        if (close(fd_checkout)) {
+            pr_error_with_errno("Failed to close checkout fd");
+            r = -1;
+        }
+    }
+    return r;
 }
 
 static inline
@@ -8737,6 +8784,51 @@ bool repo_commit_pairs_need_archive(
         if (pairs[i].commit->archive) return true;
     }
     return false;
+}
+
+
+int repo_commit_pairs_export_some(
+    struct repo_commit_pair *const restrict pairs,
+    unsigned long const pairs_count,
+    unsigned const archive_suffix_offset,
+    unsigned short const len_archive_suffix,
+    char const *const *const restrict pipe_args,
+    int const datafd_archive,
+    int const datafd_checkout,
+    char const *const restrict sbuffer
+) { 
+    char name_archive_stack[0x100];
+    char *name_archive_heap = NULL;
+    char *name_archive = NULL;
+    if (repo_commit_pairs_need_archive(pairs, pairs_count)) {
+        unsigned short const len_name_archive = 
+            GIT_OID_HEXSZ + 5 + len_archive_suffix;
+        if (len_name_archive >= 0x100) {
+            if (!(name_archive_heap = malloc(len_name_archive + 1))) {
+                pr_error_with_errno(
+                    "Failed to allocate memory for archive name");
+                return -1;
+            }
+            name_archive = name_archive_heap;
+        } else {
+            name_archive = name_archive_stack;
+        }
+        if (len_archive_suffix) memcpy(name_archive + GIT_OID_HEXSZ, 
+            sbuffer + archive_suffix_offset, len_archive_suffix);
+        memcpy(name_archive + GIT_OID_HEXSZ + len_archive_suffix, ".temp", 5);
+        
+    }
+    for (unsigned long i = 0; i < pairs_count; ++i) {
+        struct commit *commit = pairs[i].commit;
+        
+        // git_tree_entry_byindex
+        // git_commit_tree
+        // git_tree *tree;
+        // git_tree_walk
+    }
+
+
+    return 0;
 }
 
 static inline
@@ -8775,10 +8867,20 @@ int work_handle_export_repo_commit_pairs(
         }
         archive_pipe_args[work_handle->archive_pipe_args_count] = NULL;
     }
+    char *archive_suffix;
+    unsigned short len_archive_suffix;
+    if (work_handle->archive_suffix_offset) {
+        archive_suffix = work_handle->string_buffer.buffer + 
+            work_handle->archive_suffix_offset;
+        len_archive_suffix = work_handle->len_archive_suffix;
+    } else {
+        archive_suffix = NULL;
+        len_archive_suffix = 0;
+    }
     int r;
     if (threads_count <= 1) {
-        r = work_handle_export_repo_commit_pairs_some(work_handle, pairs, 
-            pairs_count, archive_pipe_args);
+        // r = (work_handle, pairs, 
+        //     pairs_count, archive_pipe_args);
         goto free_args;
     }
     unsigned long pairs_remaining = pairs_count;
