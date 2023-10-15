@@ -8757,6 +8757,26 @@ int blob_export_checkout(
 }
 
 static inline
+int blob_export_archive_checkout(
+    git_blob *const restrict blob,
+    git_filemode_t const git_mode,
+    char const *const restrict name,
+    struct export_path_handle *path_handle,
+    char const *const restrict mtime,
+    int const fd_archive,
+    int const fd_checkout
+) {
+    int r = 0;
+    if (blob_export_archive(blob, git_mode, path_handle, mtime, fd_archive)) {
+        r = -1;
+    }
+    if (blob_export_checkout(blob, git_mode, name, fd_checkout)) {
+        r = -1;
+    }
+    return r;
+}
+
+static inline
 bool tree_entry_type_illegal(
     git_object_t const type
 ) {
@@ -8903,52 +8923,6 @@ int tree_export_archive(
     return 0;
 }
 
-// int tree_export_checkout(
-//     git_tree *const restrict tree,
-//     struct commit const *const restrict commit,
-//     git_repository *const restrict repo,
-//     struct repo_work *const restrict repos,
-//     int const fd_checkout,
-//     char const *const restrict sbuffer
-// ) {
-//     size_t const count = git_tree_entrycount(tree);
-//     for (size_t i = 0; i < count; ++i) {
-//         tree_export_prepare_entry;
-//         switch (type) {
-//         case GIT_OBJECT_BLOB: 
-//             r = blob_export_checkout((git_blob *)object, 
-//                 git_tree_entry_filemode(entry), name, fd_checkout);
-//             break;
-//         case GIT_OBJECT_TREE:
-//             int subdir_fd = create_and_open_dir_at(fd_checkout, name);
-//             if (subdir_fd < 0 ){
-//                 r = -1;
-//             }
-//             r = tree_export_checkout((git_tree *)object, commit, repo, repos,
-//                 subdir_fd, sbuffer);
-//             break;
-//         case GIT_OBJECT_COMMIT:
-//             tree_export_submodule_prepeare;
-//             export_path_handle_prepare_commit;
-//             r = tree_export_archive(target_tree, target_commit, 
-//                 target_repo->git_repository, repos, path_handle, mtime, 
-//                 fd_archive, sbuffer); 
-//             git_tree_free(target_tree);
-//             export_path_handle_finish_tree;
-//             break;
-//         default:
-//             pr_error("Unexpected routine\n");
-//             r = -1;
-//         }
-//         git_object_free(object);
-//         if (r) {
-//             return -1;
-//         }
-//     }
-//     return 0;
-
-// }
-
 int create_and_open_dir_at(
     int const atfd,
     char const *const restrict name
@@ -8974,6 +8948,123 @@ int create_and_open_dir_at(
     return fd;
 }
 
+#define tree_export_checkout_prepare_subdir \
+    if ((subdir_fd = create_and_open_dir_at(fd_checkout, name)) < 0) { \
+        pr_error_with_errno("Failed to create and open subdir"); \
+        r = -1; \
+        break; \
+    }
+
+#define tree_export_checkout_close_subdir \
+    if (close(subdir_fd)) { \
+        pr_error_with_errno("Failed to close subdir"); \
+        r = -1; \
+    }
+
+// Use our own implementation instead of git_tree_walk() for optimization
+int tree_export_checkout(
+    git_tree *const restrict tree,
+    struct commit const *const restrict commit,
+    git_repository *const restrict repo,
+    struct repo_work *const restrict repos,
+    struct export_path_handle *path_handle,
+    int const fd_checkout,
+    char const *const restrict sbuffer
+) {
+    size_t const count = git_tree_entrycount(tree);
+    export_path_handle_backup;
+    int subdir_fd;
+    for (size_t i = 0; i < count; ++i) {
+        tree_export_prepare_entry;
+        switch (type) {
+        case GIT_OBJECT_BLOB: 
+            r = blob_export_checkout((git_blob *)object, 
+                git_tree_entry_filemode(entry), name, fd_checkout);
+            break;
+        case GIT_OBJECT_TREE:
+            tree_export_checkout_prepare_subdir;
+            export_path_handle_prepare_tree;
+            r = tree_export_checkout((git_tree *)object, commit, repo, repos,
+                path_handle, subdir_fd, sbuffer);
+            tree_export_checkout_close_subdir;
+            export_path_handle_finish_tree;
+            break;
+        case GIT_OBJECT_COMMIT:
+            tree_export_checkout_prepare_subdir;
+            tree_export_submodule_prepeare;
+            export_path_handle_prepare_commit;
+            r = tree_export_checkout(target_tree, target_commit, 
+                target_repo->git_repository, repos, path_handle, subdir_fd,
+                sbuffer); 
+            tree_export_checkout_close_subdir;
+            git_tree_free(target_tree);
+            export_path_handle_finish_tree;
+            break;
+        default:
+            pr_error("Unexpected routine\n");
+            r = -1;
+        }
+        git_object_free(object);
+        if (r) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int tree_export_archive_checkout(
+    git_tree *const restrict tree,
+    struct commit const *const restrict commit,
+    git_repository *const restrict repo,
+    struct repo_work *const restrict repos,
+    struct export_path_handle *path_handle,
+    char const *const restrict mtime,
+    int const fd_archive,
+    int const fd_checkout,
+    char const *const restrict sbuffer
+) {
+    size_t const count = git_tree_entrycount(tree);
+    export_path_handle_backup;
+    int subdir_fd;
+    for (size_t i = 0; i < count; ++i) {
+        tree_export_prepare_entry;
+        switch (type) {
+        case GIT_OBJECT_BLOB: 
+            r = blob_export_archive_checkout((git_blob *)object, 
+                git_tree_entry_filemode(entry), name, path_handle, mtime, 
+                fd_archive, fd_checkout);
+            break;
+        case GIT_OBJECT_TREE:
+            tree_export_checkout_prepare_subdir;
+            export_path_handle_prepare_tree;
+            r = tree_export_archive_checkout((git_tree *)object, commit, repo, 
+                repos, path_handle, mtime, fd_archive, subdir_fd, sbuffer);
+            tree_export_checkout_close_subdir;
+            export_path_handle_finish_tree;
+            break;
+        case GIT_OBJECT_COMMIT:
+            tree_export_checkout_prepare_subdir;
+            tree_export_submodule_prepeare;
+            export_path_handle_prepare_commit;
+            r = tree_export_archive_checkout(target_tree, target_commit, 
+                target_repo->git_repository, repos, path_handle, mtime, 
+                fd_archive, subdir_fd, sbuffer); 
+            tree_export_checkout_close_subdir;
+            git_tree_free(target_tree);
+            export_path_handle_finish_tree;
+            break;
+        default:
+            pr_error("Unexpected routine\n");
+            r = -1;
+        }
+        git_object_free(object);
+        if (r) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static inline
 int commit_export_tree(
     struct commit const *const restrict commit,
@@ -8989,12 +9080,12 @@ int commit_export_tree(
         pr_error("Failed to get tree pointed by commit\n");
         return -1;
     }
+    struct export_path_handle path_handle = {
+        .len = 0,
+        .entry_offset = 0,
+        .module_offset = 0,
+    };
     if (commit->archive) {
-        struct export_path_handle path_handle = {
-            .len = 0,
-            .entry_offset = 0,
-            .module_offset = 0,
-        };
         char mtime[TAR_HEADER_MTIME_LEN] = "";
         if (snprintf(mtime, TAR_HEADER_MTIME_LEN, "%011lo", 
             git_commit_time(commit->git_commit)) < 0) 
@@ -9004,13 +9095,15 @@ int commit_export_tree(
             goto free_tree;
         }
         if (commit->checkout) {
-
+            r = tree_export_archive_checkout(tree, commit, repo, repos, 
+                &path_handle, mtime, datafd_archive, datafd_checkout, sbuffer);
         } else {
             r = tree_export_archive(tree, commit, repo, repos, &path_handle, 
                 mtime, datafd_archive, sbuffer);
         }
     } else if (commit->checkout) {
-
+        r = tree_export_checkout(tree, commit, repo, repos, &path_handle,
+            datafd_checkout, sbuffer);
     } else {
         pr_error("Commit should neither be archived nor checked-out\n");
         r = -1;
