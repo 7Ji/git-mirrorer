@@ -7029,6 +7029,10 @@ int commit_get_target_repo_commit_tree(
         break; \
     }
 
+#define tree_export_end_entry \
+    if (type != GIT_OBJECT_COMMIT) git_object_free(object); \
+    if (r) return -1
+
 // Use our own implementation instead of git_tree_walk() for optimization
 int tree_export_archive(
     git_tree *const restrict tree,
@@ -7068,11 +7072,7 @@ int tree_export_archive(
             pr_error("Unexpected routine\n");
             r = -1;
         }
-        if (type != GIT_OBJECT_COMMIT)
-            git_object_free(object);
-        if (r) {
-            return -1;
-        }
+        tree_export_end_entry;
     }
     return 0;
 }
@@ -7157,10 +7157,7 @@ int tree_export_checkout(
             pr_error("Unexpected routine\n");
             r = -1;
         }
-        git_object_free(object);
-        if (r) {
-            return -1;
-        }
+        tree_export_end_entry;
     }
     return 0;
 }
@@ -7210,10 +7207,7 @@ int tree_export_archive_checkout(
             pr_error("Unexpected routine\n");
             r = -1;
         }
-        git_object_free(object);
-        if (r) {
-            return -1;
-        }
+        tree_export_end_entry;
     }
     return 0;
 }
