@@ -3844,7 +3844,6 @@ int work_handle_link_all_repos(
             work_handle_get_string(repo_work->long_name),
             repo_work->len_long_name, target)) r = -1;
     }
-free_target_heap:
     free_if_allocated(target_heap);
     return r;
 }
@@ -7019,7 +7018,6 @@ int tree_export_archive(
     export_path_handle_backup;
     for (size_t i = 0; i < count; ++i) {
         tree_export_prepare_entry;
-        pr_info("Parsing entry at '%s'\n", path_handle->path);
         switch (type) {
         case GIT_OBJECT_BLOB: 
             r = blob_export_archive((git_blob *)object, 
