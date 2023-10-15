@@ -9249,21 +9249,17 @@ struct repo_commit_pairs_export_some_arg {
     unsigned long pairs_count;
     unsigned archive_suffix_offset;
     unsigned short len_archive_suffix;
-    char const **restrict pipe_args;
+    char *const *pipe_args;
     int datafd_archive;
     int datafd_checkout;
     char *restrict sbuffer;
 };
 
-int repo_commit_pairs_export_some(
+int work_handle_export_repo_commit_pairs_some(
+    struct work_handle const *const restrict work_handle,
     struct repo_commit_pair *const restrict pairs,
     unsigned long const pairs_count,
-    unsigned const archive_suffix_offset,
-    unsigned short const len_archive_suffix,
-    char const *const *const restrict pipe_args,
-    int const datafd_archive,
-    int const datafd_checkout,
-    char const *const restrict sbuffer
+    char *const *const restrict pipe_args
 ) { 
     char name_archive_temp_stack[0x100];
     char *name_archive_temp_heap = NULL;
@@ -9272,7 +9268,8 @@ int repo_commit_pairs_export_some(
     char *name_archive_heap = NULL;
     char *name_archive = NULL;
     if (repo_commit_pairs_need_archive(pairs, pairs_count)) {
-        unsigned short len_name_archive = GIT_OID_HEXSZ + len_archive_suffix;
+        unsigned short len_name_archive = GIT_OID_HEXSZ + 
+            work_handle->len_archive_suffix;
         // Non-temp name
         if (len_name_archive >= 0x100) {
             if (!(name_archive_heap = malloc(len_name_archive + 1))) {
@@ -9281,11 +9278,11 @@ int repo_commit_pairs_export_some(
                 return -1;
             }
             name_archive = name_archive_heap;
-        } else {
-            name_archive = name_archive_stack;
-        }
-        if (len_archive_suffix) memcpy(name_archive + GIT_OID_HEXSZ, 
-            sbuffer + archive_suffix_offset, len_archive_suffix);
+        } else name_archive = name_archive_stack;
+        if (work_handle->len_archive_suffix) 
+            memcpy(name_archive + GIT_OID_HEXSZ, 
+                work_handle_get_string(work_handle->archive_suffix), 
+                    work_handle->len_archive_suffix);
         name_archive[len_name_archive] = '\0';
         // Temp name
         len_name_archive += 5;
@@ -9296,28 +9293,32 @@ int repo_commit_pairs_export_some(
                 return -1;
             }
             name_archive_temp = name_archive_temp_heap;
-        } else {
-            name_archive_temp = name_archive_temp_stack;
-        }
-        if (len_archive_suffix) memcpy(name_archive_temp + GIT_OID_HEXSZ, 
-            sbuffer + archive_suffix_offset, len_archive_suffix);
-        memcpy(name_archive_temp + GIT_OID_HEXSZ + len_archive_suffix, 
-                ".temp", 5);
+        } else name_archive_temp = name_archive_temp_stack;
+        if (work_handle->len_archive_suffix) 
+            memcpy(name_archive_temp + GIT_OID_HEXSZ, 
+                work_handle_get_string(work_handle->archive_suffix), 
+                    work_handle->len_archive_suffix);
+        memcpy(name_archive_temp + GIT_OID_HEXSZ + 
+                    work_handle->len_archive_suffix, ".temp", 5);
         name_archive_temp[len_name_archive] = '\0';
     }
+    int r = 0;
     for (unsigned long i = 0; i < pairs_count; ++i) {
-        struct commit *commit = pairs[i].commit;
-        // commit_export()
-        
-        // // git_tree_entry_byindex
-        // // git_commit_tree
-        // // git_tree *tree;
-        // // git_tree_walk
+        if (commit_export(pairs[i].commit, pairs[i].repo->git_repository, 
+                work_handle->repos, pipe_args, name_archive, name_archive_temp, 
+                work_handle->dir_archives.datafd, 
+                work_handle->dir_checkouts.datafd, 
+                work_handle->string_buffer.buffer))
+        {
+            pr_error("Failed to export commit %s of repo '%s'\n",
+                work_handle_get_string(pairs[i].commit->oid_hex),
+                work_handle_get_string(pairs[i].repo->url));
+            r = -1;
+        }
     }
-
     free_if_allocated(name_archive_heap);
     free_if_allocated(name_archive_temp_heap);
-    return 0;
+    return r;
 }
 
 void *repo_commit_pairs_export_some_thread(void *arg) {
@@ -9329,13 +9330,10 @@ int work_handle_export_repo_commit_pairs_single_threaded(
     struct work_handle const *const restrict work_handle,
     struct repo_commit_pair *const restrict pairs,
     unsigned long const pairs_count,
-    char const **archive_pipe_args
+    char *const *const restrict pipe_args
 ) {
-    return repo_commit_pairs_export_some(pairs, pairs_count, 
-            work_handle->archive_suffix_offset, work_handle->len_archive_suffix,
-            archive_pipe_args, work_handle->dir_archives.datafd, 
-            work_handle->dir_checkouts.datafd, 
-            work_handle->string_buffer.buffer);
+    return work_handle_export_repo_commit_pairs_some(work_handle, pairs, 
+        pairs_count, pipe_args);
 }
 
 static inline
@@ -9345,7 +9343,7 @@ int work_handle_export_repo_commit_pairs_multi_threaded(
     unsigned long const pairs_count,
     unsigned short const threads_count,
     unsigned short const jobs_per_thread,
-    char const **archive_pipe_args
+    char *const *const restrict pipe_args
 ) {
     struct repo_commit_pairs_export_some_arg args_stack[10];
     struct repo_commit_pairs_export_some_arg *args_heap = NULL;
@@ -9373,7 +9371,7 @@ int work_handle_export_repo_commit_pairs_multi_threaded(
         arg->pairs_count = pairs_this;
         arg->archive_suffix_offset = work_handle->archive_suffix_offset;
         arg->len_archive_suffix = work_handle->len_archive_suffix;
-        arg->pipe_args = archive_pipe_args;
+        arg->pipe_args = pipe_args;
         arg->datafd_archive = work_handle->dir_archives.datafd;
         arg->datafd_checkout = work_handle->dir_checkouts.datafd;
         arg->sbuffer = work_handle->string_buffer.buffer;
@@ -9431,11 +9429,12 @@ int work_handle_export_repo_commit_pairs(
     int r;
     if (export_threads <= 1) {
         r = work_handle_export_repo_commit_pairs_single_threaded(
-                work_handle, pairs, pairs_count, archive_pipe_args);
+                work_handle, pairs, pairs_count, 
+                (char *const *)archive_pipe_args);
     } else {
         r = work_handle_export_repo_commit_pairs_multi_threaded(
                 work_handle, pairs, pairs_count, export_threads, 
-                jobs_per_thread, archive_pipe_args);
+                jobs_per_thread, (char *const *)archive_pipe_args);
     }
     free_if_allocated(archive_pipe_args_heap);
     return r;
