@@ -6953,9 +6953,10 @@ bool tree_entry_type_illegal(
     git_object_t const type = git_tree_entry_type(entry); \
     if (tree_entry_type_illegal(type)) return -1; \
     git_object *object; \
-    int r = git_tree_entry_to_object(&object, repo->git_repository, entry); \
-    if (r) { \
-        pr_error_with_libgit_error("Failed to convert try entry to object"); \
+    int r; \
+    if (type != GIT_OBJECT_COMMIT) \
+    if ((r = git_tree_entry_to_object(&object, repo->git_repository, entry))){ \
+        pr_error_with_libgit_error("Failed to convert tree entry to object"); \
         return -1; \
     } \
     char const *const restrict name = git_tree_entry_name(entry); \
@@ -7043,6 +7044,7 @@ int tree_export_archive(
     export_path_handle_backup;
     for (size_t i = 0; i < count; ++i) {
         tree_export_prepare_entry;
+        pr_info("Parsing entry at '%s'\n", path_handle->path);
         switch (type) {
         case GIT_OBJECT_BLOB: 
             r = blob_export_archive((git_blob *)object, 
@@ -7066,7 +7068,8 @@ int tree_export_archive(
             pr_error("Unexpected routine\n");
             r = -1;
         }
-        git_object_free(object);
+        if (type != GIT_OBJECT_COMMIT)
+            git_object_free(object);
         if (r) {
             return -1;
         }
@@ -7320,6 +7323,10 @@ int commit_export_tree(
     } else {
         pr_error("Commit should neither be archived nor checked-out\n");
         r = -1;
+    }
+    if (r) {
+        path_handle.path[PATH_MAX - 1] = '\0';
+        pr_warn("Last path handleded: '%s'\n", path_handle.path);
     }
 free_tree:
     git_tree_free(tree);
