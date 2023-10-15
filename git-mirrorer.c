@@ -7453,6 +7453,12 @@ close:
             r = -1;
         }
     }
+    if (r) {
+        pr_error("Failed to export commit %s\n", 
+                sbuffer + commit->oid_hex_offset);
+    } else {
+        pr_info("Exported commit %s\n", sbuffer + commit->oid_hex_offset);
+    }
     return r;
 }
 
