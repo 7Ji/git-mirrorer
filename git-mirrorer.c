@@ -8734,7 +8734,7 @@ int create_and_open_dir_at(
 
 int commit_export(
     struct commit const *const restrict commit,
-    char const *const *const restrict pipe_args,
+    char *const *const restrict pipe_args,
     char *const restrict name_archive,
     char *const restrict name_archive_temp,
     int const datafd_archive,
@@ -8878,6 +8878,16 @@ bool repo_commit_pairs_need_archive(
     return false;
 }
 
+struct repo_commit_pairs_export_some_arg {
+    struct repo_commit_pair *restrict pairs;
+    unsigned long pairs_count;
+    unsigned archive_suffix_offset;
+    unsigned short len_archive_suffix;
+    char **restrict pipe_args;
+    int datafd_archive;
+    int datafd_checkout;
+    char *restrict sbuffer;
+};
 
 int repo_commit_pairs_export_some(
     struct repo_commit_pair *const restrict pairs,
@@ -8931,11 +8941,12 @@ int repo_commit_pairs_export_some(
     }
     for (unsigned long i = 0; i < pairs_count; ++i) {
         struct commit *commit = pairs[i].commit;
+        // commit_export()
         
-        // git_tree_entry_byindex
-        // git_commit_tree
-        // git_tree *tree;
-        // git_tree_walk
+        // // git_tree_entry_byindex
+        // // git_commit_tree
+        // // git_tree *tree;
+        // // git_tree_walk
     }
 
     free_if_allocated(name_archive_heap);
@@ -8943,16 +8954,77 @@ int repo_commit_pairs_export_some(
     return 0;
 }
 
+void *repo_commit_pairs_export_some_thread(void *arg) {
+
+}
+
 static inline
-int work_handle_export_repo_commit_pairs(
+int work_handle_export_repo_commit_pairs_single_threaded(
+    struct work_handle const *const restrict work_handle,
+    struct repo_commit_pair *const restrict pairs,
+    unsigned long const pairs_count,
+    char const **archive_pipe_args
+) {
+    return repo_commit_pairs_export_some(pairs, pairs_count, 
+            work_handle->archive_suffix_offset, work_handle->len_archive_suffix,
+            archive_pipe_args, work_handle->dir_archives.datafd, 
+            work_handle->dir_checkouts.datafd, 
+            work_handle->string_buffer.buffer);
+}
+
+static inline
+int work_handle_export_repo_commit_pairs_multi_threaded(
     struct work_handle const *const restrict work_handle,
     struct repo_commit_pair *const restrict pairs,
     unsigned long const pairs_count,
     unsigned short const threads_count,
-    unsigned short const jobs_per_thread
+    unsigned short const jobs_per_thread,
+    char const **archive_pipe_args
 ) {
-    pr_info("Exporting with %hu threads, %hu jobs per thread\n", 
-            threads_count, jobs_per_thread);
+    struct repo_commit_pairs_export_some_arg args_stack[10];
+    struct repo_commit_pairs_export_some_arg *args_heap = NULL;
+    struct repo_commit_pairs_export_some_arg *args;
+    if (threads_count > 10) {
+        if (!(args_heap = malloc(sizeof *args_heap * threads_count))) {
+            pr_error_with_errno("Failed to allocate memory for thread args");
+            return -1;
+        }
+        args = args_heap;
+    } else {
+        args = args_stack;
+    }
+    unsigned long pairs_offset = 0;
+    unsigned long pairs_remaining = pairs_count;
+    for (unsigned long i = 0; i < threads_count; ++i) {
+        struct repo_commit_pairs_export_some_arg *arg = args + i;
+        unsigned long pairs_this;
+        if (pairs_remaining > jobs_per_thread) {
+            pairs_this = jobs_per_thread;
+        } else {
+            pairs_this = pairs_remaining;
+        }
+        arg->pairs = pairs + pairs_offset;
+        arg->pairs_count = pairs_this;
+        arg->archive_suffix_offset = work_handle->archive_suffix_offset;
+        arg->len_archive_suffix = work_handle->len_archive_suffix;
+        arg->pipe_args = archive_pipe_args;
+        arg->datafd_archive = work_handle->dir_archives.datafd;
+        arg->datafd_checkout = work_handle->dir_checkouts.datafd;
+        arg->sbuffer = work_handle->string_buffer.buffer;
+        pairs_offset += pairs_this;
+        pairs_remaining -= pairs_this;
+    }
+    pr_error("Not implemented yet\n");
+    free_if_allocated(args_heap);
+    return -1;
+}
+
+static inline
+int work_handle_export_repo_commit_pairs(
+    struct work_handle const *const restrict work_handle,
+    struct repo_commit_pair *const restrict pairs,
+    unsigned long const pairs_count
+) {
     char const *archive_pipe_args_stack[0x20];
     char const **archive_pipe_args_heap = NULL;
     char const **archive_pipe_args = NULL;
@@ -8978,25 +9050,27 @@ int work_handle_export_repo_commit_pairs(
                 work_handle->archive_pipe_args[i].offset;
         }
         archive_pipe_args[work_handle->archive_pipe_args_count] = NULL;
-    }
-    char *archive_suffix;
-    unsigned short len_archive_suffix;
-    if (work_handle->archive_suffix_offset) {
-        archive_suffix = work_handle->string_buffer.buffer + 
-            work_handle->archive_suffix_offset;
-        len_archive_suffix = work_handle->len_archive_suffix;
     } else {
-        archive_suffix = NULL;
-        len_archive_suffix = 0;
+        pr_info("Not creating archive pipe args\n");
     }
+    unsigned short jobs_per_thread = pairs_count / work_handle->export_threads;
+    if (pairs_count % work_handle->export_threads) {
+        ++jobs_per_thread;
+    }
+    unsigned short export_threads = work_handle->export_threads;
+    while (export_threads * jobs_per_thread > pairs_count) --export_threads;
+    if (export_threads * jobs_per_thread < pairs_count) ++export_threads;
+    pr_info("Exporting with %hu threads, %hu jobs per thread\n", 
+            export_threads, jobs_per_thread);
     int r;
-    if (threads_count <= 1) {
-        // r = (work_handle, pairs, 
-        //     pairs_count, archive_pipe_args);
-        goto free_args;
+    if (export_threads <= 1) {
+        r = work_handle_export_repo_commit_pairs_single_threaded(
+                work_handle, pairs, pairs_count, archive_pipe_args);
+    } else {
+        r = work_handle_export_repo_commit_pairs_multi_threaded(
+                work_handle, pairs, pairs_count, export_threads, 
+                jobs_per_thread, archive_pipe_args);
     }
-    unsigned long pairs_remaining = pairs_count;
-free_args:
     free_if_allocated(archive_pipe_args_heap);
     return r;
 }
@@ -9062,16 +9136,7 @@ int work_handle_export_all_repos(
             work_handle_get_string(pair->commit->oid_hex), 
             work_handle_get_string(pair->repo->url));
     }
-    unsigned short jobs_per_thread = pairs_count / work_handle->export_threads;
-    if (pairs_count % work_handle->export_threads) {
-        ++jobs_per_thread;
-    }
-    unsigned short export_threads = work_handle->export_threads;
-    while (export_threads * jobs_per_thread > pairs_count) --export_threads;
-    if (export_threads * jobs_per_thread < pairs_count) ++export_threads;
-    if (work_handle_export_repo_commit_pairs(work_handle, pairs,
-        pairs_count, export_threads, jobs_per_thread)) 
-    {
+    if (work_handle_export_repo_commit_pairs(work_handle, pairs, pairs_count)) {
         pr_error("Failed to export commits\n");
         r = -1;
         goto free_pairs;
