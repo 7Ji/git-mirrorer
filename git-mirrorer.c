@@ -8647,7 +8647,7 @@ free_heap:
     return r;
 }
 
-struct export_archive_path_handle {
+struct export_path_handle {
     char path[PATH_MAX];
     unsigned short len;
     unsigned short entry_offset;
@@ -8658,7 +8658,7 @@ struct export_archive_path_handle {
 int blob_export_archive(
     git_blob *const restrict blob,
     git_filemode_t const mode,
-    struct export_archive_path_handle *path_handle,
+    struct export_path_handle *path_handle,
     char const *const restrict mtime,
     int const fd_archive
 ) {
@@ -8787,22 +8787,30 @@ bool tree_entry_type_illegal(
         return -1; \
     } \
     char const *const restrict name = git_tree_entry_name(entry); \
-    unsigned short const len_name = strnlen(name, USHRT_MAX); 
+    unsigned short const len_name = strnlen(name, USHRT_MAX); \
+    if (path_handle->entry_offset + len_name >= PATH_MAX) { \
+        pr_error("Path would exceed max length with entry '%s' name added", \
+                    name); \
+        return -1; \
+    } \
+    path_handle->len = path_handle->entry_offset + len_name; \
+    memcpy(path_handle->path + path_handle->entry_offset, name, len_name); \
+    path_handle->path[path_handle->len] = '\0';
 
-#define export_archive_path_handle_backup \
+#define export_path_handle_backup \
     unsigned short const entry_offset = path_handle->entry_offset; \
     unsigned short const module_offset = path_handle->module_offset
 
-#define export_archive_path_handle_prepare_tree \
+#define export_path_handle_prepare_tree \
     path_handle->path[path_handle->len] = '/'; \
     path_handle->entry_offset = path_handle->len + 1
 
-#define export_archive_path_handle_finish_tree \
+#define export_path_handle_finish_tree \
     path_handle->entry_offset = entry_offset; \
     path_handle->module_offset = module_offset
 
-#define export_archive_path_handle_prepare_commit \
-    export_archive_path_handle_prepare_tree; \
+#define export_path_handle_prepare_commit \
+    export_path_handle_prepare_tree; \
     path_handle->module_offset = path_handle->len + 1
 
 int commit_get_target_repo_commit_tree(
@@ -8844,18 +8852,9 @@ int commit_get_target_repo_commit_tree(
         &target_commit, &target_tree, sbuffer) \
     ) { \
         pr_error("Failed to get submodule tree"); \
-        return -1; \
+        r = -1; \
+        break; \
     }
-
-#define tree_export_archive_append_entry_name_to_handle \
-    if (path_handle->entry_offset + len_name >= PATH_MAX) { \
-        pr_error("Path would exceed max length with entry '%s' name added", \
-                    name); \
-        return -1; \
-    } \
-    path_handle->len = path_handle->entry_offset + len_name; \
-    memcpy(path_handle->path + path_handle->entry_offset, name, len_name); \
-    path_handle->path[path_handle->len] = '\0'; \
 
 // Use our own implementation instead of git_tree_walk() for optimization
 int tree_export_archive(
@@ -8863,35 +8862,34 @@ int tree_export_archive(
     struct commit const *const restrict commit,
     git_repository *const restrict repo,
     struct repo_work *const restrict repos,
-    struct export_archive_path_handle *path_handle,
+    struct export_path_handle *path_handle,
     char const *const restrict mtime,
     int const fd_archive,
     char const *const restrict sbuffer
 ) {
     size_t const count = git_tree_entrycount(tree);
-    export_archive_path_handle_backup;
+    export_path_handle_backup;
     for (size_t i = 0; i < count; ++i) {
         tree_export_prepare_entry;
-        tree_export_archive_append_entry_name_to_handle;
         switch (type) {
         case GIT_OBJECT_BLOB: 
             r = blob_export_archive((git_blob *)object, 
                 git_tree_entry_filemode(entry), path_handle, mtime, fd_archive);
             break;
         case GIT_OBJECT_TREE:
-            export_archive_path_handle_prepare_tree;
+            export_path_handle_prepare_tree;
             r = tree_export_archive((git_tree *)object, commit, repo, repos,
                 path_handle, mtime, fd_archive, sbuffer);
-            export_archive_path_handle_finish_tree;
+            export_path_handle_finish_tree;
             break;
         case GIT_OBJECT_COMMIT:
             tree_export_submodule_prepeare;
-            export_archive_path_handle_prepare_commit;
+            export_path_handle_prepare_commit;
             r = tree_export_archive(target_tree, target_commit, 
                 target_repo->git_repository, repos, path_handle, mtime, 
                 fd_archive, sbuffer); 
             git_tree_free(target_tree);
-            export_archive_path_handle_finish_tree;
+            export_path_handle_finish_tree;
             break;
         default:
             pr_error("Unexpected routine\n");
@@ -8931,12 +8929,12 @@ int tree_export_archive(
 //             break;
 //         case GIT_OBJECT_COMMIT:
 //             tree_export_submodule_prepeare;
-//             export_archive_path_handle_prepare_commit;
+//             export_path_handle_prepare_commit;
 //             r = tree_export_archive(target_tree, target_commit, 
 //                 target_repo->git_repository, repos, path_handle, mtime, 
 //                 fd_archive, sbuffer); 
 //             git_tree_free(target_tree);
-//             export_archive_path_handle_finish_tree;
+//             export_path_handle_finish_tree;
 //             break;
 //         default:
 //             pr_error("Unexpected routine\n");
@@ -8992,7 +8990,7 @@ int commit_export_tree(
         return -1;
     }
     if (commit->archive) {
-        struct export_archive_path_handle path_handle = {
+        struct export_path_handle path_handle = {
             .len = 0,
             .entry_offset = 0,
             .module_offset = 0,
