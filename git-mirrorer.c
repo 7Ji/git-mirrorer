@@ -7432,6 +7432,11 @@ close:
         }
         if (r) {
             remove_at_with_format(datafd_archive, name_archive_temp, S_IFREG);
+        } else if (renameat(datafd_archive, name_archive_temp, datafd_archive, 
+                name_archive)) 
+        {
+            pr_error_with_errno("Failed to rename finished archive");
+            r = -1;
         }
     }
     if (fd_checkout >= 0) {
@@ -7441,6 +7446,11 @@ close:
         }
         if (r) {
             remove_at_with_format(datafd_checkout, name_checkout_temp, S_IFDIR);
+        } else if (renameat(datafd_checkout, name_checkout_temp, 
+            datafd_checkout, sbuffer + commit->oid_hex_offset)) 
+        {
+            pr_error_with_errno("Failed to rename finished checkout");
+            r = -1;
         }
     }
     return r;
