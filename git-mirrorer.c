@@ -5634,15 +5634,6 @@ int work_handle_parse_all_repos(
 //     return 0;
 // }
 
-// unsigned short get_unsigned_short_decimal_width(unsigned short number) {
-//     unsigned short width = 0;
-//     if (!number) return 1;
-//     while (number) {
-//         number /= 10;
-//         ++width;
-//     }
-//     return width;
-// }
 
 // // Read from fd until EOF,
 // // return the size being read, or -1 if failed,
@@ -7232,51 +7223,6 @@ int tar_finish(
 //     }
 // }
 
-// int export_commit_add_global_comment_to_tar(
-//     int tar_fd,
-//     char const *const restrict repo,
-//     char const *const restrict commit,
-//     char const *const restrict mtime
-// ) {
-//     char comment[4096];
-//     int r = snprintf(comment, 4096, "Archive of repo '%s' commit '%s', "
-//                                     "all recursive submodules includeded, "
-//                                     "created with git-mirrorer by "
-//                                     "Guoxin \"7Ji\" Pu (c) 2023-present",
-//                                     repo, commit);
-//     if (r < 0) {
-//         pr_error("Failed to format comment\n");
-//         return -1;
-//     }
-//     if (r >= 4000) {
-//         pr_error("Comment too long: '%s'\n", comment);
-//         return -1;
-//     }
-//     unsigned short const len_comment = r;
-//     unsigned short width_length = get_unsigned_short_decimal_width(len_comment);
-//      // 1 between length and comment=
-//      // 8 for comment=
-//      // 1 for ending \n new line
-//     unsigned short width_all = width_length + len_comment + 10;
-//     for (;;) {
-//         width_length = get_unsigned_short_decimal_width(width_all);
-//         unsigned const width_all_new = width_length + len_comment + 10;
-//         if (width_all_new == width_all) break;
-//         width_all = width_all_new;
-//     }
-//     char content[4096];
-//     r = snprintf(content, 4096, "%hu comment=%s\n", width_all, comment);
-//     if (r < 0) {
-//         pr_error_with_errno("Failed to format content");
-//         return -1;
-//     }
-//     if (tar_add_global_header(tar_fd, mtime, content, r)) {
-//         pr_error("Failed to add global header to tar\n");
-//         return -1;
-//     }
-//     return 0;
-// }
-
 // struct export_handle {
 //     bool should_export;
 //     char path[PATH_MAX],
@@ -8801,7 +8747,7 @@ bool tree_entry_type_illegal(
     git_object_t const type = git_tree_entry_type(entry); \
     if (tree_entry_type_illegal(type)) return -1; \
     git_object *object; \
-    int r = git_tree_entry_to_object(&object, repo, entry); \
+    int r = git_tree_entry_to_object(&object, repo->git_repository, entry); \
     if (r) { \
         pr_error_with_libgit_error("Failed to convert try entry to object"); \
         return -1; \
@@ -8880,7 +8826,7 @@ int commit_get_target_repo_commit_tree(
 int tree_export_archive(
     git_tree *const restrict tree,
     struct commit const *const restrict commit,
-    git_repository *const restrict repo,
+    struct repo_work const *const restrict repo,
     struct repo_work *const restrict repos,
     struct export_path_handle *path_handle,
     char const *const restrict mtime,
@@ -8905,9 +8851,8 @@ int tree_export_archive(
         case GIT_OBJECT_COMMIT:
             tree_export_submodule_prepeare;
             export_path_handle_prepare_commit;
-            r = tree_export_archive(target_tree, target_commit, 
-                target_repo->git_repository, repos, path_handle, mtime, 
-                fd_archive, sbuffer); 
+            r = tree_export_archive(target_tree, target_commit, target_repo, 
+                repos, path_handle, mtime, fd_archive, sbuffer); 
             git_tree_free(target_tree);
             export_path_handle_finish_tree;
             break;
@@ -8937,7 +8882,7 @@ int create_and_open_dir_at(
             return -1;
         }
     }
-    int fd = openat(atfd, name, O_WRONLY | O_DIRECTORY | O_CLOEXEC);
+    int fd = openat(atfd, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (fd < 0) {
         pr_error_with_errno("Failed to open created dir '%s'", name);
         if (unlinkat(atfd, name, AT_REMOVEDIR)) {
@@ -8965,7 +8910,7 @@ int create_and_open_dir_at(
 int tree_export_checkout(
     git_tree *const restrict tree,
     struct commit const *const restrict commit,
-    git_repository *const restrict repo,
+    struct repo_work const *const restrict repo,
     struct repo_work *const restrict repos,
     struct export_path_handle *path_handle,
     int const fd_checkout,
@@ -8993,9 +8938,8 @@ int tree_export_checkout(
             tree_export_checkout_prepare_subdir;
             tree_export_submodule_prepeare;
             export_path_handle_prepare_commit;
-            r = tree_export_checkout(target_tree, target_commit, 
-                target_repo->git_repository, repos, path_handle, subdir_fd,
-                sbuffer); 
+            r = tree_export_checkout(target_tree, target_commit,  target_repo, 
+                repos, path_handle, subdir_fd, sbuffer); 
             tree_export_checkout_close_subdir;
             git_tree_free(target_tree);
             export_path_handle_finish_tree;
@@ -9015,7 +8959,7 @@ int tree_export_checkout(
 int tree_export_archive_checkout(
     git_tree *const restrict tree,
     struct commit const *const restrict commit,
-    git_repository *const restrict repo,
+    struct repo_work const *const restrict repo,
     struct repo_work *const restrict repos,
     struct export_path_handle *path_handle,
     char const *const restrict mtime,
@@ -9047,8 +8991,8 @@ int tree_export_archive_checkout(
             tree_export_submodule_prepeare;
             export_path_handle_prepare_commit;
             r = tree_export_archive_checkout(target_tree, target_commit, 
-                target_repo->git_repository, repos, path_handle, mtime, 
-                fd_archive, subdir_fd, sbuffer); 
+                target_repo, repos, path_handle, mtime, fd_archive, subdir_fd, 
+                sbuffer); 
             tree_export_checkout_close_subdir;
             git_tree_free(target_tree);
             export_path_handle_finish_tree;
@@ -9065,13 +9009,68 @@ int tree_export_archive_checkout(
     return 0;
 }
 
+unsigned short get_unsigned_short_decimal_width(unsigned short number) {
+    unsigned short width = 0;
+    if (!number) return 1;
+    while (number) {
+        number /= 10;
+        ++width;
+    }
+    return width;
+}
+
+int commit_export_add_global_comment_to_tar(
+    int tar_fd,
+    char const *const restrict repo,
+    char const *const restrict commit,
+    char const *const restrict mtime
+) {
+    char comment[4096];
+    int r = snprintf(comment, 4096, "Archive of repo '%s' commit '%s', "
+                                    "all recursive submodules includeded, "
+                                    "created with git-mirrorer by "
+                                    "Guoxin \"7Ji\" Pu (c) 2023-present",
+                                    repo, commit);
+    if (r < 0) {
+        pr_error("Failed to format comment\n");
+        return -1;
+    }
+    if (r >= 4000) {
+        pr_error("Comment too long: '%s'\n", comment);
+        return -1;
+    }
+    unsigned short const len_comment = r;
+    unsigned short width_length = get_unsigned_short_decimal_width(len_comment);
+     // 1 between length and comment=
+     // 8 for comment=
+     // 1 for ending \n new line
+    unsigned short width_all = width_length + len_comment + 10;
+    for (;;) {
+        width_length = get_unsigned_short_decimal_width(width_all);
+        unsigned const width_all_new = width_length + len_comment + 10;
+        if (width_all_new == width_all) break;
+        width_all = width_all_new;
+    }
+    char content[4096];
+    r = snprintf(content, 4096, "%hu comment=%s\n", width_all, comment);
+    if (r < 0) {
+        pr_error_with_errno("Failed to format content");
+        return -1;
+    }
+    if (tar_add_global_header(tar_fd, mtime, content, r)) {
+        pr_error("Failed to add global header to tar\n");
+        return -1;
+    }
+    return 0;
+}
+
 static inline
 int commit_export_tree(
     struct commit const *const restrict commit,
-    git_repository *const restrict repo,
+    struct repo_work const *const restrict repo,
     struct repo_work *const restrict repos,
-    int const datafd_archive,
-    int const datafd_checkout,
+    int const fd_archive,
+    int const fd_checkout,
     char const *const restrict sbuffer
 ) {
     git_tree *tree;
@@ -9094,16 +9093,24 @@ int commit_export_tree(
             r = -1;
             goto free_tree;
         }
+        if (commit_export_add_global_comment_to_tar(fd_archive, 
+            sbuffer + repo->url_offset, sbuffer + commit->oid_hex_offset, 
+            mtime)) 
+        {
+            pr_error("Failed to add global comment to tar\n");
+            r = -1;
+            goto free_tree;
+        }
         if (commit->checkout) {
             r = tree_export_archive_checkout(tree, commit, repo, repos, 
-                &path_handle, mtime, datafd_archive, datafd_checkout, sbuffer);
+                &path_handle, mtime, fd_archive, fd_checkout, sbuffer);
         } else {
             r = tree_export_archive(tree, commit, repo, repos, &path_handle, 
-                mtime, datafd_archive, sbuffer);
+                mtime, fd_archive, sbuffer);
         }
     } else if (commit->checkout) {
         r = tree_export_checkout(tree, commit, repo, repos, &path_handle,
-            datafd_checkout, sbuffer);
+            fd_checkout, sbuffer);
     } else {
         pr_error("Commit should neither be archived nor checked-out\n");
         r = -1;
@@ -9113,10 +9120,9 @@ free_tree:
     return r;
 }
 
-
 int commit_export(
     struct commit const *const restrict commit,
-    git_repository *const restrict repo,
+    struct repo_work const *const restrict repo,
     struct repo_work *const restrict repos,
     char *const *const restrict pipe_args,
     char *const restrict name_archive,
@@ -9138,7 +9144,8 @@ int commit_export(
         if ((fd_checkout = create_and_open_dir_at(
             datafd_checkout, name_checkout_temp)) < 0) 
         {
-            pr_error("Failed to create and open checkout dir\n");
+            pr_error("Failed to create and open checkout dir '%s'\n", 
+                name_checkout_temp);
             return -1;
         }
     }
@@ -9196,7 +9203,7 @@ int commit_export(
             }
         }
     }
-    r = commit_export_tree(commit, repo, repos, datafd_archive, datafd_checkout,
+    r = commit_export_tree(commit, repo, repos, fd_archive, fd_checkout,
                             sbuffer);
 close:
     // git_tree_free(tree);
@@ -9304,8 +9311,8 @@ int work_handle_export_repo_commit_pairs_some(
     }
     int r = 0;
     for (unsigned long i = 0; i < pairs_count; ++i) {
-        if (commit_export(pairs[i].commit, pairs[i].repo->git_repository, 
-                work_handle->repos, pipe_args, name_archive, name_archive_temp, 
+        if (commit_export(pairs[i].commit, pairs[i].repo, work_handle->repos, 
+                pipe_args, name_archive, name_archive_temp, 
                 work_handle->dir_archives.datafd, 
                 work_handle->dir_checkouts.datafd, 
                 work_handle->string_buffer.buffer))
