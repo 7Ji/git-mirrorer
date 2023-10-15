@@ -7465,7 +7465,7 @@ close:
 
 static inline
 bool repo_commit_pairs_need_archive(
-    struct repo_commit_pair *const restrict pairs,
+    struct repo_commit_pair const *const restrict pairs,
     unsigned long const pairs_count
 ) {
     for (unsigned long i = 0; i < pairs_count; ++i) {
@@ -7474,20 +7474,17 @@ bool repo_commit_pairs_need_archive(
     return false;
 }
 
-struct repo_commit_pairs_export_some_arg {
-    struct repo_commit_pair *restrict pairs;
+struct work_handle_export_repo_commit_pairs_some_arg {
+    struct work_handle const *work_handle;
+    struct repo_commit_pair const *pairs;
     unsigned long pairs_count;
-    unsigned archive_suffix_offset;
-    unsigned short len_archive_suffix;
     char *const *pipe_args;
-    int datafd_archive;
-    int datafd_checkout;
-    char *restrict sbuffer;
+    pthread_t thread;
 };
 
 int work_handle_export_repo_commit_pairs_some(
     struct work_handle const *const restrict work_handle,
-    struct repo_commit_pair *const restrict pairs,
+    struct repo_commit_pair const *const restrict pairs,
     unsigned long const pairs_count,
     char *const *const restrict pipe_args
 ) { 
@@ -7551,14 +7548,17 @@ int work_handle_export_repo_commit_pairs_some(
     return r;
 }
 
-void *repo_commit_pairs_export_some_thread(void *arg) {
-
+void *work_handle_export_repo_commit_pairs_some_thread(void *parg) {
+    struct work_handle_export_repo_commit_pairs_some_arg *arg = 
+        (struct work_handle_export_repo_commit_pairs_some_arg *)parg;
+    return (void *)(long)work_handle_export_repo_commit_pairs_some(
+        arg->work_handle, arg->pairs, arg->pairs_count, arg->pipe_args);
 }
 
 static inline
 int work_handle_export_repo_commit_pairs_single_threaded(
     struct work_handle const *const restrict work_handle,
-    struct repo_commit_pair *const restrict pairs,
+    struct repo_commit_pair const *const restrict pairs,
     unsigned long const pairs_count,
     char *const *const restrict pipe_args
 ) {
@@ -7569,15 +7569,15 @@ int work_handle_export_repo_commit_pairs_single_threaded(
 static inline
 int work_handle_export_repo_commit_pairs_multi_threaded(
     struct work_handle const *const restrict work_handle,
-    struct repo_commit_pair *const restrict pairs,
+    struct repo_commit_pair const *const restrict pairs,
     unsigned long const pairs_count,
     unsigned short const threads_count,
     unsigned short const jobs_per_thread,
     char *const *const restrict pipe_args
 ) {
-    struct repo_commit_pairs_export_some_arg args_stack[10];
-    struct repo_commit_pairs_export_some_arg *args_heap = NULL;
-    struct repo_commit_pairs_export_some_arg *args;
+    struct work_handle_export_repo_commit_pairs_some_arg args_stack[10];
+    struct work_handle_export_repo_commit_pairs_some_arg *args_heap = NULL;
+    struct work_handle_export_repo_commit_pairs_some_arg *args;
     if (threads_count > 10) {
         if (!(args_heap = malloc(sizeof *args_heap * threads_count))) {
             pr_error_with_errno("Failed to allocate memory for thread args");
@@ -7590,21 +7590,17 @@ int work_handle_export_repo_commit_pairs_multi_threaded(
     unsigned long pairs_offset = 0;
     unsigned long pairs_remaining = pairs_count;
     for (unsigned long i = 0; i < threads_count; ++i) {
-        struct repo_commit_pairs_export_some_arg *arg = args + i;
+        struct work_handle_export_repo_commit_pairs_some_arg *arg = args + i;
         unsigned long pairs_this;
         if (pairs_remaining > jobs_per_thread) {
             pairs_this = jobs_per_thread;
         } else {
             pairs_this = pairs_remaining;
         }
+        arg->work_handle = work_handle;
         arg->pairs = pairs + pairs_offset;
         arg->pairs_count = pairs_this;
-        arg->archive_suffix_offset = work_handle->archive_suffix_offset;
-        arg->len_archive_suffix = work_handle->len_archive_suffix;
         arg->pipe_args = pipe_args;
-        arg->datafd_archive = work_handle->dir_archives.datafd;
-        arg->datafd_checkout = work_handle->dir_checkouts.datafd;
-        arg->sbuffer = work_handle->string_buffer.buffer;
         pairs_offset += pairs_this;
         pairs_remaining -= pairs_this;
     }
@@ -7616,7 +7612,7 @@ int work_handle_export_repo_commit_pairs_multi_threaded(
 static inline
 int work_handle_export_repo_commit_pairs(
     struct work_handle const *const restrict work_handle,
-    struct repo_commit_pair *const restrict pairs,
+    struct repo_commit_pair const *const restrict pairs,
     unsigned long const pairs_count
 ) {
     char const *archive_pipe_args_stack[0x20];
