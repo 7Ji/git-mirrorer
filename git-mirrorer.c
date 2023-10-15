@@ -8657,7 +8657,7 @@ struct export_archive_path_handle {
 // Seperate functions instead of IFs, to speed up
 int blob_export_archive(
     git_blob *const restrict blob,
-    git_filter_mode_t const mode,
+    git_filemode_t const mode,
     struct export_archive_path_handle *path_handle,
     char const *const restrict mtime,
     int const fd_archive
@@ -8681,19 +8681,80 @@ int blob_export_archive(
     }
 }
 
-// int blob_export_checkout(
-//     git_blob *const restrict blob,
-//     char const *const restrict name,
-//     int const fd_checkout
-// ) {
+int create_and_write_at(
+    int const atfd,
+    char const *const restrict name,
+    mode_t const mode,
+    void const *const restrict content,
+    git_object_size_t size
+) {
+    int const fd = openat(atfd, name, O_WRONLY | O_TRUNC | O_CREAT, mode);
+    if (fd < 0) {
+        pr_error_with_errno("Failed to create file '%s' with mode 0%o", 
+            name, mode);
+        return -1;
+    }
+    int r;
+    if (size) {
+        git_object_size_t size_written = 0;
+        while (size_written < size) {
+            ssize_t size_written_this = write(
+                fd, content + size_written, size - size_written);
+            if (size_written_this < 0) {
+                switch (errno) {
+                case EAGAIN:
+#if (EAGAIN != EWOULDBLOCK)
+                case EWOULDBLOCK:
+#endif
+                case EINTR:
+                    break;
+                default:
+                    pr_error_with_errno(
+                        "Failed to write %lu bytes to file '%s'",
+                        size - size_written, name);
+                    r = -1;
+                    goto close;
+                }
+            } else {
+                size_written += size_written_this;
+            }
+        }
+    }
+    r = 0;
+close:
+    if (close(fd)) {
+        pr_error_with_errno("Failed to close fd");
+    }
+    return r;
+}
 
-// }
-
-// int blob_export_archive_checkout(
-
-// ) {
-
-// }
+int blob_export_checkout(
+    git_blob *const restrict blob,
+    git_filemode_t const git_mode,
+    char const *const restrict name,
+    int const fd_checkout
+) {
+    mode_t mode;
+    switch (git_mode) {
+    case GIT_FILEMODE_BLOB:
+        mode = 0644;
+        break;
+    case GIT_FILEMODE_BLOB_EXECUTABLE:
+        mode = 0755;
+        break;
+    case GIT_FILEMODE_LINK:
+        if (symlinkat(git_blob_rawcontent(blob), fd_checkout, name)) {
+            pr_error_with_errno("Failed to symlink");
+            return -1;
+        }
+        return 0;
+    default:
+        pr_error("Impossible tree entry filemode 0x%x\n", git_mode);
+        return -1;
+    }
+    return create_and_write_at(fd_checkout, name, mode, 
+        git_blob_rawcontent(blob), git_blob_rawsize(blob));
+}
 
 static inline
 bool tree_entry_type_illegal(
@@ -8753,11 +8814,11 @@ bool tree_entry_type_illegal(
     path_handle->module_offset = path_handle->len + 1
 
 int commit_get_target_repo_commit_tree(
-    struct commit *const restrict commit,
+    struct commit const *const restrict commit,
     char const *const restrict module_path,
     struct repo_work *const restrict repos,
-    struct repo_work const **const restrict target_repo,
-    struct commit const **const restrict target_commit,
+    struct repo_work **const restrict target_repo,
+    struct commit **const restrict target_commit,
     git_tree **const restrict target_tree,
     char const *const restrict sbuffer
 ) {
@@ -8774,7 +8835,7 @@ int commit_get_target_repo_commit_tree(
     }
     *target_repo = repos + module->target_repo_id;
     *target_commit = (*target_repo)->commits + module->target_commit_id;
-    int r = git_commit_tree(target_tree, target_commit);
+    int r = git_commit_tree(target_tree, (*target_commit)->git_commit);
     if (r) {
         pr_error_with_libgit_error("Failed to get submodule commit tree");
         return -1;
@@ -8797,7 +8858,7 @@ int commit_get_target_repo_commit_tree(
 // Use our own implementation instead of git_tree_walk() for optimization
 int tree_export_archive(
     git_tree *const restrict tree,
-    struct commit *const restrict commit,
+    struct commit const *const restrict commit,
     git_repository *const restrict repo,
     struct repo_work *const restrict repos,
     struct export_archive_path_handle *path_handle,
@@ -8823,8 +8884,9 @@ int tree_export_archive(
         case GIT_OBJECT_COMMIT:
             tree_export_submodule_prepeare;
             export_archive_path_handle_prepare_commit;
-            r = tree_export_archive(target_tree, target_commit, target_repo, 
-                repos, path_handle, mtime, fd_archive, sbuffer); 
+            r = tree_export_archive(target_tree, target_commit, 
+                target_repo->git_repository, repos, path_handle, mtime, 
+                fd_archive, sbuffer); 
             git_tree_free(target_tree);
             export_archive_path_handle_finish_tree;
             break;
@@ -8869,7 +8931,10 @@ static inline
 int commit_export_tree(
     struct commit const *const restrict commit,
     git_repository *const restrict repo,
-    struct repo_work *const restrict repos
+    struct repo_work *const restrict repos,
+    int const datafd_archive,
+    int const datafd_checkout,
+    char const *const restrict sbuffer
 ) {
     git_tree *tree;
     int r = git_commit_tree(&tree, commit->git_commit);
@@ -8877,7 +8942,33 @@ int commit_export_tree(
         pr_error("Failed to get tree pointed by commit\n");
         return -1;
     }
-    r = tree_export(tree, repo, repos);
+    if (commit->archive) {
+        struct export_archive_path_handle path_handle = {
+            .len = 0,
+            .entry_offset = 0,
+            .module_offset = 0,
+        };
+        char mtime[TAR_HEADER_MTIME_LEN] = "";
+        if (snprintf(mtime, TAR_HEADER_MTIME_LEN, "%011lo", 
+            git_commit_time(commit->git_commit)) < 0) 
+        {
+            pr_error("Failed to format mtime\n");
+            r = -1;
+            goto free_tree;
+        }
+        if (commit->checkout) {
+
+        } else {
+            r = tree_export_archive(tree, commit, repo, repos, &path_handle, 
+                mtime, datafd_archive, sbuffer);
+        }
+    } else if (commit->checkout) {
+
+    } else {
+        pr_error("Commit should neither be archived nor checked-out\n");
+        r = -1;
+    }
+free_tree:
     git_tree_free(tree);
     return r;
 }
@@ -8886,6 +8977,7 @@ int commit_export_tree(
 int commit_export(
     struct commit const *const restrict commit,
     git_repository *const restrict repo,
+    struct repo_work *const restrict repos,
     char *const *const restrict pipe_args,
     char *const restrict name_archive,
     char *const restrict name_archive_temp,
@@ -8894,7 +8986,6 @@ int commit_export(
     char const *const restrict sbuffer
 ) {
     int r;
-    char path_archive[PATH_MAX];
     char name_checkout_temp[GIT_OID_HEXSZ + 6];
     int fd_archive = -1;
     int fd_checkout = -1;
@@ -8965,19 +9056,8 @@ int commit_export(
             }
         }
     }
-    r = 0;
-    if (commit->archive) {
-        if (commit->checkout) {
-
-        } else {
-
-        }
-    } else if (commit->checkout) {
-
-    } else {
-        pr_error("Commit should neither be archived nor checked-out\n");
-        r = -1;
-    }
+    r = commit_export_tree(commit, repo, repos, datafd_archive, datafd_checkout,
+                            sbuffer);
 close:
     // git_tree_free(tree);
     if (fd_archive >= 0) {
@@ -9029,7 +9109,7 @@ struct repo_commit_pairs_export_some_arg {
     unsigned long pairs_count;
     unsigned archive_suffix_offset;
     unsigned short len_archive_suffix;
-    char **restrict pipe_args;
+    char const **restrict pipe_args;
     int datafd_archive;
     int datafd_checkout;
     char *restrict sbuffer;
