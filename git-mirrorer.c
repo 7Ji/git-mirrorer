@@ -6779,7 +6779,7 @@ int repo_commit_pairs_filter_need_export(
                 r = -1;
                 goto free_heap;
             } else if (r2 == 0) {
-                commit->archive = false;
+                commit->checkout = false;
             }
         }
         if (!commit->archive && !commit->checkout) continue;
@@ -7713,7 +7713,7 @@ int work_handle_export_all_repos(
         goto free_pairs;
     }
     if (!pairs_count) {
-        pr_error("No commit need be exported\n");
+        pr_info("No commit need be exported\n");
         r = 0;
         goto free_pairs;
     }
