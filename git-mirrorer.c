@@ -8647,47 +8647,186 @@ free_heap:
     return r;
 }
 
+struct export_archive_path_handle {
+    char path[PATH_MAX];
+    unsigned short len;
+    unsigned short entry_offset;
+    unsigned short module_offset;
+};
+
+// Seperate functions instead of IFs, to speed up
+int blob_export_archive(
+    git_blob *const restrict blob,
+    git_filter_mode_t const mode,
+    struct export_archive_path_handle *path_handle,
+    char const *const restrict mtime,
+    int const fd_archive
+) {
+    switch (mode) {
+    case GIT_FILEMODE_BLOB:
+        return tar_append_regular_file(fd_archive, git_blob_rawcontent(blob), 
+            git_blob_rawsize(blob), mtime, path_handle->path, path_handle->len, 
+            0644);
+    case GIT_FILEMODE_BLOB_EXECUTABLE:
+        return tar_append_regular_file(fd_archive, git_blob_rawcontent(blob), 
+            git_blob_rawsize(blob), mtime, path_handle->path, path_handle->len, 
+            0755);
+    case GIT_FILEMODE_LINK:
+        return tar_append_symlink(fd_archive, mtime, path_handle->path, 
+            path_handle->len, git_blob_rawcontent(blob), 
+            git_blob_rawsize(blob));
+    default:
+        pr_error("Impossible tree entry filemode %d\n", mode);
+        return -1;
+    }
+}
+
+// int blob_export_checkout(
+//     git_blob *const restrict blob,
+//     char const *const restrict name,
+//     int const fd_checkout
+// ) {
+
+// }
+
+// int blob_export_archive_checkout(
+
+// ) {
+
+// }
+
+static inline
+bool tree_entry_type_illegal(
+    git_object_t const type
+) {
+    switch (type) {
+    case GIT_OBJECT_BLOB:
+    case GIT_OBJECT_TREE:
+    case GIT_OBJECT_COMMIT:
+        break;
+    default:
+        pr_error("Unexpected tree entry type %i in tree\n", type);
+        return true;
+    }
+    return false;
+}
+
+#define tree_export_prepare_entry \
+    git_tree_entry const *const entry = git_tree_entry_byindex(tree, i); \
+    if (!entry) { \
+        pr_error("Failed to get tree entry by index\n"); \
+        return -1; \
+    } \
+    git_object_t const type = git_tree_entry_type(entry); \
+    if (tree_entry_type_illegal(type)) return -1; \
+    char const *const restrict name = git_tree_entry_name(entry); \
+    unsigned short const len_name = strnlen(name, USHRT_MAX); \
+    if (path_handle->entry_offset + len_name >= PATH_MAX) { \
+        pr_error("Path would exceed max length with entry '%s' name added", \
+                    name); \
+        return -1; \
+    } \
+    path_handle->len = path_handle->entry_offset + len_name; \
+    memcpy(path_handle->path + path_handle->entry_offset, name, len_name); \
+    path_handle->path[path_handle->len] = '\0'; \
+    git_object *object; \
+    int r = git_tree_entry_to_object(&object, repo, entry); \
+    if (r) { \
+        pr_error_with_libgit_error("Failed to convert try entry to object"); \
+        return -1; \
+    }
+
+#define export_archive_path_handle_backup \
+    unsigned short const entry_offset = path_handle->entry_offset; \
+    unsigned short const module_offset = path_handle->module_offset
+
+#define export_archive_path_handle_prepare_tree \
+    path_handle->path[path_handle->len] = '/'; \
+    path_handle->entry_offset = path_handle->len + 1
+
+#define export_archive_path_handle_finish_tree \
+    path_handle->entry_offset = entry_offset; \
+    path_handle->module_offset = module_offset
+
+#define export_archive_path_handle_prepare_commit \
+    export_archive_path_handle_prepare_tree; \
+    path_handle->module_offset = path_handle->len + 1
+
+int commit_get_target_repo_commit_tree(
+    struct commit *const restrict commit,
+    char const *const restrict module_path,
+    struct repo_work *const restrict repos,
+    struct repo_work const **const restrict target_repo,
+    struct commit const **const restrict target_commit,
+    git_tree **const restrict target_tree,
+    char const *const restrict sbuffer
+) {
+    struct submodule *module = NULL;
+    for (unsigned long j = 0; j < commit->submodules_count; ++j) {
+        if (!strcmp(sbuffer + commit->submodules[j].path_offset, module_path)) {
+            module = commit->submodules + j;
+            break;
+        }
+    }
+    if (!module) {
+        pr_error("Failed to find submodule '%s'\n", module_path);
+        return -1;
+    }
+    *target_repo = repos + module->target_repo_id;
+    *target_commit = (*target_repo)->commits + module->target_commit_id;
+    int r = git_commit_tree(target_tree, target_commit);
+    if (r) {
+        pr_error_with_libgit_error("Failed to get submodule commit tree");
+        return -1;
+    }
+    return 0;
+}
+
+#define tree_export_submodule_prepeare \
+    struct repo_work *target_repo; \
+    struct commit *target_commit; \
+    git_tree *target_tree; \
+    if (commit_get_target_repo_commit_tree(commit, \
+        path_handle->path + module_offset, repos, &target_repo, \
+        &target_commit, &target_tree, sbuffer) \
+    ) { \
+        pr_error("Failed to get submodule tree"); \
+        return -1; \
+    }
 
 // Use our own implementation instead of git_tree_walk() for optimization
-int commit_export_treewalk(
+int tree_export_archive(
     git_tree *const restrict tree,
-    git_repository *const restrict repo
+    struct commit *const restrict commit,
+    git_repository *const restrict repo,
+    struct repo_work *const restrict repos,
+    struct export_archive_path_handle *path_handle,
+    char const *const restrict mtime,
+    int const fd_archive,
+    char const *const restrict sbuffer
 ) {
-    size_t const entries = git_tree_entrycount(tree);
-    for (size_t i = 0; i < entries; ++i) {
-        git_tree_entry const *const entry = git_tree_entry_byindex(tree, i);
-        if (!entry) {
-            pr_error("Failed to get tree entry by index\n");
-            return -1;
-        }
-        git_object_t const type = git_tree_entry_type(entry);
-        switch (type) {
-        case GIT_OBJECT_BLOB:
-        case GIT_OBJECT_TREE:
-        case GIT_OBJECT_COMMIT:
-            break;
-        default:
-            pr_error("Unexpected tree entry type %i in tree\n", type);
-            return -1;
-        }
-        git_object *object;
-        int r = git_tree_entry_to_object(&object, repo, entry);
-        if (r) {
-            pr_error_with_libgit_error("Failed to convert try entry to object");
-            return -1;
-        }
+    size_t const count = git_tree_entrycount(tree);
+    export_archive_path_handle_backup;
+    for (size_t i = 0; i < count; ++i) {
+        tree_export_prepare_entry;
         switch (type) {
         case GIT_OBJECT_BLOB: 
-            git_blob *blob = (git_blob *)object;
-            r = 0;
+            r = blob_export_archive((git_blob *)object, 
+                git_tree_entry_filemode(entry), path_handle, mtime, fd_archive);
             break;
         case GIT_OBJECT_TREE:
-            git_tree *subtree = (git_tree *)object;
-            r = 0;
+            export_archive_path_handle_prepare_tree;
+            r = tree_export_archive((git_tree *)tree, commit, repo, repos,
+                path_handle, mtime, fd_archive, sbuffer);
+            export_archive_path_handle_finish_tree;
             break;
         case GIT_OBJECT_COMMIT:
-            git_commit *commit = (git_commit *)object;
-            r = 0;
+            tree_export_submodule_prepeare;
+            export_archive_path_handle_prepare_commit;
+            r = tree_export_archive(target_tree, target_commit, target_repo, 
+                repos, path_handle, mtime, fd_archive, sbuffer); 
+            git_tree_free(target_tree);
+            export_archive_path_handle_finish_tree;
             break;
         default:
             pr_error("Unexpected routine\n");
@@ -8701,11 +8840,6 @@ int commit_export_treewalk(
     return 0;
 }
 
-// int repo_commit_pair_export(
-
-// ) {
-    
-// }
 int create_and_open_dir_at(
     int const atfd,
     char const *const restrict name
@@ -8731,9 +8865,27 @@ int create_and_open_dir_at(
     return fd;
 }
 
+static inline
+int commit_export_tree(
+    struct commit const *const restrict commit,
+    git_repository *const restrict repo,
+    struct repo_work *const restrict repos
+) {
+    git_tree *tree;
+    int r = git_commit_tree(&tree, commit->git_commit);
+    if (r) {
+        pr_error("Failed to get tree pointed by commit\n");
+        return -1;
+    }
+    r = tree_export(tree, repo, repos);
+    git_tree_free(tree);
+    return r;
+}
+
 
 int commit_export(
     struct commit const *const restrict commit,
+    git_repository *const restrict repo,
     char *const *const restrict pipe_args,
     char *const restrict name_archive,
     char *const restrict name_archive_temp,
@@ -8741,12 +8893,6 @@ int commit_export(
     int const datafd_checkout,
     char const *const restrict sbuffer
 ) {
-    // git_tree *tree;
-    // int r = git_commit_tree(&tree, commit->git_commit);
-    // if (r) {
-    //     pr_error("Failed to get tree pointed by commit\n");
-    //     return -1;
-    // }
     int r;
     char path_archive[PATH_MAX];
     char name_checkout_temp[GIT_OID_HEXSZ + 6];
