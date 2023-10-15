@@ -89,6 +89,8 @@ multi-source programs to go through and get an idea of what is done.
 #define pr_error_with_libgit_error(format, arg...) \
     pr_error(format", libgit return %d (%d: %s)\n", ##arg, \
         r, git_error_last()->klass, git_error_last()->message)
+#define pr_error_with_pthread_error(format, arg...) \
+    pr_error(format", pthread error: (%d: %s)\n", ##arg, pr, strerror(pr))
 
 #define fpr_with_prefix_and_source(file, prefix, format, arg...) \
     fprintf(file, "["prefix"] %s:%d: "format, __FUNCTION__, __LINE__, ##arg)
@@ -3160,15 +3162,15 @@ int work_handle_cwd_open_or_dup(
 
 static inline
 bool console_trylock() { // true locked, false not
-    int r = pthread_mutex_trylock(&console_mutex);
-    switch (r) {
+    int pr = pthread_mutex_trylock(&console_mutex);
+    switch (pr) {
         case 0:
             printf("\33[2K\r");
             return true;
         case EBUSY:
             break;
         default:
-            pr_error("Failed to try lock console, pthread return %d\n", r);
+            pr_error_with_pthread_error("Failed to try lock console");
             break;
     }
     return false;
@@ -3176,13 +3178,13 @@ bool console_trylock() { // true locked, false not
 
 static inline
 bool console_lock() { // true locked, false not
-    int r = pthread_mutex_lock(&console_mutex);
-    switch (r) {
+    int pr = pthread_mutex_lock(&console_mutex);
+    switch (pr) {
         case 0:
             printf("\33[2K\r");
             return true;
         default:
-            pr_error("Failed to try lock console, pthread return %d\n", r);
+            pr_error_with_pthread_error("Failed to try lock console");
             break;
     }
     return false;
@@ -4179,7 +4181,7 @@ int repo_domain_map_update(
             thread_helpers[j].arg = *thread_arg_init;
         }
     }
-    int r;
+    int r, pr;
     bool bad_ret = false;
     void *chunks_actual = chunks;
     struct repo_domain_group* groups_actual = map->groups;
@@ -4206,11 +4208,10 @@ int repo_domain_map_update(
                         } else {
                             thread_helper->repo->updated = true;
                         }
-                        if ((r = pthread_join(thread_helper->thread, NULL))) {
-                            pr_error(
-                                "Failed to join supposed finished thread %ld, "
-                                "pthread return %d\n", 
-                                thread_helper->thread, r);
+                        if ((pr = pthread_join(thread_helper->thread, NULL))) {
+                            pr_error_with_pthread_error(
+                                "Failed to join supposed finished thread %ld",
+                                thread_helper->thread);
                             r = -1;
                             goto wait_threads;
                         }
@@ -4222,27 +4223,26 @@ int repo_domain_map_update(
                             "Repo updater for '%s' took too long without "
                             "transfter, restarting it\n", 
                             thread_helper->arg.url);
-                        if ((r = pthread_cancel(thread_helper->thread))) {
-                            pr_error("Failed to cancel updater %lu for '%s', "
-                                "pthread return %d\n", thread_helper->thread,
-                                thread_helper->arg.url, r);
+                        if ((pr = pthread_cancel(thread_helper->thread))) {
+                            pr_error_with_pthread_error(
+                                "Failed to cancel updater %lu for '%s'", 
+                                thread_helper->thread,  thread_helper->arg.url);
                             r = -1;
                             goto wait_threads;
                         }
-                        if ((r = pthread_join(thread_helper->thread, NULL))) {
-                            pr_error(
-                                "Failed to join cancelled thread %ld, "
-                                "pthread return %d\n", 
-                                thread_helper->thread, r);
+                        if ((pr = pthread_join(thread_helper->thread, NULL))) {
+                            pr_error_with_pthread_error(
+                                "Failed to join cancelled thread %ld", 
+                                thread_helper->thread);
                             r = -1;
                             goto wait_threads;
                         }
                         thread_helper->arg.finished = false;
                         thread_helper->arg.last_transfer = time_current;
-                        if ((r = pthread_create(&thread_helper->thread, NULL, 
+                        if ((pr = pthread_create(&thread_helper->thread, NULL, 
                             gmr_repo_update_thread, &thread_helper->arg))) {
-                            pr_error(
-                                "Failed to create thread, pthread return %d\n", r);
+                            pr_error_with_pthread_error(
+                                "Failed to create thread");
                             thread_helper->used = false;
                             r = -1;
                             goto wait_threads;
@@ -4271,10 +4271,9 @@ int repo_domain_map_update(
                 thread_helper->arg.last_transfer = time_current;
                 thread_helper->repo = repo;
                 thread_helper->used = true;
-                if ((r = pthread_create(&thread_helper->thread, NULL, 
+                if ((pr = pthread_create(&thread_helper->thread, NULL, 
                     gmr_repo_update_thread, &thread_helper->arg))) {
-                    pr_error(
-                        "Failed to create thread, pthread return %d\n", r);
+                    pr_error_with_pthread_error("Failed to create thread");
                     thread_helper->used = false;
                     r = -1;
                     goto wait_threads;
@@ -4351,19 +4350,15 @@ wait_threads:
                 pr_warn(
                     "Repo updater for '%s' took too long without "
                     "transfter, cancelling it\n", thread_helper->arg.url);
-                int pr = pthread_cancel(thread_helper->thread);
-                if (pr) {
-                    pr_error("Failed to cancel thread, "
-                        "pthread return %d\n", pr);
+                if ((pr = pthread_cancel(thread_helper->thread))) {
+                    pr_error_with_pthread_error("Failed to cancel thread");
                     r = -1;
                 }
             }
-            int pr = pthread_join(thread_helper->thread, NULL);
-            if (pr) {
-                pr_error(
-                    "Failed to join supposed finished thread %ld, "
-                    "pthread return %d\n", 
-                    thread_helper->thread, r);
+            if ((pr = pthread_join(thread_helper->thread, NULL))) {
+                pr_error_with_pthread_error(
+                    "Failed to join supposed finished thread %ld", 
+                    thread_helper->thread);
                 r = -1;
             }
         }
@@ -7480,6 +7475,7 @@ struct work_handle_export_repo_commit_pairs_some_arg {
     unsigned long pairs_count;
     char *const *pipe_args;
     pthread_t thread;
+    bool active;
 };
 
 int work_handle_export_repo_commit_pairs_some(
@@ -7589,7 +7585,8 @@ int work_handle_export_repo_commit_pairs_multi_threaded(
     }
     unsigned long pairs_offset = 0;
     unsigned long pairs_remaining = pairs_count;
-    for (unsigned long i = 0; i < threads_count; ++i) {
+    int r = 0, pr;
+    for (unsigned short i = 0; i < threads_count; ++i) {
         struct work_handle_export_repo_commit_pairs_some_arg *arg = args + i;
         unsigned long pairs_this;
         if (pairs_remaining > jobs_per_thread) {
@@ -7601,12 +7598,33 @@ int work_handle_export_repo_commit_pairs_multi_threaded(
         arg->pairs = pairs + pairs_offset;
         arg->pairs_count = pairs_this;
         arg->pipe_args = pipe_args;
+        if ((pr = pthread_create(&arg->thread, NULL, 
+            work_handle_export_repo_commit_pairs_some_thread, arg))) 
+        {
+            pr_error_with_pthread_error("Failed to create thread");
+            r = -1;
+            arg->active = false;
+        } else {
+            arg->active = true;
+        }
         pairs_offset += pairs_this;
         pairs_remaining -= pairs_this;
     }
-    pr_error("Not implemented yet\n");
+    for (unsigned short i = 0; i < threads_count; ++i) {
+        if (!args[i].active) continue;
+        long ret;
+        if ((pr = pthread_join(args[i].thread, (void **)&ret))) {
+            pr_error_with_pthread_error("Failed to join thread");
+            r = -1;
+            continue;
+        }
+        if (ret) {
+            pr_error("Thread bad return %ld\n", ret);
+            r = -1;
+        }
+    }
     free_if_allocated(args_heap);
-    return -1;
+    return r;
 }
 
 static inline
