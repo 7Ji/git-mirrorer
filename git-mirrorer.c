@@ -8780,22 +8780,14 @@ bool tree_entry_type_illegal(
     } \
     git_object_t const type = git_tree_entry_type(entry); \
     if (tree_entry_type_illegal(type)) return -1; \
-    char const *const restrict name = git_tree_entry_name(entry); \
-    unsigned short const len_name = strnlen(name, USHRT_MAX); \
-    if (path_handle->entry_offset + len_name >= PATH_MAX) { \
-        pr_error("Path would exceed max length with entry '%s' name added", \
-                    name); \
-        return -1; \
-    } \
-    path_handle->len = path_handle->entry_offset + len_name; \
-    memcpy(path_handle->path + path_handle->entry_offset, name, len_name); \
-    path_handle->path[path_handle->len] = '\0'; \
     git_object *object; \
     int r = git_tree_entry_to_object(&object, repo, entry); \
     if (r) { \
         pr_error_with_libgit_error("Failed to convert try entry to object"); \
         return -1; \
-    }
+    } \
+    char const *const restrict name = git_tree_entry_name(entry); \
+    unsigned short const len_name = strnlen(name, USHRT_MAX); 
 
 #define export_archive_path_handle_backup \
     unsigned short const entry_offset = path_handle->entry_offset; \
@@ -8855,6 +8847,16 @@ int commit_get_target_repo_commit_tree(
         return -1; \
     }
 
+#define tree_export_archive_append_entry_name_to_handle \
+    if (path_handle->entry_offset + len_name >= PATH_MAX) { \
+        pr_error("Path would exceed max length with entry '%s' name added", \
+                    name); \
+        return -1; \
+    } \
+    path_handle->len = path_handle->entry_offset + len_name; \
+    memcpy(path_handle->path + path_handle->entry_offset, name, len_name); \
+    path_handle->path[path_handle->len] = '\0'; \
+
 // Use our own implementation instead of git_tree_walk() for optimization
 int tree_export_archive(
     git_tree *const restrict tree,
@@ -8870,6 +8872,7 @@ int tree_export_archive(
     export_archive_path_handle_backup;
     for (size_t i = 0; i < count; ++i) {
         tree_export_prepare_entry;
+        tree_export_archive_append_entry_name_to_handle;
         switch (type) {
         case GIT_OBJECT_BLOB: 
             r = blob_export_archive((git_blob *)object, 
@@ -8877,7 +8880,7 @@ int tree_export_archive(
             break;
         case GIT_OBJECT_TREE:
             export_archive_path_handle_prepare_tree;
-            r = tree_export_archive((git_tree *)tree, commit, repo, repos,
+            r = tree_export_archive((git_tree *)object, commit, repo, repos,
                 path_handle, mtime, fd_archive, sbuffer);
             export_archive_path_handle_finish_tree;
             break;
@@ -8901,6 +8904,52 @@ int tree_export_archive(
     }
     return 0;
 }
+
+// int tree_export_checkout(
+//     git_tree *const restrict tree,
+//     struct commit const *const restrict commit,
+//     git_repository *const restrict repo,
+//     struct repo_work *const restrict repos,
+//     int const fd_checkout,
+//     char const *const restrict sbuffer
+// ) {
+//     size_t const count = git_tree_entrycount(tree);
+//     for (size_t i = 0; i < count; ++i) {
+//         tree_export_prepare_entry;
+//         switch (type) {
+//         case GIT_OBJECT_BLOB: 
+//             r = blob_export_checkout((git_blob *)object, 
+//                 git_tree_entry_filemode(entry), name, fd_checkout);
+//             break;
+//         case GIT_OBJECT_TREE:
+//             int subdir_fd = create_and_open_dir_at(fd_checkout, name);
+//             if (subdir_fd < 0 ){
+//                 r = -1;
+//             }
+//             r = tree_export_checkout((git_tree *)object, commit, repo, repos,
+//                 subdir_fd, sbuffer);
+//             break;
+//         case GIT_OBJECT_COMMIT:
+//             tree_export_submodule_prepeare;
+//             export_archive_path_handle_prepare_commit;
+//             r = tree_export_archive(target_tree, target_commit, 
+//                 target_repo->git_repository, repos, path_handle, mtime, 
+//                 fd_archive, sbuffer); 
+//             git_tree_free(target_tree);
+//             export_archive_path_handle_finish_tree;
+//             break;
+//         default:
+//             pr_error("Unexpected routine\n");
+//             r = -1;
+//         }
+//         git_object_free(object);
+//         if (r) {
+//             return -1;
+//         }
+//     }
+//     return 0;
+
+// }
 
 int create_and_open_dir_at(
     int const atfd,
