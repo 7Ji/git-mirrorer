@@ -6402,21 +6402,6 @@ int tar_finish(
 //     }
 //     return 0;
 // }
-// struct guanrantee_all_repos_wanted_objects_symlinks_arg {
-//     struct config const *restrict config;
-//     int const archives_links_dirfd;
-//     int const checkouts_links_dirfd;
-// };
-
-// void *guanrantee_all_repos_wanted_objects_symlinks_thread(void *arg) {
-//     struct guanrantee_all_repos_wanted_objects_symlinks_arg *private_arg =
-//         (struct guanrantee_all_repos_wanted_objects_symlinks_arg *)arg;
-//     return (void *)(long)
-//                 guanrantee_all_repos_wanted_objects_symlinks(
-//                     private_arg->config,
-//                     private_arg->archives_links_dirfd,
-//                     private_arg->checkouts_links_dirfd);
-// }
 
 static inline
 bool work_handle_all_looked_up(
@@ -8078,8 +8063,8 @@ int gmr_work(char const *const restrict config_path) {
         work_handle_open_all_repos(&work_handle) || 
         work_handle_update_all_repos(&work_handle) ||
         work_handle_parse_all_repos(&work_handle) ||
-        work_handle_link_all_repos(&work_handle) ||
-        work_handle_export_all_repos(&work_handle)) {
+        work_handle_export_all_repos(&work_handle) ||
+        work_handle_link_all_repos(&work_handle)) {
         r = -1;
         goto shutdown;
     }
