@@ -3833,26 +3833,17 @@ int work_handle_link_all_repos(
     char *target_heap = NULL;
     size_t target_heap_allocated = 0;
     char *target;
-    int r;
+    int r = 0;
     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
         struct repo_work const *const restrict repo_work = 
             work_handle->repos + i;
         if (format_link_target(&target, target_stack, &target_heap, 
-                                &target_heap_allocated, 
-                                repo_work->depth_long_name,
-                                repo_work->hash_url_string,
-                                HASH_STRING_LEN)) {
-            r = -1;
-            goto free_target_heap;   
-        }
-        if (ensure_symlink_at(work_handle->dir_repos.linkfd, 
-                            work_handle_get_string(repo_work->long_name),
-                            repo_work->len_long_name, target)) {
-            r = -1;
-            goto free_target_heap;
-        }
+            &target_heap_allocated, repo_work->depth_long_name,
+            repo_work->hash_url_string, HASH_STRING_LEN)) r = -1;
+        else if (ensure_symlink_at(work_handle->dir_repos.linkfd, 
+            work_handle_get_string(repo_work->long_name),
+            repo_work->len_long_name, target)) r = -1;
     }
-    r = 0;
 free_target_heap:
     free_if_allocated(target_heap);
     return r;
