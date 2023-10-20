@@ -2824,7 +2824,7 @@ int open_or_create_dir_recursively_at(
                 return -1;
             }
             if ((dir_fd =
-                openat(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+                openat(atfd, path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
                 pr_error_with_errno("Still failed to open '%s' as directory",
                                     path);
                 return -1;
@@ -3858,11 +3858,20 @@ int link_target_format(
     return 0;
 }
 
+struct link_handle {
+    int dirfd_links;
+    bool need;
+    bool link_branches_dir;
+    bool link_tags_dir;
+};
+
 static inline
 int work_handle_link_repo_wanted_object(
     struct work_handle const *const restrict work_handle,
     struct repo_work const *const restrict repo,
     struct wanted_object const *const restrict wanted_object,
+    struct link_handle *const restrict archive_handle,
+    struct link_handle *const restrict checkout_handle,
     struct link_target *const restrict link_target
 ) {
     /* links/[sanitized url]/[commit hash](archive suffix)
@@ -3872,10 +3881,8 @@ int work_handle_link_repo_wanted_object(
      undetermimed layers -> /refs/[ref name](a.s.)
                             /HEAD(a.s.)
     */
-    bool    link_tags_to_dir_refs_tags = false,
-            link_branches_to_dir_refs_heads = false;
-    bool const  archive = wanted_object->archive,
-                checkout = wanted_object->checkout;
+    bool    link_tags_dir = false,
+            link_branches_dir = false;
     char const *dir_link = "";
     // E.g.
     //  archive: archives/abcdef.tar.gz
@@ -3893,12 +3900,12 @@ int work_handle_link_repo_wanted_object(
         case WANTED_TYPE_ALL_TAGS:
             return 0;
         case WANTED_TYPE_BRANCH:
-            link_branches_to_dir_refs_heads = true;
+            link_branches_dir = true;
             dir_link = "refs/heads/";
             link_depth += 2;
             break;
         case WANTED_TYPE_TAG:
-            link_tags_to_dir_refs_tags = true;
+            link_tags_dir = true;
             dir_link = "refs/tags/";
             link_depth += 2;
             break;
@@ -3906,14 +3913,22 @@ int work_handle_link_repo_wanted_object(
             if (!strncmp(name, "refs/", 5)) {
                 char const *const ref_kind = name + 5;
                 if (!strncmp(ref_kind, "heads/", 6))
-                    link_branches_to_dir_refs_heads = true;
+                    link_branches_dir = true;
                 else if (!strncmp(ref_kind, "tags/", 5))
-                    link_tags_to_dir_refs_tags = true;
+                    link_tags_dir = true;
             }
             break;
         case WANTED_TYPE_COMMIT:
         case WANTED_TYPE_HEAD:
             break;
+    }
+    if (link_branches_dir) {
+        if (wanted_object->archive) archive_handle->link_branches_dir = true;
+        if (wanted_object->checkout) checkout_handle->link_branches_dir = true;
+    }
+    if (link_tags_dir) {
+        if (wanted_object->archive) archive_handle->link_tags_dir = true;
+        if (wanted_object->checkout) checkout_handle->link_tags_dir = true;
     }
     for (unsigned short i = 0; i < wanted_object->len_name; ++i) {
         switch (name[i]) {
@@ -3925,135 +3940,108 @@ int work_handle_link_repo_wanted_object(
             return -1;
         }
     }
-    int archives_repo_links_dirfd = -1;
-    if (archive) {
-        if ((archives_repo_links_dirfd = opendir_create_if_non_exist_at(
-            archives_links_dirfd, repo->url_no_scheme_sanitized,
-            repo->len_url_no_scheme_sanitized)) < 0) {
-            pr_error("Failed to open archive repos links dir\n");
+    char name_stack[0x100];
+    char *name_heap = NULL;
+    char suffix_stack[0x100];
+    char *suffix_heap = NULL;
+    
+    if (wanted_object->archive) {
+        if (archive_handle->dirfd_links < 0 &&
+            (archive_handle->dirfd_links = open_or_create_dir_recursively_at(
+                work_handle->dir_archives.linkfd, 
+                work_handle_get_string(repo->long_name),
+                repo->len_long_name)) < 0) 
+        {
+            pr_error("Failed to open archive repo links dir\n");
             return -1;
         }
     }
-    int checkouts_repo_links_dirfd = -1;
+    if (wanted_object->checkout) {
+        if (checkout_handle->dirfd_links < 0 &&
+        (checkout_handle->dirfd_links = open_or_create_dir_recursively_at(
+            work_handle->dir_checkouts.linkfd, 
+            work_handle_get_string(repo->long_name),
+            repo->len_long_name)) < 0) 
+        {
+            pr_error("Failed to open checkout repo links dir\n");
+            return -1;
+        }
+    }
     int r = -1;
-    if (checkout) {
-        if ((checkouts_repo_links_dirfd = opendir_create_if_non_exist_at(
-            checkouts_links_dirfd, repo->url_no_scheme_sanitized,
-            repo->len_url_no_scheme_sanitized)) < 0) {
-            pr_error("Failed to open Checkout repos links dir\n");
-            goto close_archives_repo_links_dirfd;
-        }
-    }
-    if (link_branches_to_dir_refs_heads) {
-        if (archive && guarantee_symlink_at(
-            archives_repo_links_dirfd, "branches", 8, "refs/heads")) {
-            goto close_checkouts_repo_links_dirfd;
-        }
-        if (checkout && guarantee_symlink_at(
-            checkouts_repo_links_dirfd, "branches", 8, "refs/heads")) {
-            goto close_checkouts_repo_links_dirfd;
-        }
-    }
-    if (link_tags_to_dir_refs_tags) {
-        if (archive && guarantee_symlink_at(
-            archives_repo_links_dirfd, "tags", 4, "refs/tags")) {
-            goto close_checkouts_repo_links_dirfd;
-        }
-        if (checkout && guarantee_symlink_at(
-            checkouts_repo_links_dirfd, "tags", 4, "refs/tags")) {
-            goto close_checkouts_repo_links_dirfd;
-        }
-    }
     // The commit hash one
-    char symlink_path[PATH_MAX] = "";
-    char *symlink_path_current =
-        stpcpy(symlink_path, wanted_object->hex_string);
-    // unsigned short len_symlink_path = HASH_STRING_LEN;
-    char symlink_target[PATH_MAX] = "";
-    char *symlink_target_current = symlink_target;
-    for (unsigned short i = 0; i < repo->url_no_scheme_sanitized_parts+1; ++i) {
-        symlink_target_current = stpcpy(symlink_target_current, "../");
-    }
-    symlink_target_current = stpcpy(symlink_target_current,
-                                    wanted_object->hex_string);
-    if (checkout && guarantee_symlink_at(
-        checkouts_repo_links_dirfd,
-        symlink_path, HASH_STRING_LEN,
-        symlink_target)) {
-        goto close_checkouts_repo_links_dirfd;
-    }
-    if (archive) {
-        if (archive_suffix[0] == '\0' && guarantee_symlink_at(
-            archives_repo_links_dirfd,
-            symlink_path, HASH_STRING_LEN,
-            symlink_target)) {
-            goto close_checkouts_repo_links_dirfd;
-        } else {
-            strcpy(symlink_path_current, archive_suffix);
-            strcpy(symlink_target_current, archive_suffix);
-            if (guarantee_symlink_at(
-                archives_repo_links_dirfd,
-                symlink_path, HASH_STRING_LEN + len_archive_suffix,
-                symlink_target)) {
-                goto close_checkouts_repo_links_dirfd;
-            }
-        }
-    }
+    // char symlink_path[PATH_MAX] = "";
+    // char *symlink_path_current =
+    //     stpcpy(symlink_path, wanted_object->hex_string);
+    // // unsigned short len_symlink_path = HASH_STRING_LEN;
+    // char symlink_target[PATH_MAX] = "";
+    // char *symlink_target_current = symlink_target;
+    // for (unsigned short i = 0; i < repo->url_no_scheme_sanitized_parts+1; ++i) {
+    //     symlink_target_current = stpcpy(symlink_target_current, "../");
+    // }
+    // symlink_target_current = stpcpy(symlink_target_current,
+    //                                 wanted_object->hex_string);
+    // if (checkout && guarantee_symlink_at(
+    //     checkouts_repo_links_dirfd,
+    //     symlink_path, HASH_STRING_LEN,
+    //     symlink_target)) {
+    //     goto close_checkouts_repo_links_dirfd;
+    // }
+    // if (archive) {
+    //     if (archive_suffix[0] == '\0' && guarantee_symlink_at(
+    //         archives_repo_links_dirfd,
+    //         symlink_path, HASH_STRING_LEN,
+    //         symlink_target)) {
+    //         goto close_checkouts_repo_links_dirfd;
+    //     } else {
+    //         strcpy(symlink_path_current, archive_suffix);
+    //         strcpy(symlink_target_current, archive_suffix);
+    //         if (guarantee_symlink_at(
+    //             archives_repo_links_dirfd,
+    //             symlink_path, HASH_STRING_LEN + len_archive_suffix,
+    //             symlink_target)) {
+    //             goto close_checkouts_repo_links_dirfd;
+    //         }
+    //     }
+    // }
 
-    // The named one
-    if (wanted_object->type != WANTED_TYPE_COMMIT) {
-        char *symlink_path_current = stpcpy(symlink_path, dir_link);
-        symlink_path_current =
-            stpcpy(symlink_path_current, wanted_object->name);
-        unsigned short len_symlink_path = symlink_path_current - symlink_path;
-        char *symlink_target_current = symlink_target;
-        for (unsigned short i = 0; i < link_depth; ++i) {
-            symlink_target_current = stpcpy(symlink_target_current, "../");
-        }
-        symlink_target_current = stpcpy(
-            symlink_target_current,
-            wanted_object->hex_string);
-        if (checkout && guarantee_symlink_at(
-            checkouts_repo_links_dirfd,
-            symlink_path, len_symlink_path,
-            symlink_target)) {
-            goto close_checkouts_repo_links_dirfd;
-        }
-        if (archive) {
-            if (archive_suffix[0] == '\0' && guarantee_symlink_at(
-                archives_repo_links_dirfd,
-                symlink_path, len_symlink_path,
-                symlink_target)) {
-                goto close_checkouts_repo_links_dirfd;
-            } else {
-                strcpy(symlink_path_current, archive_suffix);
-                strcpy(symlink_target_current, archive_suffix);
-                if (guarantee_symlink_at(
-                    archives_repo_links_dirfd,
-                    symlink_path, wanted_object->len_name + len_archive_suffix,
-                    symlink_target)) {
-                    goto close_checkouts_repo_links_dirfd;
-                }
-            }
-        }
-    }
-
+    // // The named one
+    // if (wanted_object->type != WANTED_TYPE_COMMIT) {
+    //     char *symlink_path_current = stpcpy(symlink_path, dir_link);
+    //     symlink_path_current =
+    //         stpcpy(symlink_path_current, wanted_object->name);
+    //     unsigned short len_symlink_path = symlink_path_current - symlink_path;
+    //     char *symlink_target_current = symlink_target;
+    //     for (unsigned short i = 0; i < link_depth; ++i) {
+    //         symlink_target_current = stpcpy(symlink_target_current, "../");
+    //     }
+    //     symlink_target_current = stpcpy(
+    //         symlink_target_current,
+    //         wanted_object->hex_string);
+    //     if (checkout && guarantee_symlink_at(
+    //         checkouts_repo_links_dirfd,
+    //         symlink_path, len_symlink_path,
+    //         symlink_target)) {
+    //         goto close_checkouts_repo_links_dirfd;
+    //     }
+    //     if (archive) {
+    //         if (archive_suffix[0] == '\0' && guarantee_symlink_at(
+    //             archives_repo_links_dirfd,
+    //             symlink_path, len_symlink_path,
+    //             symlink_target)) {
+    //             goto close_checkouts_repo_links_dirfd;
+    //         } else {
+    //             strcpy(symlink_path_current, archive_suffix);
+    //             strcpy(symlink_target_current, archive_suffix);
+    //             if (guarantee_symlink_at(
+    //                 archives_repo_links_dirfd,
+    //                 symlink_path, wanted_object->len_name + len_archive_suffix,
+    //                 symlink_target)) {
+    //                 goto close_checkouts_repo_links_dirfd;
+    //             }
+    //         }
+    //     }
+    // }
     r = 0;
-
-close_checkouts_repo_links_dirfd:
-    if (checkout) {
-        if (close(checkouts_repo_links_dirfd)) {
-            pr_error_with_errno(
-                "Failed to close file descriptor for checkouts/repo/links dir");
-        }
-    }
-close_archives_repo_links_dirfd:
-    if (archive) {
-        if (close(archives_repo_links_dirfd)) {
-            pr_error_with_errno(
-                "Failed to close file descriptor for archives/repo/links dir");
-        }
-    }
     return r;
 }
 
@@ -4069,39 +4057,18 @@ int work_handle_link_repo(
     else if (ensure_symlink_at(work_handle->dir_repos.linkfd, 
         work_handle_get_string(repo->long_name),
         repo->len_long_name, link_target->target)) r = -1;
-    bool need_archive = false, need_checkout = false;
+    struct link_handle archive_handle = {-1};
+    struct link_handle checkout_handle = {-1};
     for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
-        struct wanted_object *wanted_object = repo->wanted_objects + i;
-        if (wanted_object->archive) need_archive = true;
-        if (wanted_object->checkout) need_checkout = true;
+        if (work_handle_link_repo_wanted_object(work_handle, repo, 
+            repo->wanted_objects + i, &archive_handle, &checkout_handle, 
+            link_target)) r = -1;
     }
-    int dirfd_archive = -1, dirfd_checkout = -1;
-    if (need_archive && 
-        (dirfd_archive = open_or_create_dir_recursively_at(
-            work_handle->dir_archives.linkfd, 
-            work_handle_get_string(repo->long_name),
-            repo->len_long_name)) < 0)
-    {
-        pr_error("Failed to open dir for archive links\n");
-        need_archive = false;
-        r = -1;
-    }
-    if (need_checkout && 
-        (dirfd_checkout = open_or_create_dir_recursively_at(
-            work_handle->dir_checkouts.linkfd, 
-            work_handle_get_string(repo->long_name),
-            repo->len_long_name)) < 0)
-    {
-        pr_error("Failed to open dir for archive links\n");
-        need_checkout = false;
-        r = -1;
-    }
-
-    if (dirfd_archive >= 0 && close(dirfd_archive)) {
+    if (archive_handle.dirfd_links >= 0 && close(archive_handle.dirfd_links)) {
         pr_error_with_errno("Failed to close archive links fd");
         r = -1;
     }
-    if (dirfd_checkout >= 0 && close(dirfd_checkout)) {
+    if (checkout_handle.dirfd_links >= 0 && close(checkout_handle.dirfd_links)){
         pr_error_with_errno("Failed to close checkout links fd");
         r = -1;
     }
