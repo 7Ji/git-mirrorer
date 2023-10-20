@@ -2810,6 +2810,34 @@ int open_or_create_dir_recursively(
     return dir_fd;
 }
 
+int open_or_create_dir_recursively_at(
+    int const atfd,
+    char const *const restrict path,
+    unsigned short const len_path
+) {
+    int dir_fd = openat(atfd, path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dir_fd < 0) {
+        switch (errno) {
+        case ENOENT:
+            if (mkdir_recursively_at(atfd, path, len_path)) {
+                pr_error("Failed to create folder '%s'\n", path);
+                return -1;
+            }
+            if ((dir_fd =
+                openat(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+                pr_error_with_errno("Still failed to open '%s' as directory",
+                                    path);
+                return -1;
+            }
+            break;
+        default:
+            pr_error_with_errno("Failed to open '%s' as directory", path);
+            return -1;
+        }
+    }
+    return dir_fd;
+}
+
 int open_or_create_subdir(
     int const atfd,
     char const *const restrict path
@@ -3771,12 +3799,33 @@ int ensure_symlink_at (
     return 0;
 }
 
+struct link_target {
+    char target_stack[0x100];
+    char *target_heap;
+    size_t target_heap_allocated;
+    char *target;
+};
+
 static inline
-int format_link_target(
-    char **const target,
-    char *const restrict target_stack,
-    char **const restrict target_heap,
-    size_t *target_heap_allocated,
+void link_target_init(
+    struct link_target *const restrict link_target
+) {
+    link_target->target_stack[0] = '\0';
+    link_target->target_heap = NULL;
+    link_target->target_heap_allocated = 0;
+    link_target->target = NULL;
+}
+
+static inline
+void link_target_free(
+    struct link_target *const restrict link_target
+) {
+    free_if_allocated(link_target->target_heap);
+}
+
+static inline
+int link_target_format(
+    struct link_target *const restrict link_target,
     unsigned short const depth_link,
     char const *const restrict target_suffix,
     unsigned short const len_target_suffix
@@ -3784,19 +3833,20 @@ int format_link_target(
     // E.g. links/A -> ../data/B
     size_t const len = depth_link * 3 + 5 + len_target_suffix;
     if (len + 1 >= 0x100) {
-        if (len + 1 >= *target_heap_allocated) {
-            free_if_allocated(*target_heap);
-            if (!(*target_heap = malloc((*target_heap_allocated = 
-                    (len + 2) / 0x1000 * 0x1000)))) {
+        if (len + 1 >= link_target->target_heap_allocated) {
+            free_if_allocated(link_target->target_heap);
+            if (!(link_target->target_heap = malloc(
+                    (link_target->target_heap_allocated = 
+                        (len + 2) / 0x1000 * 0x1000)))) {
                 pr_error_with_errno("Failed to allocate memory");
                 return -1;
             }
         }
-        *target = *target_heap;
+        link_target->target = link_target->target_heap;
     } else {
-        *target = target_stack;
+        link_target->target = link_target->target_stack;
     }
-    char *current = *target;
+    char *current = link_target->target;
     for (unsigned short i = 0; i < depth_link; ++i) {
         memcpy(current, "../", 3);
         current += 3;
@@ -3804,8 +3854,258 @@ int format_link_target(
     memcpy(current, "data/", 5);
     current += 5;
     memcpy(current, target_suffix, len_target_suffix);
-    (*target)[len] = '\0';
+    link_target->target[len] = '\0';
     return 0;
+}
+
+static inline
+int work_handle_link_repo_wanted_object(
+    struct work_handle const *const restrict work_handle,
+    struct repo_work const *const restrict repo,
+    struct wanted_object const *const restrict wanted_object,
+    struct link_target *const restrict link_target
+) {
+    /* links/[sanitized url]/[commit hash](archive suffix)
+                            /named/[name](a.s.)
+                            /tags -> refs/tags
+                            /branches -> refs/heads
+     undetermimed layers -> /refs/[ref name](a.s.)
+                            /HEAD(a.s.)
+    */
+    bool    link_tags_to_dir_refs_tags = false,
+            link_branches_to_dir_refs_heads = false;
+    bool const  archive = wanted_object->archive,
+                checkout = wanted_object->checkout;
+    char const *dir_link = "";
+    // E.g.
+    //  archive: archives/abcdef.tar.gz
+    //  link: archives/links/github.com/user/repo/abcdeg.tar.gz
+    //  target: ../../../../abcdef.tar.gz
+    //   github.com/user/repo has 3 parts, depth is 4
+    char const *const restrict name = 
+        work_handle_get_string(wanted_object->name);
+    unsigned short link_depth = repo->depth_long_name + 1;
+    switch (wanted_object->type) {
+        case WANTED_TYPE_UNKNOWN:
+            pr_error("Wanted type unknown for '%s'\n", name);
+            return -1;
+        case WANTED_TYPE_ALL_BRANCHES:
+        case WANTED_TYPE_ALL_TAGS:
+            return 0;
+        case WANTED_TYPE_BRANCH:
+            link_branches_to_dir_refs_heads = true;
+            dir_link = "refs/heads/";
+            link_depth += 2;
+            break;
+        case WANTED_TYPE_TAG:
+            link_tags_to_dir_refs_tags = true;
+            dir_link = "refs/tags/";
+            link_depth += 2;
+            break;
+        case WANTED_TYPE_REFERENCE:
+            if (!strncmp(name, "refs/", 5)) {
+                char const *const ref_kind = name + 5;
+                if (!strncmp(ref_kind, "heads/", 6))
+                    link_branches_to_dir_refs_heads = true;
+                else if (!strncmp(ref_kind, "tags/", 5))
+                    link_tags_to_dir_refs_tags = true;
+            }
+            break;
+        case WANTED_TYPE_COMMIT:
+        case WANTED_TYPE_HEAD:
+            break;
+    }
+    for (unsigned short i = 0; i < wanted_object->len_name; ++i) {
+        switch (name[i]) {
+        case '/':
+            ++link_depth;
+            break;
+        case '\0':
+            pr_error("Name '%s' ends pre-maturely\n", name);
+            return -1;
+        }
+    }
+    int archives_repo_links_dirfd = -1;
+    if (archive) {
+        if ((archives_repo_links_dirfd = opendir_create_if_non_exist_at(
+            archives_links_dirfd, repo->url_no_scheme_sanitized,
+            repo->len_url_no_scheme_sanitized)) < 0) {
+            pr_error("Failed to open archive repos links dir\n");
+            return -1;
+        }
+    }
+    int checkouts_repo_links_dirfd = -1;
+    int r = -1;
+    if (checkout) {
+        if ((checkouts_repo_links_dirfd = opendir_create_if_non_exist_at(
+            checkouts_links_dirfd, repo->url_no_scheme_sanitized,
+            repo->len_url_no_scheme_sanitized)) < 0) {
+            pr_error("Failed to open Checkout repos links dir\n");
+            goto close_archives_repo_links_dirfd;
+        }
+    }
+    if (link_branches_to_dir_refs_heads) {
+        if (archive && guarantee_symlink_at(
+            archives_repo_links_dirfd, "branches", 8, "refs/heads")) {
+            goto close_checkouts_repo_links_dirfd;
+        }
+        if (checkout && guarantee_symlink_at(
+            checkouts_repo_links_dirfd, "branches", 8, "refs/heads")) {
+            goto close_checkouts_repo_links_dirfd;
+        }
+    }
+    if (link_tags_to_dir_refs_tags) {
+        if (archive && guarantee_symlink_at(
+            archives_repo_links_dirfd, "tags", 4, "refs/tags")) {
+            goto close_checkouts_repo_links_dirfd;
+        }
+        if (checkout && guarantee_symlink_at(
+            checkouts_repo_links_dirfd, "tags", 4, "refs/tags")) {
+            goto close_checkouts_repo_links_dirfd;
+        }
+    }
+    // The commit hash one
+    char symlink_path[PATH_MAX] = "";
+    char *symlink_path_current =
+        stpcpy(symlink_path, wanted_object->hex_string);
+    // unsigned short len_symlink_path = HASH_STRING_LEN;
+    char symlink_target[PATH_MAX] = "";
+    char *symlink_target_current = symlink_target;
+    for (unsigned short i = 0; i < repo->url_no_scheme_sanitized_parts+1; ++i) {
+        symlink_target_current = stpcpy(symlink_target_current, "../");
+    }
+    symlink_target_current = stpcpy(symlink_target_current,
+                                    wanted_object->hex_string);
+    if (checkout && guarantee_symlink_at(
+        checkouts_repo_links_dirfd,
+        symlink_path, HASH_STRING_LEN,
+        symlink_target)) {
+        goto close_checkouts_repo_links_dirfd;
+    }
+    if (archive) {
+        if (archive_suffix[0] == '\0' && guarantee_symlink_at(
+            archives_repo_links_dirfd,
+            symlink_path, HASH_STRING_LEN,
+            symlink_target)) {
+            goto close_checkouts_repo_links_dirfd;
+        } else {
+            strcpy(symlink_path_current, archive_suffix);
+            strcpy(symlink_target_current, archive_suffix);
+            if (guarantee_symlink_at(
+                archives_repo_links_dirfd,
+                symlink_path, HASH_STRING_LEN + len_archive_suffix,
+                symlink_target)) {
+                goto close_checkouts_repo_links_dirfd;
+            }
+        }
+    }
+
+    // The named one
+    if (wanted_object->type != WANTED_TYPE_COMMIT) {
+        char *symlink_path_current = stpcpy(symlink_path, dir_link);
+        symlink_path_current =
+            stpcpy(symlink_path_current, wanted_object->name);
+        unsigned short len_symlink_path = symlink_path_current - symlink_path;
+        char *symlink_target_current = symlink_target;
+        for (unsigned short i = 0; i < link_depth; ++i) {
+            symlink_target_current = stpcpy(symlink_target_current, "../");
+        }
+        symlink_target_current = stpcpy(
+            symlink_target_current,
+            wanted_object->hex_string);
+        if (checkout && guarantee_symlink_at(
+            checkouts_repo_links_dirfd,
+            symlink_path, len_symlink_path,
+            symlink_target)) {
+            goto close_checkouts_repo_links_dirfd;
+        }
+        if (archive) {
+            if (archive_suffix[0] == '\0' && guarantee_symlink_at(
+                archives_repo_links_dirfd,
+                symlink_path, len_symlink_path,
+                symlink_target)) {
+                goto close_checkouts_repo_links_dirfd;
+            } else {
+                strcpy(symlink_path_current, archive_suffix);
+                strcpy(symlink_target_current, archive_suffix);
+                if (guarantee_symlink_at(
+                    archives_repo_links_dirfd,
+                    symlink_path, wanted_object->len_name + len_archive_suffix,
+                    symlink_target)) {
+                    goto close_checkouts_repo_links_dirfd;
+                }
+            }
+        }
+    }
+
+    r = 0;
+
+close_checkouts_repo_links_dirfd:
+    if (checkout) {
+        if (close(checkouts_repo_links_dirfd)) {
+            pr_error_with_errno(
+                "Failed to close file descriptor for checkouts/repo/links dir");
+        }
+    }
+close_archives_repo_links_dirfd:
+    if (archive) {
+        if (close(archives_repo_links_dirfd)) {
+            pr_error_with_errno(
+                "Failed to close file descriptor for archives/repo/links dir");
+        }
+    }
+    return r;
+}
+
+static inline
+int work_handle_link_repo(
+    struct work_handle const *const restrict work_handle,
+    struct repo_work const *const restrict repo,
+    struct link_target *const restrict link_target
+) {
+    int r = 0;
+    if (link_target_format(link_target, repo->depth_long_name,
+        repo->hash_url_string, HASH_STRING_LEN)) r = -1;
+    else if (ensure_symlink_at(work_handle->dir_repos.linkfd, 
+        work_handle_get_string(repo->long_name),
+        repo->len_long_name, link_target->target)) r = -1;
+    bool need_archive = false, need_checkout = false;
+    for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
+        struct wanted_object *wanted_object = repo->wanted_objects + i;
+        if (wanted_object->archive) need_archive = true;
+        if (wanted_object->checkout) need_checkout = true;
+    }
+    int dirfd_archive = -1, dirfd_checkout = -1;
+    if (need_archive && 
+        (dirfd_archive = open_or_create_dir_recursively_at(
+            work_handle->dir_archives.linkfd, 
+            work_handle_get_string(repo->long_name),
+            repo->len_long_name)) < 0)
+    {
+        pr_error("Failed to open dir for archive links\n");
+        need_archive = false;
+        r = -1;
+    }
+    if (need_checkout && 
+        (dirfd_checkout = open_or_create_dir_recursively_at(
+            work_handle->dir_checkouts.linkfd, 
+            work_handle_get_string(repo->long_name),
+            repo->len_long_name)) < 0)
+    {
+        pr_error("Failed to open dir for archive links\n");
+        need_checkout = false;
+        r = -1;
+    }
+
+    if (dirfd_archive >= 0 && close(dirfd_archive)) {
+        pr_error_with_errno("Failed to close archive links fd");
+        r = -1;
+    }
+    if (dirfd_checkout >= 0 && close(dirfd_checkout)) {
+        pr_error_with_errno("Failed to close checkout links fd");
+        r = -1;
+    }
+    return r;
 }
 
 int work_handle_link_all_repos(
@@ -3815,22 +4115,15 @@ int work_handle_link_all_repos(
         pr_error("No repos defined\n");
         return -1;
     }
-    char target_stack[0x100];
-    char *target_heap = NULL;
-    size_t target_heap_allocated = 0;
-    char *target;
+    struct link_target link_target;
+    link_target_init(&link_target);
     int r = 0;
     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-        struct repo_work const *const restrict repo_work = 
-            work_handle->repos + i;
-        if (format_link_target(&target, target_stack, &target_heap, 
-            &target_heap_allocated, repo_work->depth_long_name,
-            repo_work->hash_url_string, HASH_STRING_LEN)) r = -1;
-        else if (ensure_symlink_at(work_handle->dir_repos.linkfd, 
-            work_handle_get_string(repo_work->long_name),
-            repo_work->len_long_name, target)) r = -1;
+        if (work_handle_link_repo(
+            work_handle, work_handle->repos + i, &link_target)) 
+            r = -1;
     }
-    free_if_allocated(target_heap);
+    link_target_free(&link_target);
     return r;
 }
 
@@ -5474,226 +5767,6 @@ int work_handle_parse_all_repos(
     return -1;
 }
 
-// int wanted_object_guarantee_symlinks(
-//     struct wanted_object const *const restrict wanted_object,
-//     struct repo const *const restrict repo,
-//     char const *const restrict archive_suffix,
-//     unsigned short const len_archive_suffix,
-//     int const archives_links_dirfd,
-//     int const checkouts_links_dirfd
-// ) {
-//     /* links/[sanitized url]/[commit hash](archive suffix)
-//                             /named/[name](a.s.)
-//                             /tags -> refs/tags
-//                             /branches -> refs/heads
-//      undetermimed layers -> /refs/[ref name](a.s.)
-//                             /HEAD(a.s.)
-//     */
-//     bool    link_tags_to_dir_refs_tags = false,
-//             link_branches_to_dir_refs_heads = false;
-//     bool const  archive = wanted_object->archive,
-//                 checkout = wanted_object->checkout;
-//     char const *dir_link = "";
-//     // E.g.
-//     //  archive: archives/abcdef.tar.gz
-//     //  link: archives/links/github.com/user/repo/abcdeg.tar.gz
-//     //  target: ../../../../abcdef.tar.gz
-//     //   github.com/user/repo has 3 parts, depth is 4
-//     unsigned short link_depth = repo->url_no_scheme_sanitized_parts + 1;
-//     switch (wanted_object->type) {
-//         case WANTED_TYPE_UNKNOWN:
-//             pr_error("Wanted type unknown for '%s'\n", wanted_object->name);
-//             return -1;
-//         case WANTED_TYPE_ALL_BRANCHES:
-//         case WANTED_TYPE_ALL_TAGS:
-//             return 0;
-//         case WANTED_TYPE_BRANCH:
-//             link_branches_to_dir_refs_heads = true;
-//             dir_link = "refs/heads/";
-//             link_depth += 2;
-//             break;
-//         case WANTED_TYPE_TAG:
-//             link_tags_to_dir_refs_tags = true;
-//             dir_link = "refs/tags/";
-//             link_depth += 2;
-//             break;
-//         case WANTED_TYPE_REFERENCE:
-//             if (!strncmp(wanted_object->name, "refs/", 5)) {
-//                 char const *const ref_kind = wanted_object->name + 5;
-//                 if (!strncmp(ref_kind, "heads/", 6))
-//                     link_branches_to_dir_refs_heads = true;
-//                 else if (!strncmp(ref_kind, "tags/", 5))
-//                     link_tags_to_dir_refs_tags = true;
-//             }
-//             break;
-//         case WANTED_TYPE_COMMIT:
-//         case WANTED_TYPE_HEAD:
-//             break;
-//     }
-//     switch (wanted_object->type) {
-//     case WANTED_TYPE_BRANCH:
-//     case WANTED_TYPE_TAG:
-//     case WANTED_TYPE_REFERENCE:
-//         if (!wanted_object->commit_parsed) {
-// #ifdef ALL_REFERENCES_MUST_BE_parsed
-//             pr_error(
-// #else
-//             pr_warn(
-// #endif
-//                 "Commit not parsed for wanted object '%s' yet\n",
-//                     wanted_object->name);
-// #ifdef ALL_REFERENCES_MUST_BE_parsed
-//             return -1;
-// #else
-//             return 0;
-// #endif
-//         }
-//         break;
-//     default:
-//         break;
-//     }
-//     for (unsigned short i = 0; i < wanted_object->len_name; ++i) {
-//         switch (wanted_object->name[i]) {
-//         case '/':
-//             ++link_depth;
-//             break;
-//         case '\0':
-//             pr_error("Name '%s' ends pre-maturely\n", wanted_object->name);
-//             return -1;
-//         }
-//     }
-//     int archives_repo_links_dirfd = -1;
-//     if (archive) {
-//         if ((archives_repo_links_dirfd = opendir_create_if_non_exist_at(
-//             archives_links_dirfd, repo->url_no_scheme_sanitized,
-//             repo->len_url_no_scheme_sanitized)) < 0) {
-//             pr_error("Failed to open archive repos links dir\n");
-//             return -1;
-//         }
-//     }
-//     int checkouts_repo_links_dirfd = -1;
-//     int r = -1;
-//     if (checkout) {
-//         if ((checkouts_repo_links_dirfd = opendir_create_if_non_exist_at(
-//             checkouts_links_dirfd, repo->url_no_scheme_sanitized,
-//             repo->len_url_no_scheme_sanitized)) < 0) {
-//             pr_error("Failed to open Checkout repos links dir\n");
-//             goto close_archives_repo_links_dirfd;
-//         }
-//     }
-//     if (link_branches_to_dir_refs_heads) {
-//         if (archive && guarantee_symlink_at(
-//             archives_repo_links_dirfd, "branches", 8, "refs/heads")) {
-//             goto close_checkouts_repo_links_dirfd;
-//         }
-//         if (checkout && guarantee_symlink_at(
-//             checkouts_repo_links_dirfd, "branches", 8, "refs/heads")) {
-//             goto close_checkouts_repo_links_dirfd;
-//         }
-//     }
-//     if (link_tags_to_dir_refs_tags) {
-//         if (archive && guarantee_symlink_at(
-//             archives_repo_links_dirfd, "tags", 4, "refs/tags")) {
-//             goto close_checkouts_repo_links_dirfd;
-//         }
-//         if (checkout && guarantee_symlink_at(
-//             checkouts_repo_links_dirfd, "tags", 4, "refs/tags")) {
-//             goto close_checkouts_repo_links_dirfd;
-//         }
-//     }
-//     // The commit hash one
-//     char symlink_path[PATH_MAX] = "";
-//     char *symlink_path_current =
-//         stpcpy(symlink_path, wanted_object->hex_string);
-//     // unsigned short len_symlink_path = HASH_STRING_LEN;
-//     char symlink_target[PATH_MAX] = "";
-//     char *symlink_target_current = symlink_target;
-//     for (unsigned short i = 0; i < repo->url_no_scheme_sanitized_parts+1; ++i) {
-//         symlink_target_current = stpcpy(symlink_target_current, "../");
-//     }
-//     symlink_target_current = stpcpy(symlink_target_current,
-//                                     wanted_object->hex_string);
-//     if (checkout && guarantee_symlink_at(
-//         checkouts_repo_links_dirfd,
-//         symlink_path, HASH_STRING_LEN,
-//         symlink_target)) {
-//         goto close_checkouts_repo_links_dirfd;
-//     }
-//     if (archive) {
-//         if (archive_suffix[0] == '\0' && guarantee_symlink_at(
-//             archives_repo_links_dirfd,
-//             symlink_path, HASH_STRING_LEN,
-//             symlink_target)) {
-//             goto close_checkouts_repo_links_dirfd;
-//         } else {
-//             strcpy(symlink_path_current, archive_suffix);
-//             strcpy(symlink_target_current, archive_suffix);
-//             if (guarantee_symlink_at(
-//                 archives_repo_links_dirfd,
-//                 symlink_path, HASH_STRING_LEN + len_archive_suffix,
-//                 symlink_target)) {
-//                 goto close_checkouts_repo_links_dirfd;
-//             }
-//         }
-//     }
-
-//     // The named one
-//     if (wanted_object->type != WANTED_TYPE_COMMIT) {
-//         char *symlink_path_current = stpcpy(symlink_path, dir_link);
-//         symlink_path_current =
-//             stpcpy(symlink_path_current, wanted_object->name);
-//         unsigned short len_symlink_path = symlink_path_current - symlink_path;
-//         char *symlink_target_current = symlink_target;
-//         for (unsigned short i = 0; i < link_depth; ++i) {
-//             symlink_target_current = stpcpy(symlink_target_current, "../");
-//         }
-//         symlink_target_current = stpcpy(
-//             symlink_target_current,
-//             wanted_object->hex_string);
-//         if (checkout && guarantee_symlink_at(
-//             checkouts_repo_links_dirfd,
-//             symlink_path, len_symlink_path,
-//             symlink_target)) {
-//             goto close_checkouts_repo_links_dirfd;
-//         }
-//         if (archive) {
-//             if (archive_suffix[0] == '\0' && guarantee_symlink_at(
-//                 archives_repo_links_dirfd,
-//                 symlink_path, len_symlink_path,
-//                 symlink_target)) {
-//                 goto close_checkouts_repo_links_dirfd;
-//             } else {
-//                 strcpy(symlink_path_current, archive_suffix);
-//                 strcpy(symlink_target_current, archive_suffix);
-//                 if (guarantee_symlink_at(
-//                     archives_repo_links_dirfd,
-//                     symlink_path, wanted_object->len_name + len_archive_suffix,
-//                     symlink_target)) {
-//                     goto close_checkouts_repo_links_dirfd;
-//                 }
-//             }
-//         }
-//     }
-
-//     r = 0;
-
-// close_checkouts_repo_links_dirfd:
-//     if (checkout) {
-//         if (close(checkouts_repo_links_dirfd)) {
-//             pr_error_with_errno(
-//                 "Failed to close file descriptor for checkouts/repo/links dir");
-//         }
-//     }
-// close_archives_repo_links_dirfd:
-//     if (archive) {
-//         if (close(archives_repo_links_dirfd)) {
-//             pr_error_with_errno(
-//                 "Failed to close file descriptor for archives/repo/links dir");
-//         }
-//     }
-//     return r;
-// }
-
 // int work_directory_add_keep(
 //     struct work_directory *const restrict work_directory,
 //     char const *const restrict keep,
@@ -6337,47 +6410,6 @@ int tar_finish(
     }
     return 0;
 }
-
-// int repo_guarantee_all_wanted_objects_symlinks(
-//     struct repo const *const restrict repo,
-//     char const *const restrict archive_suffix,
-//     unsigned short const len_archive_suffix,
-//     int const archives_links_dirfd,
-//     int const checkouts_links_dirfd
-// ) {
-//     for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
-//         struct wanted_object const *const restrict wanted_object =
-//             repo->wanted_objects + i;
-//         if (wanted_object_guarantee_symlinks(
-//             wanted_object, repo,
-//             archive_suffix, len_archive_suffix,
-//             archives_links_dirfd,
-//             checkouts_links_dirfd)) {
-//             pr_error("Failed to guarantee symlinks for wanted object '%s' "
-//                 "of repo '%s'\n", wanted_object->name, repo->url);
-//             return -1;
-//         }
-//     }
-//     return 0;
-// }
-
-// int guanrantee_all_repos_wanted_objects_symlinks(
-//     struct config const *const restrict config,
-//     int const archives_links_dirfd,
-//     int const checkouts_links_dirfd
-// ) {
-//     for (unsigned long i = 0; i < config->repos_count; ++i) {
-//         struct repo const *const restrict repo = config->repos + i;
-//         if (repo_guarantee_all_wanted_objects_symlinks(
-//             repo, config->archive_suffix, config->len_archive_suffix,
-//             archives_links_dirfd, checkouts_links_dirfd)) {
-//             pr_error("Failed to guarantee symlinks for all wanted objects of "
-//             "repo '%s'\n", repo->url);
-//             return -1;
-//         }
-//     }
-//     return 0;
-// }
 
 static inline
 bool work_handle_all_looked_up(
