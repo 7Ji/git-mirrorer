@@ -895,6 +895,31 @@ void lazy_alloc_string_init(
 }
 
 static inline
+int lazy_alloc_string_init_with(
+    struct lazy_alloc_string *const restrict string,
+    void const *const restrict content,
+    size_t const len
+) {
+    if (len >= LAZY_ALLOC_STRING_STACK_SIZE) {
+        if (!(string->heap = malloc((
+                string->alloc = (len + 1) / 0x1000 * 0x1000))))
+        {
+            pr_error_with_errno("Failed to allocate memory for string");
+            return -1;
+        }
+        string->string = string->heap;
+    } else {
+        string->heap = NULL;
+        string->string = string->stack;
+        string->alloc = 0;
+    }
+    memcpy(string->string, content, len);
+    string->string[len] = '\0';
+    string->len = len;
+    return 0;
+}
+
+static inline
 int lazy_alloc_string_alloc(
     struct lazy_alloc_string *const restrict string,
     size_t const len
@@ -1309,8 +1334,7 @@ int yamlconf_parse_archive_pipe(
     }
     unsigned short const args_length = event->data.scalar.length;
     struct lazy_alloc_string string;
-    lazy_alloc_string_init(&string);
-    if (lazy_alloc_string_replace(&string, event->data.scalar.value, 
+    if (lazy_alloc_string_init_with(&string, event->data.scalar.value, 
                                     args_length)) 
     {
         pr_error("Failed to prepare args buffer to parse\n");
@@ -2725,8 +2749,7 @@ int mkdir_recursively(
         return -1;
     }
     struct lazy_alloc_string path_buffer;
-    lazy_alloc_string_init(&path_buffer);
-    if (lazy_alloc_string_replace(&path_buffer, path, len_path)) {
+    if (lazy_alloc_string_init_with(&path_buffer, path, len_path)) {
         pr_error("Failed to prepare path buffer\n");
         return -1;
     }
