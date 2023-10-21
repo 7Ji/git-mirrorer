@@ -1850,13 +1850,11 @@ int repo_common_init_from_url(
     // https://github.com/xxx/yyy.git -> github.com/xxx/yyy
     // file:///what/ever.git/ -> what/ever
 
-    // Long name always ends with .git
-        // (mainly used for local path)
-    // Short name always ends without .git
+    // Long/short names always ends without .git
         // (mainly used for gh-like archive prefix)
     struct lazy_alloc_string long_name;
     lazy_alloc_string_init(&long_name);
-    if (lazy_alloc_string_setlen_discard(&long_name, len_url + 4)) {
+    if (lazy_alloc_string_setlen_discard(&long_name, len_url)) {
         pr_error("Failed to prepare long name buffer\n");
         return -1;
     }
@@ -1898,8 +1896,6 @@ int repo_common_init_from_url(
         r = -1;
         goto free_long_name;
     }
-    memcpy(long_name.string + repo->len_long_name, ".git", 4);
-    repo->len_long_name += 4;
     repo->long_name_offset = sbuffer->used;
     if (string_buffer_add(sbuffer, long_name.string, repo->len_long_name)) {
         long_name.string[repo->len_long_name] = '\0';
