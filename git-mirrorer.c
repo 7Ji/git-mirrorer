@@ -1807,12 +1807,10 @@ int repo_common_init_from_url(
     while (len_url && url[len_url - 1] == '/') {
         --len_url;
     }
-#ifndef TREAT_DOTGIT_AS_DIFFERENT_REPO
     // Drop trailing .git
     if (len_url >= 4 && !strncmp(url + len_url - 4, ".git", 4)) {
         len_url -= 4;
     }
-#endif
     if (!len_url) {
         pr_error("URL is empty\n");
         return -1;
@@ -1856,25 +1854,12 @@ int repo_common_init_from_url(
         // (mainly used for local path)
     // Short name always ends without .git
         // (mainly used for gh-like archive prefix)
-#ifdef TREAT_DOTGIT_AS_DIFFERENT_REPO
-    if (len_url < 0x100) {
-        long_name = long_name_stack;
-    } else {
-        if (!(long_name_heap = malloc(len_url + 1))) {
-            pr_error("Failed to allocate memory for long name\n");
-            return -1;
-        }
-        long_name = long_name_heap;
-    }
-    long_name[0] = '\0';
-#else
     struct lazy_alloc_string long_name;
     lazy_alloc_string_init(&long_name);
     if (lazy_alloc_string_setlen_discard(&long_name, len_url + 4)) {
         pr_error("Failed to prepare long name buffer\n");
         return -1;
     }
-#endif
     repo->len_long_name = 0;
     repo->depth_long_name = 1; // depth always starts from 1
     repo->hash_domain = 0;
@@ -1913,10 +1898,8 @@ int repo_common_init_from_url(
         r = -1;
         goto free_long_name;
     }
-#ifndef TREAT_DOTGIT_AS_DIFFERENT_REPO
     memcpy(long_name.string + repo->len_long_name, ".git", 4);
     repo->len_long_name += 4;
-#endif
     repo->long_name_offset = sbuffer->used;
     if (string_buffer_add(sbuffer, long_name.string, repo->len_long_name)) {
         long_name.string[repo->len_long_name] = '\0';
