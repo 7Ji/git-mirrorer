@@ -120,6 +120,16 @@ struct string_buffer {
     unsigned int NAME##_offset; \
     unsigned short len_##NAME
 
+#define LAZY_ALLOC_STRING_STACK_SIZE    NAME_MAX + 1
+
+struct lazy_alloc_string {
+    char stack[LAZY_ALLOC_STRING_STACK_SIZE];
+    char *heap;
+    char *string;
+    size_t len; // The length without terminating NULL
+    size_t alloc;
+};
+
 /* Dynamic array */
 #define DYNAMIC_ARRAY_DECLARE_RAW(POINTER, NAME) \
     POINTER; \
@@ -872,6 +882,85 @@ int string_buffer_clone(
     return 0;
 }
 
+
+static inline
+void lazy_alloc_string_init(
+    struct lazy_alloc_string *const restrict string
+) {
+    string->stack[0] = '\0';
+    string->heap = NULL;
+    string->string = string->stack;
+    string->len = 0;
+    string->alloc = 0;
+}
+
+static inline
+int lazy_alloc_string_alloc(
+    struct lazy_alloc_string *const restrict string,
+    size_t const len
+) {
+    if (len >= LAZY_ALLOC_STRING_STACK_SIZE) {
+        if (len >= string->alloc) {
+            free_if_allocated(string->heap);
+            if (!(string->heap = malloc((
+                string->alloc = (len + 1) / 0x1000 * 0x1000))))
+            {
+                pr_error_with_errno("Failed to allocate memory for string");
+                return -1;
+            }
+        }
+        string->string = string->heap;
+    } else {
+        string->string = string->stack;
+    }
+    return 0;
+}
+
+static inline
+int lazy_alloc_string_setlen_no_copy(
+    struct lazy_alloc_string *const restrict string,
+    size_t const len
+) {
+    if (lazy_alloc_string_alloc(string, len)) return -1;
+    string->string[(string->len = len)] = '\0';
+    return 0;
+}
+
+static inline
+int lazy_alloc_string_setlen_copy(
+    struct lazy_alloc_string *const restrict string,
+    size_t const len
+) {
+    char const *const restrict old_string = string->string;
+    if (lazy_alloc_string_alloc(string, len)) return -1;
+    if (old_string != string->string) {
+        if (string->len) memcpy(string->string, old_string, string->len);
+    }
+    string->string[(string->len = len)] = '\0';
+    return 0;
+}
+
+static inline
+int lazy_alloc_string_replace(
+    struct lazy_alloc_string *const restrict string,
+    void const *const restrict content,
+    size_t const len
+) {
+    if (lazy_alloc_string_setlen_no_copy(string, len)) {
+        pr_error("Failed to set length for lazy alloc string\n");
+        return -1;
+    }
+    memcpy(string->string, content, len);
+    return 0;
+}
+
+static inline
+void lazy_alloc_string_free(
+    struct lazy_alloc_string *const restrict string
+) {
+    free_if_allocated(string->heap);
+}
+
 int dynamic_array_add(
     void **const restrict array,
     size_t const size, // Size of an array member
@@ -1219,21 +1308,15 @@ int yamlconf_parse_archive_pipe(
         return 0;
     }
     unsigned short const args_length = event->data.scalar.length;
-    char args_buffer_stack[0x100];
-    char *args_buffer_heap = NULL;
-    char *args_buffer;
-    if (args_length >= 0x100) {
-        if (!(args_buffer_heap = malloc(
-                sizeof *args_buffer * (args_length + 1)))) {
-            pr_error("Failed to allocate memory for buffer\n");
-            return -1;
-        }
-        args_buffer = args_buffer_heap;
-    } else {
-        args_buffer = args_buffer_stack;
+    struct lazy_alloc_string string;
+    lazy_alloc_string_init(&string);
+    if (lazy_alloc_string_replace(&string, event->data.scalar.value, 
+                                    args_length)) 
+    {
+        pr_error("Failed to prepare args buffer to parse\n");
+        return -1;
     }
-    memcpy(args_buffer, event->data.scalar.value, args_length);
-    args_buffer[args_length] = '\0';
+    char *args_buffer = string.string;
     // Go first run to 1) remove all whitespaces and 2) count args
     bool arg_parsing = false;
     for (unsigned short i = 0; i < args_length; ++i) {
@@ -1336,7 +1419,7 @@ int yamlconf_parse_archive_pipe(
     handle->status = YAMLCONF_PARSING_STATUS_ARCHIVE_SECTION;
     r = 0;
 free_args_buffer:
-    free_if_allocated(args_buffer_heap);
+    lazy_alloc_string_free(&string);
     return r;
 }
 
@@ -3940,10 +4023,6 @@ int work_handle_link_repo_wanted_object(
             return -1;
         }
     }
-    char name_stack[0x100];
-    char *name_heap = NULL;
-    char suffix_stack[0x100];
-    char *suffix_heap = NULL;
     
     if (wanted_object->archive) {
         if (archive_handle->dirfd_links < 0 &&
@@ -4057,8 +4136,8 @@ int work_handle_link_repo(
     else if (ensure_symlink_at(work_handle->dir_repos.linkfd, 
         work_handle_get_string(repo->long_name),
         repo->len_long_name, link_target->target)) r = -1;
-    struct link_handle archive_handle = {-1};
-    struct link_handle checkout_handle = {-1};
+    struct link_handle archive_handle = {.dirfd_links = -1};
+    struct link_handle checkout_handle = {.dirfd_links = -1};
     for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
         if (work_handle_link_repo_wanted_object(work_handle, repo, 
             repo->wanted_objects + i, &archive_handle, &checkout_handle, 
