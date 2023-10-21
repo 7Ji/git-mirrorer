@@ -3723,32 +3723,6 @@ free_repos:
 int work_handle_open_all_repos(
     struct work_handle const *const restrict work_handle
 ) {
-#ifdef WORK_HANDLE_OPEN_ALL_REPOS_USE_SCATTER_VARAINT
-    struct repo_work **repos_heap = NULL;
-    struct repo_work *repos_stack[0x100 / sizeof *repos_heap];
-    struct repo_work **repos = NULL;
-    if (work_handle->repos_count > 0x100 / sizeof *repos_heap - 1) {
-        if (!(repos_heap = malloc(
-                sizeof *repos_heap * (work_handle->repos_count + 1)))) {
-            pr_error_with_errno(
-                "Failed to allocate memory for repos' pointers");
-            return -1;
-        }
-        repos = repos_heap;
-    } else {
-        repos = repos_stack;
-    }
-    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-        repos[i] = work_handle->repos + i;
-    }
-    repos[work_handle->repos_count] = NULL;
-    int r = repo_work_open_many(repos,
-                work_handle->string_buffer.buffer,
-                work_handle->dir_repos.datafd,
-                work_handle->cwd);
-    free_if_allocated(repos_heap);
-    return r;
-#else
     switch (work_handle->repos_count) {
     case 0:
         pr_error("No repos defined\n");
@@ -3767,7 +3741,6 @@ int work_handle_open_all_repos(
             work_handle->dir_repos.datafd,
             work_handle->cwd);
     }
-#endif
 }
 
 /* 0 link exists and OK, 1 link does not exist, or removed, -1 error */
