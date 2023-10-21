@@ -3901,54 +3901,45 @@ int ensure_symlink_at (
     return 0;
 }
 
-struct link_target {
-    char target_stack[0x100];
-    char *target_heap;
-    size_t target_heap_allocated;
-    char *target;
-};
+// struct link_target {
+//     char target_stack[0x100];
+//     char *target_heap;
+//     size_t target_heap_allocated;
+//     char *target;
+// };
 
-static inline
-void link_target_init(
-    struct link_target *const restrict link_target
-) {
-    link_target->target_stack[0] = '\0';
-    link_target->target_heap = NULL;
-    link_target->target_heap_allocated = 0;
-    link_target->target = NULL;
-}
+// static inline
+// void link_target_init(
+//     struct link_target *const restrict link_target
+// ) {
+//     link_target->target_stack[0] = '\0';
+//     link_target->target_heap = NULL;
+//     link_target->target_heap_allocated = 0;
+//     link_target->target = NULL;
+// }
 
-static inline
-void link_target_free(
-    struct link_target *const restrict link_target
-) {
-    free_if_allocated(link_target->target_heap);
-}
+// static inline
+// void link_target_free(
+//     struct link_target *const restrict link_target
+// ) {
+//     free_if_allocated(link_target->target_heap);
+// }
 
 static inline
 int link_target_format(
-    struct link_target *const restrict link_target,
+    struct lazy_alloc_string *const restrict link_target,
     unsigned short const depth_link,
     char const *const restrict target_suffix,
     unsigned short const len_target_suffix
 ) {
     // E.g. links/A -> ../data/B
-    size_t const len = depth_link * 3 + 5 + len_target_suffix;
-    if (len + 1 >= 0x100) {
-        if (len + 1 >= link_target->target_heap_allocated) {
-            free_if_allocated(link_target->target_heap);
-            if (!(link_target->target_heap = malloc(
-                    (link_target->target_heap_allocated = 
-                        (len + 2) / 0x1000 * 0x1000)))) {
-                pr_error_with_errno("Failed to allocate memory");
-                return -1;
-            }
-        }
-        link_target->target = link_target->target_heap;
-    } else {
-        link_target->target = link_target->target_stack;
+    if (lazy_alloc_string_setlen_discard(link_target, 
+            depth_link * 3 + 5 + len_target_suffix)) 
+    {
+        pr_error("Failed to prepare buffer\n");
+        return -1;
     }
-    char *current = link_target->target;
+    char *current = link_target->string;
     for (unsigned short i = 0; i < depth_link; ++i) {
         memcpy(current, "../", 3);
         current += 3;
@@ -3956,7 +3947,6 @@ int link_target_format(
     memcpy(current, "data/", 5);
     current += 5;
     memcpy(current, target_suffix, len_target_suffix);
-    link_target->target[len] = '\0';
     return 0;
 }
 
@@ -3974,7 +3964,7 @@ int work_handle_link_repo_wanted_object(
     struct wanted_object const *const restrict wanted_object,
     struct link_handle *const restrict archive_handle,
     struct link_handle *const restrict checkout_handle,
-    struct link_target *const restrict link_target
+    struct lazy_alloc_string *const restrict link_target
 ) {
     /* links/[sanitized url]/[commit hash](archive suffix)
                             /named/[name](a.s.)
@@ -4147,14 +4137,14 @@ static inline
 int work_handle_link_repo(
     struct work_handle const *const restrict work_handle,
     struct repo_work const *const restrict repo,
-    struct link_target *const restrict link_target
+    struct lazy_alloc_string *const restrict link_target
 ) {
     int r = 0;
     if (link_target_format(link_target, repo->depth_long_name,
         repo->hash_url_string, HASH_STRING_LEN)) r = -1;
     else if (ensure_symlink_at(work_handle->dir_repos.linkfd, 
         work_handle_get_string(repo->long_name),
-        repo->len_long_name, link_target->target)) r = -1;
+        repo->len_long_name, link_target->string)) r = -1;
     struct link_handle archive_handle = {.dirfd_links = -1};
     struct link_handle checkout_handle = {.dirfd_links = -1};
     for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
@@ -4180,15 +4170,15 @@ int work_handle_link_all_repos(
         pr_error("No repos defined\n");
         return -1;
     }
-    struct link_target link_target;
-    link_target_init(&link_target);
+    struct lazy_alloc_string link_target;
+    lazy_alloc_string_init(&link_target);
     int r = 0;
     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
         if (work_handle_link_repo(
             work_handle, work_handle->repos + i, &link_target)) 
             r = -1;
     }
-    link_target_free(&link_target);
+    lazy_alloc_string_free(&link_target);
     return r;
 }
 
