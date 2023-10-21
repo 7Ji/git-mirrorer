@@ -917,7 +917,7 @@ int lazy_alloc_string_alloc(
 }
 
 static inline
-int lazy_alloc_string_setlen_no_copy(
+int lazy_alloc_string_setlen_discard(
     struct lazy_alloc_string *const restrict string,
     size_t const len
 ) {
@@ -927,7 +927,7 @@ int lazy_alloc_string_setlen_no_copy(
 }
 
 static inline
-int lazy_alloc_string_setlen_copy(
+int lazy_alloc_string_setlen_keep(
     struct lazy_alloc_string *const restrict string,
     size_t const len
 ) {
@@ -946,7 +946,7 @@ int lazy_alloc_string_replace(
     void const *const restrict content,
     size_t const len
 ) {
-    if (lazy_alloc_string_setlen_no_copy(string, len)) {
+    if (lazy_alloc_string_setlen_discard(string, len)) {
         pr_error("Failed to set length for lazy alloc string\n");
         return -1;
     }
@@ -1813,9 +1813,6 @@ int repo_common_init_from_url(
         // (mainly used for local path)
     // Short name always ends without .git
         // (mainly used for gh-like archive prefix)
-    char long_name_stack[0x100];
-    char *long_name_heap = NULL;
-    char *long_name;
 #ifdef TREAT_DOTGIT_AS_DIFFERENT_REPO
     if (len_url < 0x100) {
         long_name = long_name_stack;
@@ -1826,18 +1823,14 @@ int repo_common_init_from_url(
         }
         long_name = long_name_heap;
     }
+    long_name[0] = '\0';
 #else
-    if (len_url + 4 < 0x100) {
-        long_name = long_name_stack;
-    } else {
-        if (!(long_name_heap = malloc(len_url + 5))) {
-            pr_error("Failed to allocate memory for long name\n");
-            return -1;
-        }
-        long_name = long_name_heap;
+    struct lazy_alloc_string long_name;
+    if (lazy_alloc_string_setlen_discard(&long_name, len_url + 4)) {
+        pr_error("Failed to prepare long name buffer\n");
+        return -1;
     }
 #endif
-    long_name[0] = '\0';
     repo->len_long_name = 0;
     repo->depth_long_name = 1; // depth always starts from 1
     repo->hash_domain = 0;
@@ -1862,33 +1855,33 @@ int repo_common_init_from_url(
             ++repo->depth_long_name;
             short_name_offset = i + 1;
         }
-        long_name[repo->len_long_name++] = url[i];
+        long_name.string[repo->len_long_name++] = url[i];
     }
     if (!has_domain) {
         pr_error("Url '%s' does not have domain\n",
                     sbuffer->buffer + repo->url_offset);
         r = -1;
-        goto free_long_name_heap;
+        goto free_long_name;
     }
     if (!repo->len_long_name) {
         pr_error("Long name for url '%s' is empty\n",
                     sbuffer->buffer + repo->url_offset);
         r = -1;
-        goto free_long_name_heap;
+        goto free_long_name;
     }
 #ifndef TREAT_DOTGIT_AS_DIFFERENT_REPO
-    memcpy(long_name + repo->len_long_name, ".git", 4);
+    memcpy(long_name.string + repo->len_long_name, ".git", 4);
     repo->len_long_name += 4;
 #endif
     repo->long_name_offset = sbuffer->used;
-    if (string_buffer_add(sbuffer, long_name, repo->len_long_name)) {
-        long_name[repo->len_long_name] = '\0';
+    if (string_buffer_add(sbuffer, long_name.string, repo->len_long_name)) {
+        long_name.string[repo->len_long_name] = '\0';
         pr_error("Failed to add long name '%s' to string buffer\n",
-                    long_name);
+                    long_name.string);
         r = -1;
-        goto free_long_name_heap;
+        goto free_long_name;
     }
-    repo->hash_long_name = hash_calculate(long_name, repo->len_long_name);
+    repo->hash_long_name = hash_calculate(long_name.string,repo->len_long_name);
 
 
     // user/repo.git
@@ -1904,7 +1897,7 @@ int repo_common_init_from_url(
         pr_error("Short name for repo '%s' is empty\n",
                     sbuffer->buffer + repo->url_offset);
         r = -1;
-        goto free_long_name_heap;
+        goto free_long_name;
     }
     char const *const short_name = url + short_name_offset;
     repo->short_name_offset = sbuffer->used;
@@ -1912,12 +1905,12 @@ int repo_common_init_from_url(
         pr_error("Failed to add short name '%s' to string buffer\n",
                 url + short_name_offset);
         r = -1;
-        goto free_long_name_heap;
+        goto free_long_name;
     }
     repo->hash_short_name = hash_calculate(short_name, repo->len_short_name);
     r = 0;
-free_long_name_heap:
-    free_if_allocated(long_name_heap);
+free_long_name:
+    lazy_alloc_string_free(&long_name);
     return r;
 }
 
