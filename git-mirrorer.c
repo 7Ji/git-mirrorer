@@ -4089,14 +4089,22 @@ static inline
 int work_handle_link_repo(
     struct work_handle const *const restrict work_handle,
     struct repo_work const *const restrict repo,
-    struct lazy_alloc_string *const restrict link_target
+    struct lazy_alloc_string *const restrict link_target,
+    struct lazy_alloc_string *const restrict link_path
 ) {
     int r = 0;
-    if (link_target_format(link_target, repo->depth_long_name,
-        repo->hash_url_string, HASH_STRING_LEN)) r = -1;
-    else if (ensure_symlink_at(work_handle->dir_repos.linkfd, 
-        work_handle_get_string(repo->long_name),
-        repo->len_long_name, link_target->string)) r = -1;
+    if (lazy_alloc_string_setlen_discard(link_path, repo->len_long_name + 4)) {
+        pr_error("Failed to allocate memory for repo link path\n");
+        r = -1;
+    } else if (link_target_format(link_target, repo->depth_long_name,
+            repo->hash_url_string, HASH_STRING_LEN)) r = -1;
+    else {
+        memcpy(link_path->string, work_handle_get_string(repo->long_name), 
+                repo->len_long_name);
+        memcpy(link_path->string + repo->len_long_name, ".git", 4);
+        if (ensure_symlink_at(work_handle->dir_repos.linkfd, 
+            link_path->string, link_path->len , link_target->string)) r = -1;
+    }
     struct link_handle archive_handle = {.dirfd_links = -1};
     struct link_handle checkout_handle = {.dirfd_links = -1};
     for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
@@ -4122,15 +4130,17 @@ int work_handle_link_all_repos(
         pr_error("No repos defined\n");
         return -1;
     }
-    struct lazy_alloc_string link_target;
+    struct lazy_alloc_string link_target, link_path;
     lazy_alloc_string_init(&link_target);
+    lazy_alloc_string_init(&link_path);
     int r = 0;
     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
         if (work_handle_link_repo(
-            work_handle, work_handle->repos + i, &link_target)) 
+            work_handle, work_handle->repos + i, &link_target, &link_path)) 
             r = -1;
     }
     lazy_alloc_string_free(&link_target);
+    lazy_alloc_string_free(&link_path);
     return r;
 }
 
