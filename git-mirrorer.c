@@ -1826,6 +1826,7 @@ int repo_common_init_from_url(
     long_name[0] = '\0';
 #else
     struct lazy_alloc_string long_name;
+    lazy_alloc_string_init(&long_name);
     if (lazy_alloc_string_setlen_discard(&long_name, len_url + 4)) {
         pr_error("Failed to prepare long name buffer\n");
         return -1;
@@ -2723,20 +2724,12 @@ int mkdir_recursively(
         pr_error("Internal: caller passed NULL pointer or 0-length path\n");
         return -1;
     }
-    char path_stack[0x100]; // 256 is long enough for normal paths
-    char *path_heap = NULL;
-    char *path_dup;
-    if (len_path >= sizeof path_stack) {
-        if (!(path_heap = malloc(len_path + 1))) {
-            pr_error_with_errno("Failed to allocate memory");
-            return -1;
-        }
-        path_dup = path_heap;
-    } else {
-        path_dup = path_stack;
+    struct lazy_alloc_string path_buffer;
+    lazy_alloc_string_init(&path_buffer);
+    if (lazy_alloc_string_replace(&path_buffer, path, len_path)) {
+        pr_error("Failed to prepare path buffer\n");
+        return -1;
     }
-    memcpy(path_dup, path, len_path);
-    path_dup[len_path] = '\0';
     unsigned short from_left = 0;
     int r;
     /* Go from right to reduce mkdir calls */
@@ -2745,14 +2738,14 @@ int mkdir_recursively(
     /* skip redundant mkdir syscalls */
     for (unsigned short i = len_path; i; --i) {
         bool revert_slash = false;
-        switch (path_dup[i]) {
+        switch (path_buffer.string[i]) {
         case '/':
-            path_dup[i] = '\0';
+            path_buffer.string[i] = '\0';
             revert_slash = true;
             __attribute__((fallthrough));
         case '\0':
-            r = mkdir_allow_existing(path_dup);
-            if (revert_slash) path_dup[i] = '/';
+            r = mkdir_allow_existing(path_buffer.string);
+            if (revert_slash) path_buffer.string[i] = '/';
             if (!r) {
                 if (!revert_slash) return 0;
                 from_left = i + 1;
@@ -2764,25 +2757,25 @@ int mkdir_recursively(
 from_left:
     for (unsigned short i = from_left; i < len_path + 1; ++i) {
         bool revert_slash = false;
-        switch (path_dup[i]) {
+        switch (path_buffer.string[i]) {
         case '/':
-            path_dup[i] = '\0';
+            path_buffer.string[i] = '\0';
             revert_slash = true;
             __attribute__((fallthrough));
         case '\0':
-            r = mkdir_allow_existing(path_dup);
-            if (revert_slash) path_dup[i] = '/';
+            r = mkdir_allow_existing(path_buffer.string);
+            if (revert_slash) path_buffer.string[i] = '/';
             if (r) {
-                pr_error("Failed to mkdir '%s'\n", path_dup);
+                pr_error("Failed to mkdir '%s'\n", path_buffer.string);
                 r = -1;
-                goto free_path_heap;
+                goto free_path_buffer;
             }
             break;
         }
     }
     r = 0;
-free_path_heap:
-    free_if_allocated(path_heap);
+free_path_buffer:
+    lazy_alloc_string_free(&path_buffer);
     return r;
 }
 
