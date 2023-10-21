@@ -3910,13 +3910,84 @@ struct link_handle {
 };
 
 static inline
+int work_handle_link_repo_wanted_object_archives(
+    struct work_handle const *const restrict work_handle,
+    struct repo_work const *const restrict repo,
+    struct wanted_object const *const restrict wanted_object,
+    struct link_handle *const restrict archive_handle,
+    struct lazy_alloc_string *const restrict archive_name,
+    struct lazy_alloc_string *const restrict link_target,
+    struct lazy_alloc_string *const restrict link_path
+) {
+    if (archive_handle->dirfd_links < 0 &&
+        (archive_handle->dirfd_links = open_or_create_dir_recursively_at(
+            work_handle->dir_archives.linkfd, 
+            work_handle_get_string(repo->long_name),
+            repo->len_long_name)) < 0) 
+    {
+        pr_error("Failed to open archive repo links dir\n");
+        return -1;
+    }
+    memcpy(archive_name->string, work_handle_get_string(wanted_object->oid_hex), 
+            GIT_OID_HEXSZ);
+    if (link_target_format(link_target, repo->depth_long_name + 1, 
+        archive_name->string, archive_name->len)) 
+    {
+        pr_error("Failed to format archive commit link\n");
+        return -1;
+    }
+    if (ensure_symlink_at(archive_handle->dirfd_links, archive_name->string, 
+        archive_name->len, link_target->string)) 
+    {
+        pr_error("Failed to ensure archive commit link\n");
+        return -1;
+    }
+    return 0;
+}
+
+static inline
+int work_handle_link_repo_wanted_object_checkouts(
+    struct work_handle const *const restrict work_handle,
+    struct repo_work const *const restrict repo,
+    struct wanted_object const *const restrict wanted_object,
+    struct link_handle *const restrict checkout_handle,
+    struct lazy_alloc_string *const restrict link_target,
+    struct lazy_alloc_string *const restrict link_path
+) {
+    if (checkout_handle->dirfd_links < 0 &&
+    (checkout_handle->dirfd_links = open_or_create_dir_recursively_at(
+        work_handle->dir_checkouts.linkfd, 
+        work_handle_get_string(repo->long_name),
+        repo->len_long_name)) < 0) 
+    {
+        pr_error("Failed to open checkout repo links dir\n");
+        return -1;
+    }
+    if (link_target_format(link_target, repo->depth_long_name + 1, 
+        work_handle_get_string(wanted_object->oid_hex), GIT_OID_HEXSZ)) 
+    {
+        pr_error("Failed to format checkout commit link\n");
+        return -1;
+    }
+    if (ensure_symlink_at(checkout_handle->dirfd_links, 
+        work_handle_get_string(wanted_object->oid_hex), GIT_OID_HEXSZ, 
+        link_target->string)) 
+    {
+        pr_error("Failed to ensure checkout commit link\n");
+        return -1;
+    }
+}
+
+static inline
 int work_handle_link_repo_wanted_object(
     struct work_handle const *const restrict work_handle,
     struct repo_work const *const restrict repo,
     struct wanted_object const *const restrict wanted_object,
     struct link_handle *const restrict archive_handle,
     struct link_handle *const restrict checkout_handle,
-    struct lazy_alloc_string *const restrict link_target
+    struct lazy_alloc_string *const restrict archive_name,
+    struct lazy_alloc_string *const restrict link_target,
+    struct lazy_alloc_string *const restrict link_path
 ) {
     /* links/[sanitized url]/[commit hash](archive suffix)
                             /named/[name](a.s.)
@@ -3984,30 +4055,19 @@ int work_handle_link_repo_wanted_object(
             return -1;
         }
     }
-    
-    if (wanted_object->archive) {
-        if (archive_handle->dirfd_links < 0 &&
-            (archive_handle->dirfd_links = open_or_create_dir_recursively_at(
-                work_handle->dir_archives.linkfd, 
-                work_handle_get_string(repo->long_name),
-                repo->len_long_name)) < 0) 
-        {
-            pr_error("Failed to open archive repo links dir\n");
-            return -1;
-        }
+    int r = 0;
+    if (wanted_object->archive && work_handle_link_repo_wanted_object_archives(
+            work_handle, repo, wanted_object, archive_handle, archive_name, 
+            link_target, link_path)) 
+    {
+        r = -1;
     }
-    if (wanted_object->checkout) {
-        if (checkout_handle->dirfd_links < 0 &&
-        (checkout_handle->dirfd_links = open_or_create_dir_recursively_at(
-            work_handle->dir_checkouts.linkfd, 
-            work_handle_get_string(repo->long_name),
-            repo->len_long_name)) < 0) 
-        {
-            pr_error("Failed to open checkout repo links dir\n");
-            return -1;
-        }
+    if (wanted_object->checkout && 
+        work_handle_link_repo_wanted_object_checkouts(work_handle, repo,
+            wanted_object, checkout_handle, link_target, link_path)) 
+    {
+        r = -1;
     }
-    int r = -1;
     // The commit hash one
     // char symlink_path[PATH_MAX] = "";
     // char *symlink_path_current =
@@ -4081,7 +4141,6 @@ int work_handle_link_repo_wanted_object(
     //         }
     //     }
     // }
-    r = 0;
     return r;
 }
 
@@ -4089,6 +4148,7 @@ static inline
 int work_handle_link_repo(
     struct work_handle const *const restrict work_handle,
     struct repo_work const *const restrict repo,
+    struct lazy_alloc_string *archive_name,
     struct lazy_alloc_string *const restrict link_target,
     struct lazy_alloc_string *const restrict link_path
 ) {
@@ -4110,7 +4170,7 @@ int work_handle_link_repo(
     for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
         if (work_handle_link_repo_wanted_object(work_handle, repo, 
             repo->wanted_objects + i, &archive_handle, &checkout_handle, 
-            link_target)) r = -1;
+            archive_name, link_target, link_path)) r = -1;
     }
     if (archive_handle.dirfd_links >= 0 && close(archive_handle.dirfd_links)) {
         pr_error_with_errno("Failed to close archive links fd");
@@ -4130,17 +4190,27 @@ int work_handle_link_all_repos(
         pr_error("No repos defined\n");
         return -1;
     }
-    struct lazy_alloc_string link_target, link_path;
+    struct lazy_alloc_string link_target, link_path, archive_name;
+    if (lazy_alloc_string_init_len(&archive_name, 
+        GIT_OID_HEXSZ + work_handle->len_archive_suffix)) 
+    {
+        pr_error("Failed to allocate memory for long archive name\n");
+        return -1;
+    }
+    memcpy(archive_name.string + GIT_OID_HEXSZ, 
+        work_handle_get_string(work_handle->archive_suffix), 
+        work_handle->len_archive_suffix);
     lazy_alloc_string_init(&link_target);
     lazy_alloc_string_init(&link_path);
     int r = 0;
     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-        if (work_handle_link_repo(
-            work_handle, work_handle->repos + i, &link_target, &link_path)) 
+        if (work_handle_link_repo(work_handle, work_handle->repos + i, 
+                &archive_name, &link_target, &link_path)) 
             r = -1;
     }
     lazy_alloc_string_free(&link_target);
     lazy_alloc_string_free(&link_path);
+    lazy_alloc_string_free(&archive_name);
     return r;
 }
 
