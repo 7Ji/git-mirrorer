@@ -3918,6 +3918,8 @@ int repo_work_link(
     int const linkfd_repos,
     int const linkfd_archives,
     int const linkfd_checkouts,
+    char const *const restrict archive_suffix,
+    unsigned short const len_archive_suffix,
     char const *const restrict sbuffer
 ) {
     int r = 0;
@@ -3941,8 +3943,10 @@ int repo_work_link(
                 link_branches_dir = false;
         char const *subdir = NULL;
         unsigned short len_subdir = 0;
-        char const *const restrict name = sbuffer + wanted_object->name_offset;
-        unsigned short depth_subdir = 0;
+        char const *name = sbuffer + wanted_object->name_offset;
+        unsigned short len_name = wanted_object->len_name;
+        unsigned short depth_name = 0;
+        bool check_name_depth = false;
         switch (wanted_object->type) {
             case WANTED_TYPE_UNKNOWN:
                 pr_error("Wanted type unknown for '%s'\n", name);
@@ -3955,13 +3959,15 @@ int repo_work_link(
                 link_branches_dir = true;
                 subdir = "refs/heads/";
                 len_subdir = 11;
-                depth_subdir = 2;
+                depth_name = 2;
+                check_name_depth = true;
                 break;
             case WANTED_TYPE_TAG:
                 link_tags_dir = true;
                 subdir = "refs/tags/";
-                len_subdir = 11;
-                depth_subdir = 2;
+                len_subdir = 10;
+                depth_name = 2;
+                check_name_depth = true;
                 break;
             case WANTED_TYPE_REFERENCE:
                 if (!strncmp(name, "refs/", 5)) {
@@ -3971,10 +3977,26 @@ int repo_work_link(
                     else if (!strncmp(ref_kind, "tags/", 5))
                         link_tags_dir = true;
                 }
+                check_name_depth = true;
                 break;
             case WANTED_TYPE_COMMIT:
-            case WANTED_TYPE_HEAD:
                 break;
+            case WANTED_TYPE_HEAD:
+                name = "HEAD";
+                len_name = 4;
+                break;
+        }
+        if (check_name_depth) {
+            for (unsigned short i = 0; i < wanted_object->len_name; ++i) {
+                switch (name[i]) {
+                case '/':
+                    ++depth_name;
+                    break;
+                case '\0':
+                    pr_error("Name '%s' ends pre-maturely\n", name);
+                    r = -1;
+                }
+            }
         }
         if (link_branches_dir) {
             if (wanted_object->archive) archive_handle.link_branches_dir = true;
@@ -3983,16 +4005,6 @@ int repo_work_link(
         if (link_tags_dir) {
             if (wanted_object->archive) archive_handle.link_tags_dir = true;
             if (wanted_object->checkout) checkout_handle.link_tags_dir = true;
-        }
-        for (unsigned short i = 0; i < wanted_object->len_name; ++i) {
-            switch (name[i]) {
-            case '/':
-                ++depth_subdir;
-                break;
-            case '\0':
-                pr_error("Name '%s' ends pre-maturely\n", name);
-                r = -1;
-            }
         }
         char const *const oid_hex = sbuffer + wanted_object->oid_hex_offset;
         if (wanted_object->archive) {
@@ -4003,19 +4015,43 @@ int repo_work_link(
             {
                 pr_error("Failed to open archive repo links dir\n");
                 r = -1;
-            } else {
-                memcpy(archive_name->string, oid_hex, GIT_OID_HEXSZ);
-                if (link_target_format(link_target, repo->depth_long_name + 1, 
-                    archive_name->string, archive_name->len) ||
-                    ensure_symlink_at(archive_handle.dirfd_links, 
-                    archive_name->string, archive_name->len, 
-                    link_target->string)) 
-                {
-                    pr_error("Failed to ensure archive commit link\n");
-                    r = -1;
-                }
+                goto link_commit;
+            }
+            memcpy(archive_name->string, oid_hex, GIT_OID_HEXSZ);
+            if (link_target_format(link_target, repo->depth_long_name + 1, 
+                archive_name->string, archive_name->len) ||
+                ensure_symlink_at(archive_handle.dirfd_links, 
+                archive_name->string, archive_name->len, 
+                link_target->string)) 
+            {
+                pr_error("Failed to ensure archive commit link\n");
+                r = -1;
+            }
+            if (wanted_object->type == WANTED_TYPE_COMMIT) goto link_commit;
+            if (lazy_alloc_string_setlen_discard(link_path, len_subdir + 
+                len_name + len_archive_suffix)) 
+            {
+                pr_error("Failed to prepare link path buffer\n");
+                r = -1;
+                goto link_commit;
+            }
+            if (len_subdir) memcpy(link_path->string, subdir, len_subdir);
+            memcpy(link_path->string + len_subdir, name, len_name);
+            if (len_archive_suffix) memcpy(
+                link_path->string + len_subdir + len_name, archive_suffix, 
+                    len_archive_suffix);
+            if (link_target_format(link_target, 
+                repo->depth_long_name + 1 + depth_name, 
+                archive_name->string, archive_name->len) ||
+                ensure_symlink_at(archive_handle.dirfd_links, 
+                link_path->string, link_path->len,
+                link_target->string)) 
+            {
+                pr_error("Failed to ensure archive named link\n");
+                r = -1;
             }
         }
+link_commit:
         if (wanted_object->checkout) {
             if (checkout_handle.dirfd_links < 0 &&
                (checkout_handle.dirfd_links = open_or_create_dir_recursively_at(
@@ -4024,15 +4060,34 @@ int repo_work_link(
             {
                 pr_error("Failed to open checkout repo links dir\n");
                 r = -1;
-            } else {
-                if (link_target_format(link_target, repo->depth_long_name + 1,
-                    oid_hex, GIT_OID_HEXSZ) ||
-                    ensure_symlink_at(checkout_handle.dirfd_links, oid_hex, 
-                    GIT_OID_HEXSZ, link_target->string)) 
-                {
-                    pr_error("Failed to ensure checkout commit link\n");
-                    return -1;
-                }
+                continue;
+            }
+            if (link_target_format(link_target, repo->depth_long_name + 1,
+                oid_hex, GIT_OID_HEXSZ) ||
+                ensure_symlink_at(checkout_handle.dirfd_links, oid_hex, 
+                GIT_OID_HEXSZ, link_target->string)) 
+            {
+                pr_error("Failed to ensure checkout commit link\n");
+                r = -1;
+            }
+            if (wanted_object->type == WANTED_TYPE_COMMIT) continue;
+            if (lazy_alloc_string_setlen_discard(link_path,len_subdir+len_name)) 
+            {
+                pr_error("Failed to prepare link path buffer\n");
+                r = -1;
+                continue;
+            }
+            if (len_subdir) memcpy(link_path->string, subdir, len_subdir);
+            memcpy(link_path->string + len_subdir, name, len_name);
+            if (link_target_format(link_target, 
+                repo->depth_long_name + 1 + depth_name, 
+                oid_hex, GIT_OID_HEXSZ) ||
+                ensure_symlink_at(checkout_handle.dirfd_links, 
+                link_path->string, link_path->len,
+                link_target->string)) 
+            {
+                pr_error("Failed to ensure archive named link\n");
+                r = -1;
             }
         }
     }
@@ -4061,9 +4116,10 @@ int work_handle_link_all_repos(
         pr_error("Failed to allocate memory for long archive name\n");
         return -1;
     }
-    memcpy(archive_name.string + GIT_OID_HEXSZ, 
-        work_handle_get_string(work_handle->archive_suffix), 
-        work_handle->len_archive_suffix);
+    char const *const restrict archive_suffix = 
+        work_handle_get_string(work_handle->archive_suffix);
+    memcpy(archive_name.string + GIT_OID_HEXSZ, archive_suffix, 
+            work_handle->len_archive_suffix);
     lazy_alloc_string_init(&link_target);
     lazy_alloc_string_init(&link_path);
     int r = 0;
@@ -4073,6 +4129,8 @@ int work_handle_link_all_repos(
                 work_handle->dir_repos.linkfd,
                 work_handle->dir_archives.linkfd,
                 work_handle->dir_checkouts.linkfd,
+                archive_suffix,
+                work_handle->len_archive_suffix,
                 work_handle->string_buffer.buffer)) 
             r = -1;
     }
