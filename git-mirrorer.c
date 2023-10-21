@@ -900,7 +900,7 @@ void lazy_alloc_string_init_maxed(
     string->stack[0] = '\0';
     string->heap = NULL;
     string->string = string->stack;
-    string->len = LAZY_ALLOC_STRING_STACK_SIZE;
+    string->len = LAZY_ALLOC_STRING_STACK_SIZE - 1;
     string->alloc = 0;
 }
 
@@ -3767,12 +3767,14 @@ int check_symlink_at(
     char const *const restrict symlink_path,
     char const *const restrict symlink_target
 ) {
-    struct lazy_alloc_string actual_target;
-    lazy_alloc_string_init_maxed(&actual_target);
+    char actual_target_stack[0x100];
+    char *actual_target_heap = NULL;
+    char *actual_target = actual_target_stack;
+    ssize_t buffer_size = 0x100;
     ssize_t len;
     int r;
     while ((len = readlinkat(links_dirfd, symlink_path, 
-                    actual_target.string, actual_target.len)) >= actual_target.len) {
+                    actual_target, buffer_size)) >= buffer_size) {
         /* Just in case target is too long */
         buffer_size *= ALLOC_MULTIPLIER;
         if (actual_target_heap) free(actual_target_heap);
