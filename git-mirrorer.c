@@ -5389,23 +5389,10 @@ int work_handle_parse_repo_commit_blob_gitmodules(
         pr_error("Tree entry .gitmodules blob size is 0\n");
         return -1;
     }
-    char name_stack[0x100],
-         path_stack[0x100],
-         url_stack[0x100],
-         *name_heap = NULL,
-         *path_heap = NULL,
-         *url_heap = NULL,
-         *name = name_stack,
-         *path = path_stack,
-         *url = url_stack;
-    unsigned short  len_path = 0,
-                    len_url = 0,
-                    name_allocated = 0x100,
-                    path_allocated = 0x100,
-                    url_allocated = 0x100;
-    name[0] = '\0';
-    path[0] = '\0';
-    url[0] = '\0';
+    struct lazy_alloc_string name, path, url;
+    lazy_alloc_string_init(&name);
+    lazy_alloc_string_init(&path);
+    lazy_alloc_string_init(&url);
     int r;
     for (git_object_size_t start = 0; start < len_all; ) {
         switch (buffer_all[start]) {
@@ -5438,8 +5425,9 @@ int work_handle_parse_repo_commit_blob_gitmodules(
         switch (buffer_all[start]) {
         case '[':
             if (!strncmp(line + 1, "submodule \"", 11)) {
-                if (name[0]) {
-                    pr_error("Incomplete submodule definition for '%s'\n",name);
+                if (name.string[0]) {
+                    pr_error("Incomplete submodule definition for '%s'\n",
+                            name.string);
                     r = -1;
                     goto free_heap;
                 }
@@ -5448,87 +5436,62 @@ int work_handle_parse_repo_commit_blob_gitmodules(
                 for (;
                     *right_quote != '"' && right_quote < line_end;
                     ++right_quote);
-                unsigned short len_name = 
-                    right_quote - name_start;
-                if (len_name >= name_allocated) {
-                    name_allocated = (len_name + 2) / 0x1000  * 0x1000;
-                    if (name_heap) free(name_heap);
-                    if (!(name_heap = malloc(name_allocated))) {
-                        pr_error_with_errno("Failed to allocate memory for long"
-                            " submodule name");
-                        r = -1;
-                        goto free_heap;
-                    }
-                    name = name_heap;
+                if (lazy_alloc_string_replace(&name, name_start, 
+                    right_quote - name_start)) 
+                {
+                    pr_error("Failed to copy parsed submodule name");
+                    r = -1;
+                    goto free_heap;
                 }
-                memcpy(name, name_start, len_name);
-                name[len_name] = '\0';
             }
             break;
         case '\t':
             char const *parsing_value = NULL;
-            char **value = NULL;
-            char **value_heap = NULL;
-            unsigned short *len_value = NULL;
-            unsigned short *value_allocated = NULL;
+            struct lazy_alloc_string *value = NULL;
             if (!strncmp(line + 1, "path = ", 7)) {
                 parsing_value = line + 8;
                 value = &path;
-                value_heap = &path_heap;
-                len_value = &len_path;
-                value_allocated = &path_allocated;
             } else if (!strncmp(line + 1, "url = ", 6)) {
                 parsing_value = line + 7;
                 value = &url;
-                value_heap = &url_heap;
-                len_value = &len_url;
-                value_allocated = &url_allocated;
             }
             if (!value) {
                 break;
             }
-            if (!name[0]) {
+            if (!name.string[0]) {
                 pr_error("Submodule definition begins before the submodule "
                           "name\n");
                 r = -1;
                 goto free_heap;
             }
-            if ((*value)[0]) {
+            if (value->string[0]) {
                 pr_error("Duplicated value definition for submodule '%s'\n", 
-                        name);
+                        name.string);
                 r = -1;
                 goto free_heap;
             }
-            *len_value = line_end - parsing_value;
-            if (*len_value >= *value_allocated) {
-                *value_allocated = (*len_value + 2) / 0x1000  * 0x1000;
-                if (*value_heap) free(*value_heap);
-                if (!(*value_heap = malloc(*value_allocated))) {
-                    pr_error_with_errno("Failed to allocate memory for long"
-                        " submodule value");
-                    r = -1;
-                    goto free_heap;
-                }
-                *value = *value_heap;
+            if (lazy_alloc_string_replace(value, parsing_value, 
+                    line_end - parsing_value)) 
+            {
+                pr_error("Failed to copy parsed value\n");
+                r = -1;
+                goto free_heap;
             }
-            memcpy(*value, parsing_value, *len_value);
-            (*value)[*len_value] = '\0';
-            if (path[0] && url[0]); else break;
-            if (!memcmp(url + len_url - 4, ".git", 4)) {
-                len_url -= 4;
-                url[len_url] = '\0';
+            if (path.string[0] && url.string[0]); else break;
+            if (!memcmp(url.string + url.len - 4, ".git", 4)) {
+                url.string[url.len -= 4] = '\0';
             }
-            pr_info("Submodule '%s', path '%s', url '%s'\n", name, path, url);
             if (work_handle_parse_repo_commit_submodule_in_tree(work_handle, 
-                repo_id, commit_id, tree, path, len_path, url, len_url)) 
+                repo_id, commit_id, tree, path.string, path.len, 
+                url.string, url.len)) 
             {
                 pr_error("Failed to add parse commit submodule in tree");
                 r = -1;
                 goto free_heap;
             }
-            name[0] = '\0';
-            path[0] = '\0';
-            url[0] = '\0';
+            name.string[0] = '\0';
+            path.string[0] = '\0';
+            url.string[0] = '\0';
             break;
         default:
             break;
@@ -5537,9 +5500,9 @@ int work_handle_parse_repo_commit_blob_gitmodules(
     }
     r = 0;
 free_heap:
-    free_if_allocated(name_heap);
-    free_if_allocated(path_heap);
-    free_if_allocated(url_heap);
+    lazy_alloc_string_free(&name);
+    lazy_alloc_string_free(&path);
+    lazy_alloc_string_free(&url);
     return r;
 }
 
