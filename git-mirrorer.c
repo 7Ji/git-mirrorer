@@ -3910,28 +3910,19 @@ struct link_handle {
 };
 
 static inline
-int work_handle_link_repo_wanted_object_archives(
-    struct work_handle const *const restrict work_handle,
-    struct repo_work const *const restrict repo,
+int wanted_object_link_archive(
     struct wanted_object const *const restrict wanted_object,
     struct link_handle *const restrict archive_handle,
     struct lazy_alloc_string *const restrict archive_name,
     struct lazy_alloc_string *const restrict link_target,
-    struct lazy_alloc_string *const restrict link_path
+    struct lazy_alloc_string *const restrict link_path,
+    char const *const restrict sbuffer,
+    unsigned short const depth
 ) {
-    if (archive_handle->dirfd_links < 0 &&
-        (archive_handle->dirfd_links = open_or_create_dir_recursively_at(
-            work_handle->dir_archives.linkfd, 
-            work_handle_get_string(repo->long_name),
-            repo->len_long_name)) < 0) 
-    {
-        pr_error("Failed to open archive repo links dir\n");
-        return -1;
-    }
-    memcpy(archive_name->string, work_handle_get_string(wanted_object->oid_hex), 
-            GIT_OID_HEXSZ);
-    if (link_target_format(link_target, repo->depth_long_name + 1, 
-        archive_name->string, archive_name->len)) 
+    char const *const oid_hex = sbuffer + wanted_object->oid_hex_offset;
+    memcpy(archive_name->string, oid_hex, GIT_OID_HEXSZ);
+    if (link_target_format(link_target, depth,  archive_name->string,
+                            archive_name->len)) 
     {
         pr_error("Failed to format archive commit link\n");
         return -1;
@@ -3946,211 +3937,38 @@ int work_handle_link_repo_wanted_object_archives(
 }
 
 static inline
-int work_handle_link_repo_wanted_object_checkouts(
-    struct work_handle const *const restrict work_handle,
-    struct repo_work const *const restrict repo,
+int wanted_object_link_checkout(
     struct wanted_object const *const restrict wanted_object,
     struct link_handle *const restrict checkout_handle,
     struct lazy_alloc_string *const restrict link_target,
-    struct lazy_alloc_string *const restrict link_path
+    struct lazy_alloc_string *const restrict link_path,
+    char const *const restrict sbuffer,
+    unsigned short const depth
 ) {
-    if (checkout_handle->dirfd_links < 0 &&
-    (checkout_handle->dirfd_links = open_or_create_dir_recursively_at(
-        work_handle->dir_checkouts.linkfd, 
-        work_handle_get_string(repo->long_name),
-        repo->len_long_name)) < 0) 
-    {
-        pr_error("Failed to open checkout repo links dir\n");
-        return -1;
-    }
-    if (link_target_format(link_target, repo->depth_long_name + 1, 
-        work_handle_get_string(wanted_object->oid_hex), GIT_OID_HEXSZ)) 
+    char const *const oid_hex = sbuffer + wanted_object->oid_hex_offset;
+    if (link_target_format(link_target, depth, oid_hex, GIT_OID_HEXSZ)) 
     {
         pr_error("Failed to format checkout commit link\n");
         return -1;
     }
-    if (ensure_symlink_at(checkout_handle->dirfd_links, 
-        work_handle_get_string(wanted_object->oid_hex), GIT_OID_HEXSZ, 
+    if (ensure_symlink_at(checkout_handle->dirfd_links, oid_hex, GIT_OID_HEXSZ, 
         link_target->string)) 
     {
         pr_error("Failed to ensure checkout commit link\n");
         return -1;
     }
+    return 0;
 }
-
 static inline
-int work_handle_link_repo_wanted_object(
-    struct work_handle const *const restrict work_handle,
-    struct repo_work const *const restrict repo,
-    struct wanted_object const *const restrict wanted_object,
-    struct link_handle *const restrict archive_handle,
-    struct link_handle *const restrict checkout_handle,
-    struct lazy_alloc_string *const restrict archive_name,
-    struct lazy_alloc_string *const restrict link_target,
-    struct lazy_alloc_string *const restrict link_path
-) {
-    /* links/[sanitized url]/[commit hash](archive suffix)
-                            /named/[name](a.s.)
-                            /tags -> refs/tags
-                            /branches -> refs/heads
-     undetermimed layers -> /refs/[ref name](a.s.)
-                            /HEAD(a.s.)
-    */
-    bool    link_tags_dir = false,
-            link_branches_dir = false;
-    char const *dir_link = "";
-    // E.g.
-    //  archive: archives/abcdef.tar.gz
-    //  link: archives/links/github.com/user/repo/abcdeg.tar.gz
-    //  target: ../../../../abcdef.tar.gz
-    //   github.com/user/repo has 3 parts, depth is 4
-    char const *const restrict name = 
-        work_handle_get_string(wanted_object->name);
-    unsigned short link_depth = repo->depth_long_name + 1;
-    switch (wanted_object->type) {
-        case WANTED_TYPE_UNKNOWN:
-            pr_error("Wanted type unknown for '%s'\n", name);
-            return -1;
-        case WANTED_TYPE_ALL_BRANCHES:
-        case WANTED_TYPE_ALL_TAGS:
-            return 0;
-        case WANTED_TYPE_BRANCH:
-            link_branches_dir = true;
-            dir_link = "refs/heads/";
-            link_depth += 2;
-            break;
-        case WANTED_TYPE_TAG:
-            link_tags_dir = true;
-            dir_link = "refs/tags/";
-            link_depth += 2;
-            break;
-        case WANTED_TYPE_REFERENCE:
-            if (!strncmp(name, "refs/", 5)) {
-                char const *const ref_kind = name + 5;
-                if (!strncmp(ref_kind, "heads/", 6))
-                    link_branches_dir = true;
-                else if (!strncmp(ref_kind, "tags/", 5))
-                    link_tags_dir = true;
-            }
-            break;
-        case WANTED_TYPE_COMMIT:
-        case WANTED_TYPE_HEAD:
-            break;
-    }
-    if (link_branches_dir) {
-        if (wanted_object->archive) archive_handle->link_branches_dir = true;
-        if (wanted_object->checkout) checkout_handle->link_branches_dir = true;
-    }
-    if (link_tags_dir) {
-        if (wanted_object->archive) archive_handle->link_tags_dir = true;
-        if (wanted_object->checkout) checkout_handle->link_tags_dir = true;
-    }
-    for (unsigned short i = 0; i < wanted_object->len_name; ++i) {
-        switch (name[i]) {
-        case '/':
-            ++link_depth;
-            break;
-        case '\0':
-            pr_error("Name '%s' ends pre-maturely\n", name);
-            return -1;
-        }
-    }
-    int r = 0;
-    if (wanted_object->archive && work_handle_link_repo_wanted_object_archives(
-            work_handle, repo, wanted_object, archive_handle, archive_name, 
-            link_target, link_path)) 
-    {
-        r = -1;
-    }
-    if (wanted_object->checkout && 
-        work_handle_link_repo_wanted_object_checkouts(work_handle, repo,
-            wanted_object, checkout_handle, link_target, link_path)) 
-    {
-        r = -1;
-    }
-    // The commit hash one
-    // char symlink_path[PATH_MAX] = "";
-    // char *symlink_path_current =
-    //     stpcpy(symlink_path, wanted_object->hex_string);
-    // // unsigned short len_symlink_path = HASH_STRING_LEN;
-    // char symlink_target[PATH_MAX] = "";
-    // char *symlink_target_current = symlink_target;
-    // for (unsigned short i = 0; i < repo->url_no_scheme_sanitized_parts+1; ++i) {
-    //     symlink_target_current = stpcpy(symlink_target_current, "../");
-    // }
-    // symlink_target_current = stpcpy(symlink_target_current,
-    //                                 wanted_object->hex_string);
-    // if (checkout && guarantee_symlink_at(
-    //     checkouts_repo_links_dirfd,
-    //     symlink_path, HASH_STRING_LEN,
-    //     symlink_target)) {
-    //     goto close_checkouts_repo_links_dirfd;
-    // }
-    // if (archive) {
-    //     if (archive_suffix[0] == '\0' && guarantee_symlink_at(
-    //         archives_repo_links_dirfd,
-    //         symlink_path, HASH_STRING_LEN,
-    //         symlink_target)) {
-    //         goto close_checkouts_repo_links_dirfd;
-    //     } else {
-    //         strcpy(symlink_path_current, archive_suffix);
-    //         strcpy(symlink_target_current, archive_suffix);
-    //         if (guarantee_symlink_at(
-    //             archives_repo_links_dirfd,
-    //             symlink_path, HASH_STRING_LEN + len_archive_suffix,
-    //             symlink_target)) {
-    //             goto close_checkouts_repo_links_dirfd;
-    //         }
-    //     }
-    // }
-
-    // // The named one
-    // if (wanted_object->type != WANTED_TYPE_COMMIT) {
-    //     char *symlink_path_current = stpcpy(symlink_path, dir_link);
-    //     symlink_path_current =
-    //         stpcpy(symlink_path_current, wanted_object->name);
-    //     unsigned short len_symlink_path = symlink_path_current - symlink_path;
-    //     char *symlink_target_current = symlink_target;
-    //     for (unsigned short i = 0; i < link_depth; ++i) {
-    //         symlink_target_current = stpcpy(symlink_target_current, "../");
-    //     }
-    //     symlink_target_current = stpcpy(
-    //         symlink_target_current,
-    //         wanted_object->hex_string);
-    //     if (checkout && guarantee_symlink_at(
-    //         checkouts_repo_links_dirfd,
-    //         symlink_path, len_symlink_path,
-    //         symlink_target)) {
-    //         goto close_checkouts_repo_links_dirfd;
-    //     }
-    //     if (archive) {
-    //         if (archive_suffix[0] == '\0' && guarantee_symlink_at(
-    //             archives_repo_links_dirfd,
-    //             symlink_path, len_symlink_path,
-    //             symlink_target)) {
-    //             goto close_checkouts_repo_links_dirfd;
-    //         } else {
-    //             strcpy(symlink_path_current, archive_suffix);
-    //             strcpy(symlink_target_current, archive_suffix);
-    //             if (guarantee_symlink_at(
-    //                 archives_repo_links_dirfd,
-    //                 symlink_path, wanted_object->len_name + len_archive_suffix,
-    //                 symlink_target)) {
-    //                 goto close_checkouts_repo_links_dirfd;
-    //             }
-    //         }
-    //     }
-    // }
-    return r;
-}
-
-static inline
-int work_handle_link_repo(
-    struct work_handle const *const restrict work_handle,
+int repo_work_link(
     struct repo_work const *const restrict repo,
     struct lazy_alloc_string *archive_name,
     struct lazy_alloc_string *const restrict link_target,
-    struct lazy_alloc_string *const restrict link_path
+    struct lazy_alloc_string *const restrict link_path,
+    int const linkfd_repos,
+    int const linkfd_archives,
+    int const linkfd_checkouts,
+    char const *const restrict sbuffer
 ) {
     int r = 0;
     if (lazy_alloc_string_setlen_discard(link_path, repo->len_long_name + 4)) {
@@ -4159,18 +3977,103 @@ int work_handle_link_repo(
     } else if (link_target_format(link_target, repo->depth_long_name,
             repo->hash_url_string, HASH_STRING_LEN)) r = -1;
     else {
-        memcpy(link_path->string, work_handle_get_string(repo->long_name), 
+        memcpy(link_path->string, sbuffer + repo->long_name_offset, 
                 repo->len_long_name);
         memcpy(link_path->string + repo->len_long_name, ".git", 4);
-        if (ensure_symlink_at(work_handle->dir_repos.linkfd, 
+        if (ensure_symlink_at(linkfd_repos, 
             link_path->string, link_path->len , link_target->string)) r = -1;
     }
     struct link_handle archive_handle = {.dirfd_links = -1};
     struct link_handle checkout_handle = {.dirfd_links = -1};
     for (unsigned long i = 0; i < repo->wanted_objects_count; ++i) {
-        if (work_handle_link_repo_wanted_object(work_handle, repo, 
-            repo->wanted_objects + i, &archive_handle, &checkout_handle, 
-            archive_name, link_target, link_path)) r = -1;
+        struct wanted_object *wanted_object = repo->wanted_objects + i;
+        bool    link_tags_dir = false,
+                link_branches_dir = false;
+        char const *dir_link = "";
+        char const *const restrict name = sbuffer + wanted_object->name_offset;
+        unsigned short link_depth = repo->depth_long_name + 1;
+        switch (wanted_object->type) {
+            case WANTED_TYPE_UNKNOWN:
+                pr_error("Wanted type unknown for '%s'\n", name);
+                r = -1;
+                continue;
+            case WANTED_TYPE_ALL_BRANCHES:
+            case WANTED_TYPE_ALL_TAGS:
+                continue;
+            case WANTED_TYPE_BRANCH:
+                link_branches_dir = true;
+                dir_link = "refs/heads/";
+                link_depth += 2;
+                break;
+            case WANTED_TYPE_TAG:
+                link_tags_dir = true;
+                dir_link = "refs/tags/";
+                link_depth += 2;
+                break;
+            case WANTED_TYPE_REFERENCE:
+                if (!strncmp(name, "refs/", 5)) {
+                    char const *const ref_kind = name + 5;
+                    if (!strncmp(ref_kind, "heads/", 6))
+                        link_branches_dir = true;
+                    else if (!strncmp(ref_kind, "tags/", 5))
+                        link_tags_dir = true;
+                }
+                break;
+            case WANTED_TYPE_COMMIT:
+            case WANTED_TYPE_HEAD:
+                break;
+        }
+        if (link_branches_dir) {
+            if (wanted_object->archive) archive_handle.link_branches_dir = true;
+            if (wanted_object->checkout) checkout_handle.link_branches_dir=true;
+        }
+        if (link_tags_dir) {
+            if (wanted_object->archive) archive_handle.link_tags_dir = true;
+            if (wanted_object->checkout) checkout_handle.link_tags_dir = true;
+        }
+        for (unsigned short i = 0; i < wanted_object->len_name; ++i) {
+            switch (name[i]) {
+            case '/':
+                ++link_depth;
+                break;
+            case '\0':
+                pr_error("Name '%s' ends pre-maturely\n", name);
+                r = -1;
+            }
+        }
+        if (wanted_object->archive) {
+            if (archive_handle.dirfd_links < 0 &&
+                (archive_handle.dirfd_links = open_or_create_dir_recursively_at(
+                    linkfd_archives, sbuffer + repo->long_name_offset,
+                    repo->len_long_name)) < 0) 
+            {
+                pr_error("Failed to open archive repo links dir\n");
+                r = -1;
+            } else if (wanted_object_link_archive(wanted_object,&archive_handle,
+                archive_name, link_target, link_path, sbuffer, 
+                repo->depth_long_name + 1))
+            {
+                pr_error("Failed to link archive\n");
+                r = -1;
+            }
+
+        }
+        if (wanted_object->checkout) {
+            if (checkout_handle.dirfd_links < 0 &&
+               (checkout_handle.dirfd_links = open_or_create_dir_recursively_at(
+                    linkfd_checkouts, sbuffer + repo->long_name_offset,
+                    repo->len_long_name)) < 0) 
+            {
+                pr_error("Failed to open checkout repo links dir\n");
+                r = -1;
+            } else if (wanted_object_link_checkout(wanted_object, 
+                &checkout_handle, link_target, link_path, sbuffer,
+                repo->depth_long_name + 1))
+            {
+                pr_error("Failed to link checkout\n");
+                r = -1;
+            }
+        }
     }
     if (archive_handle.dirfd_links >= 0 && close(archive_handle.dirfd_links)) {
         pr_error_with_errno("Failed to close archive links fd");
@@ -4204,8 +4107,12 @@ int work_handle_link_all_repos(
     lazy_alloc_string_init(&link_path);
     int r = 0;
     for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
-        if (work_handle_link_repo(work_handle, work_handle->repos + i, 
-                &archive_name, &link_target, &link_path)) 
+        if (repo_work_link(work_handle->repos + i, 
+                &archive_name, &link_target, &link_path,
+                work_handle->dir_repos.linkfd,
+                work_handle->dir_archives.linkfd,
+                work_handle->dir_checkouts.linkfd,
+                work_handle->string_buffer.buffer)) 
             r = -1;
     }
     lazy_alloc_string_free(&link_target);
