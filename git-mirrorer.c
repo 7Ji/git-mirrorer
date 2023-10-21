@@ -3904,10 +3904,33 @@ int link_target_format(
 
 struct link_handle {
     int dirfd_links;
-    bool need;
     bool link_branches_dir;
     bool link_tags_dir;
 };
+
+int link_handle_finish(
+    struct link_handle const *const restrict link_handle
+) {
+    if (link_handle->dirfd_links < 0) return 0;
+    int r = 0;
+    if (link_handle->link_branches_dir &&
+        ensure_symlink_at(link_handle->dirfd_links,"branches",8,"refs/heads")) 
+    {
+        pr_error("Failed to link branches to refs/heads\n");
+        r = -1;
+    }
+    if (link_handle->link_tags_dir &&
+        ensure_symlink_at(link_handle->dirfd_links, "tags", 4, "refs/tags")) 
+    {
+        pr_error("Failed to link tags to refs/heads\n");
+        r = -1;
+    }
+    if (close(link_handle->dirfd_links)) {
+        pr_error_with_errno("Failed to close link dir fd");
+        r = -1;
+    }
+    return r;
+}
 
 static inline
 int repo_work_link(
@@ -4091,12 +4114,12 @@ link_commit:
             }
         }
     }
-    if (archive_handle.dirfd_links >= 0 && close(archive_handle.dirfd_links)) {
-        pr_error_with_errno("Failed to close archive links fd");
+    if (link_handle_finish(&archive_handle)) {
+        pr_error("Failed to finish archive links\n");
         r = -1;
     }
-    if (checkout_handle.dirfd_links >= 0 && close(checkout_handle.dirfd_links)){
-        pr_error_with_errno("Failed to close checkout links fd");
+    if (link_handle_finish(&checkout_handle)) {
+        pr_error("Failed to finish checkout links\n");
         r = -1;
     }
     return r;
