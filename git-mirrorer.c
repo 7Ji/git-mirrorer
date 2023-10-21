@@ -5429,7 +5429,7 @@ int work_handle_parse_repo_commit_blob_gitmodules(
                     pr_error("Incomplete submodule definition for '%s'\n",
                             name.string);
                     r = -1;
-                    goto free_heap;
+                    goto free_string;
                 }
                 char const *name_start = line + 12;
                 char const *right_quote = name_start;
@@ -5441,7 +5441,7 @@ int work_handle_parse_repo_commit_blob_gitmodules(
                 {
                     pr_error("Failed to copy parsed submodule name");
                     r = -1;
-                    goto free_heap;
+                    goto free_string;
                 }
             }
             break;
@@ -5462,20 +5462,20 @@ int work_handle_parse_repo_commit_blob_gitmodules(
                 pr_error("Submodule definition begins before the submodule "
                           "name\n");
                 r = -1;
-                goto free_heap;
+                goto free_string;
             }
             if (value->string[0]) {
                 pr_error("Duplicated value definition for submodule '%s'\n", 
                         name.string);
                 r = -1;
-                goto free_heap;
+                goto free_string;
             }
             if (lazy_alloc_string_replace(value, parsing_value, 
                     line_end - parsing_value)) 
             {
                 pr_error("Failed to copy parsed value\n");
                 r = -1;
-                goto free_heap;
+                goto free_string;
             }
             if (path.string[0] && url.string[0]); else break;
             if (!memcmp(url.string + url.len - 4, ".git", 4)) {
@@ -5487,7 +5487,7 @@ int work_handle_parse_repo_commit_blob_gitmodules(
             {
                 pr_error("Failed to add parse commit submodule in tree");
                 r = -1;
-                goto free_heap;
+                goto free_string;
             }
             name.string[0] = '\0';
             path.string[0] = '\0';
@@ -5499,7 +5499,7 @@ int work_handle_parse_repo_commit_blob_gitmodules(
         start = end + 1;
     }
     r = 0;
-free_heap:
+free_string:
     lazy_alloc_string_free(&name);
     lazy_alloc_string_free(&path);
     lazy_alloc_string_free(&url);
@@ -6750,20 +6750,15 @@ int repo_commit_pairs_filter_need_export(
     char const *const restrict archive_suffix,
     unsigned short const len_archive_suffix
 ) {
-    char name_archive_stack[0x100];
-    char *name_archive_heap = NULL;
-    char *name_archive;
-    unsigned short len_name_archive = GIT_OID_HEXSZ + len_archive_suffix;
-    if (len_name_archive >= 0x100) {
-        if (!(name_archive_heap = malloc(len_name_archive + 1))) {
-            pr_error_with_errno("Failed to allocate memory for archive name");
-            return -1;
-        }
-    } else {
-        name_archive = name_archive_stack;
+    struct lazy_alloc_string name_archive;
+    if (lazy_alloc_string_init_len(&name_archive, 
+        GIT_OID_HEXSZ + len_archive_suffix)) 
+    {
+        pr_error("Failed to allocate memory for archive name\n");
+        return -1;
     }
-    memcpy(name_archive + GIT_OID_HEXSZ, archive_suffix, len_archive_suffix);
-    name_archive[len_name_archive] = '\0';
+    memcpy(name_archive.string + GIT_OID_HEXSZ, archive_suffix, 
+            len_archive_suffix);
     unsigned long id_need_export = -1;
     int r;
     for (unsigned long i = 0; i < *count; ++i) {
@@ -6771,12 +6766,12 @@ int repo_commit_pairs_filter_need_export(
         if (!commit->archive && !commit->checkout) continue;
         char const *const oid_hex = sbuffer + commit->oid_hex_offset;
         if (commit->archive) {
-            memcpy(name_archive, oid_hex, GIT_OID_HEXSZ);
-            int r2 = ensure_path_is_type_at(dirfd_archive, name_archive, 
+            memcpy(name_archive.string, oid_hex, GIT_OID_HEXSZ);
+            int r2 = ensure_path_is_type_at(dirfd_archive, name_archive.string, 
                                                                 S_IFREG);
             if (r2 < 0) {
                 r = -1;
-                goto free_heap;
+                goto free_string;
             } else if (r2 == 0) {
                 commit->archive = false;
             }
@@ -6786,7 +6781,7 @@ int repo_commit_pairs_filter_need_export(
             int r2 = ensure_path_is_type_at(dirfd_checkout, oid_hex, S_IFDIR);
             if (r2 < 0) {
                 r = -1;
-                goto free_heap;
+                goto free_string;
             } else if (r2 == 0) {
                 commit->checkout = false;
             }
@@ -6798,13 +6793,13 @@ int repo_commit_pairs_filter_need_export(
         } else if (id_need_export > i) {
             pr_error("Need export pairs ID pre-stepped\n");
             r = -1;
-            goto free_heap;
+            goto free_string;
         } // else, do nothing
     }
     *count = id_need_export + 1;
     r = 0;
-free_heap:
-    free_if_allocated(name_archive_heap);
+free_string:
+    lazy_alloc_string_free(&name_archive);
     return r;
 }
 
