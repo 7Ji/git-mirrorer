@@ -2722,17 +2722,17 @@ int mkdir_allow_existing_at(
         if (errno == EEXIST) {
             struct stat stat_buffer;
             if (fstatat(dir_fd, path, &stat_buffer, AT_SYMLINK_NOFOLLOW)) {
-                pr_error_with_errno("Failed to stat '%s'", path);
+                pr_error_with_errno("Failed to stat '%s' at %d", path, dir_fd);
                 return -1;
             }
             if ((stat_buffer.st_mode & S_IFMT) == S_IFDIR) {
                 return 0;
             } else {
-                pr_error("Exisitng '%s' is not a folder\n", path);
+                pr_error("Exisitng '%s' at %d is not a folder\n", path, dir_fd);
                 return -1;
             }
         } else {
-            pr_error_with_errno("Failed to mkdir '%s'", path);
+            pr_error_with_errno("Failed to mkdir '%s' at %d", path, dir_fd);
             return -1;
         }
     }
