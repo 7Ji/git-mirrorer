@@ -893,21 +893,20 @@ void lazy_alloc_string_init(
     string->alloc = 0;
 }
 
-static inline
-void lazy_alloc_string_init_maxed(
-    struct lazy_alloc_string *const restrict string
-) {
-    string->stack[0] = '\0';
-    string->heap = NULL;
-    string->string = string->stack;
-    string->len = LAZY_ALLOC_STRING_STACK_SIZE - 1;
-    string->alloc = 0;
-}
+// static inline
+// void lazy_alloc_string_init_maxed(
+//     struct lazy_alloc_string *const restrict string
+// ) {
+//     string->stack[0] = '\0';
+//     string->heap = NULL;
+//     string->string = string->stack;
+//     string->len = LAZY_ALLOC_STRING_STACK_SIZE - 1;
+//     string->alloc = 0;
+// }
 
 static inline
-int lazy_alloc_string_init_with(
+int lazy_alloc_string_init_len(
     struct lazy_alloc_string *const restrict string,
-    void const *const restrict content,
     size_t const len
 ) {
     if (len >= LAZY_ALLOC_STRING_STACK_SIZE) {
@@ -923,9 +922,19 @@ int lazy_alloc_string_init_with(
         string->string = string->stack;
         string->alloc = 0;
     }
-    memcpy(string->string, content, len);
     string->string[len] = '\0';
     string->len = len;
+    return 0;
+}
+
+static inline
+int lazy_alloc_string_init_with(
+    struct lazy_alloc_string *const restrict string,
+    void const *const restrict content,
+    size_t const len
+) {
+    if (lazy_alloc_string_init_len(string, len)) return -1;
+    memcpy(string->string, content, len);
     return 0;
 }
 
@@ -5102,26 +5111,19 @@ int repo_work_parse_wanted_tag(
     struct string_buffer *const restrict sbuffer
 ) {
     char const *const tag = buffer_get_string(sbuffer, wanted_tag->name);
-    char refname_stack[0x100];
-    char *refname_heap = NULL;
-    char *refname = refname_stack;
-    unsigned short const len_refname = wanted_tag->len_name + 10; // refs/tags/
-    if (len_refname >= 0x100) {
-        if (!(refname_heap = malloc(len_refname))) {
-            pr_error_with_errno("Failed to allocate name for long tag '%s'",
-                                tag);
-            return -1;
-        }
-        refname = refname_heap;
+    struct lazy_alloc_string refname;
+    if (lazy_alloc_string_init_len(&refname, wanted_tag->len_name + 10)) {
+        pr_error("Failed to allocate string buffer\n");
+        return -1;
     }
-    memcpy(refname, "refs/tags/", 10);
-    memcpy(refname + 10, tag, wanted_tag->len_name);
-    refname[len_refname] = '\0';
+    memcpy(refname.string, "refs/tags/", 10);
+    memcpy(refname.string + 10, tag, wanted_tag->len_name);
     git_reference *reference;
-    int r = git_reference_lookup(&reference, repo->git_repository, refname);
+    int r = git_reference_lookup(&reference, repo->git_repository, 
+                                    refname.string);
     r = repo_work_parse_wanted_reference_looked_up(
         repo, wanted_tag, reference, sbuffer, "tag", tag, r);
-    free_if_allocated(refname_heap);
+    lazy_alloc_string_free(&refname);
     return r;
 }
 
