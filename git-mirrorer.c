@@ -8189,7 +8189,9 @@ int work_handle_clean_repos(
         struct repo_work const *const restrict repo = work_handle->repos + i;
         work_handle->dir_repos.keeps[i] = repo->hash_url_string;
     }
-    return work_directory_clean(&work_handle->dir_repos, HASH_STRING_LEN);
+    int r = work_directory_clean(&work_handle->dir_repos, HASH_STRING_LEN);
+    dynamic_array_free(work_handle->dir_repos.keeps);
+    return r;
 }
 
 static inline
@@ -8197,7 +8199,91 @@ int work_handle_clean_archives(
     struct work_handle *const restrict work_handle
 ) {
     pr_info("Cleaning archives\n");
-    return 0;
+    unsigned short const len_archive_name = 
+        GIT_OID_HEXSZ + work_handle->len_archive_suffix;
+    struct lazy_alloc_string archive_name;
+    if (lazy_alloc_string_init_len(&archive_name, len_archive_name)) {
+        pr_error("Failed to init archive name string\n");
+        return -1;
+    }
+    if (work_handle->len_archive_suffix)
+        memcpy(archive_name.string + GIT_OID_HEXSZ, 
+            work_handle_get_string(work_handle->archive_suffix), 
+                work_handle->len_archive_suffix);
+    struct string_buffer keeps_buffer = {0};
+    dynamic_array_free(work_handle->dir_archives.keeps);
+    DYNAMIC_ARRAY_DECLARE(unsigned, offset);
+    offsets = NULL;
+    offsets_count = 0;
+    offsets_allocated = 0;
+    int r = 0;
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        struct repo_work const *const restrict repo = work_handle->repos + i;
+        for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
+            struct wanted_object const *const restrict wanted_object 
+                = repo->wanted_objects + j;
+            switch (wanted_object->type) {
+            case WANTED_TYPE_UNKNOWN:
+                pr_error("Wanted type unknown for '%s'\n", 
+                    work_handle_get_string(wanted_object->name));
+                r = -1;
+                continue;
+            case WANTED_TYPE_ALL_BRANCHES:
+            case WANTED_TYPE_ALL_TAGS:
+                continue;
+            case WANTED_TYPE_BRANCH:
+            case WANTED_TYPE_TAG:
+            case WANTED_TYPE_REFERENCE:
+            case WANTED_TYPE_HEAD:
+                if (!wanted_object->commit_parsed) {
+                    pr_error("Commit not parsed yet for '%s'\n",
+                        work_handle_get_string(wanted_object->name));
+                    r = -1;
+                    continue;
+                }
+                break;
+            case WANTED_TYPE_COMMIT:
+                break;
+            }
+            if (!wanted_object->archive) continue;
+            memcpy(archive_name.string, 
+                work_handle_get_string(wanted_object->oid_hex), GIT_OID_HEXSZ);
+            if (dynamic_array_add_to(offsets)) {
+                r = -1;
+                goto free_alloc;
+            }
+            *(get_last(offsets)) = keeps_buffer.used;
+            if (string_buffer_add(&keeps_buffer, 
+                archive_name.string, len_archive_name)) 
+            {
+                pr_error("Failed to add archive name to string buffer\n");
+                r = -1;
+                goto free_alloc;
+            }
+        }
+    }
+    if (!offsets_count) {
+        pr_error("No archive should be preserved\n");
+        r = -1;
+        goto free_alloc;
+    }
+    if (dynamic_array_add_to_by(work_handle->dir_archives.keeps, offsets_count)) 
+    {
+        pr_error("Failed to increase keeps buffer\n");
+        r = -1;
+        goto free_alloc;
+    }
+    for (unsigned long i = 0; i < offsets_count; ++i) {
+        work_handle->dir_archives.keeps[i] = keeps_buffer.buffer + offsets[i];
+    }
+    if (work_directory_clean(&work_handle->dir_archives, len_archive_name)) {
+        r = -1;
+    }
+free_alloc:
+    string_buffer_free(&keeps_buffer);
+    dynamic_array_free(offsets);
+    dynamic_array_free(work_handle->dir_archives.keeps);
+    return r;
 }
 
 static inline
