@@ -8092,6 +8092,7 @@ int keeps_sort_and_dedup(
     unsigned long *const restrict count,
     unsigned short const len
 ) {
+    if (!*count) return 0;
     keeps_quick_sort(keeps, 0, *count - 1, len);
     if (keeps_dedup(keeps, count, len)) {
         pr_error("Failed to dedup keep list\n");
@@ -8121,8 +8122,15 @@ int work_directory_clean(
         }
         return -1;
     }
-    struct dirent *entry;
     int r = 0;
+    if (!dir->keeps_count) {
+        pr_info("Removing all entries as keep list is empty...\n");
+        if (remove_dir_recursively(dir_p)) {
+            r = -1;
+        }
+        goto closedir;
+    }
+    struct dirent *entry;
     errno = 0;
     while ((entry = readdir(dir_p)) != NULL) {
         if (entry->d_name[0] == '.') {
@@ -8166,6 +8174,7 @@ int work_directory_clean(
         pr_error_with_errno("Failed to read dir\n");
         r = -1;
     }
+closedir:
     if (closedir(dir_p)) {
         pr_error_with_errno("Failed to close dir");
         r = -1;
