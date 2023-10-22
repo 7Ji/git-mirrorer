@@ -7550,7 +7550,8 @@ int work_directory_clean(
                 unsigned long middle = (low + high) / 2;
                 int diff = memcmp(dir->keeps[middle], entry->d_name, len);
                 if (diff > 0) {
-                    high = middle - 1;
+                    if (middle) high = middle - 1;
+                    else break;
                 } else if (diff < 0) {
                     low = middle + 1;
                 } else {
