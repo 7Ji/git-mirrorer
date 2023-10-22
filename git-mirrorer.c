@@ -8249,6 +8249,7 @@ int work_handle_clean_archives(
             memcpy(archive_name.string, 
                 work_handle_get_string(wanted_object->oid_hex), GIT_OID_HEXSZ);
             if (dynamic_array_add_to(offsets)) {
+                pr_error("Failed to allocate memory for offsets\n");
                 r = -1;
                 goto free_alloc;
             }
@@ -8261,11 +8262,6 @@ int work_handle_clean_archives(
                 goto free_alloc;
             }
         }
-    }
-    if (!offsets_count) {
-        pr_error("No archive should be preserved\n");
-        r = -1;
-        goto free_alloc;
     }
     if (dynamic_array_add_to_by(work_handle->dir_archives.keeps, offsets_count)) 
     {
@@ -8291,8 +8287,53 @@ int work_handle_clean_checkouts(
     struct work_handle *const restrict work_handle
 ) {
     pr_info("Cleaning checkouts\n");
-
-    return 0;
+    dynamic_array_free(work_handle->dir_archives.keeps);
+    int r = 0;
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        struct repo_work const *const restrict repo = work_handle->repos + i;
+        for (unsigned long j = 0; j < repo->wanted_objects_count; ++j) {
+            struct wanted_object const *const restrict wanted_object 
+                = repo->wanted_objects + j;
+            switch (wanted_object->type) {
+            case WANTED_TYPE_UNKNOWN:
+                pr_error("Wanted type unknown for '%s'\n", 
+                    work_handle_get_string(wanted_object->name));
+                r = -1;
+                continue;
+            case WANTED_TYPE_ALL_BRANCHES:
+            case WANTED_TYPE_ALL_TAGS:
+                continue;
+            case WANTED_TYPE_BRANCH:
+            case WANTED_TYPE_TAG:
+            case WANTED_TYPE_REFERENCE:
+            case WANTED_TYPE_HEAD:
+                if (!wanted_object->commit_parsed) {
+                    pr_error("Commit not parsed yet for '%s'\n",
+                        work_handle_get_string(wanted_object->name));
+                    r = -1;
+                    continue;
+                }
+                break;
+            case WANTED_TYPE_COMMIT:
+                break;
+            }
+            if (!wanted_object->checkout) continue;
+            if (dynamic_array_add_to(work_handle->dir_checkouts.keeps)) {
+                pr_error("Failed to allocate memory for keeps\n");
+                r = -1;
+                goto free_alloc;
+            }
+            *(get_last(work_handle->dir_checkouts.keeps)) = 
+                work_handle->string_buffer.buffer + 
+                    wanted_object->oid_hex_offset;
+        }
+    }
+    if (work_directory_clean(&work_handle->dir_checkouts, GIT_OID_HEXSZ)) {
+        r = -1;
+    }
+free_alloc:
+    dynamic_array_free(work_handle->dir_checkouts.keeps);
+    return r;
 }
 
 static inline
