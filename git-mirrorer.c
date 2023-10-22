@@ -434,16 +434,16 @@ struct config const CONFIG_INIT = {
 
 /* Work */
 
-struct work_keep {
-    unsigned int offset;
-    unsigned short len;
-};
+// struct work_keep {
+//     unsigned int offset;
+//     unsigned short len;
+// };
 
 struct work_directory {
     STRING_DECLARE(path);
     int datafd;
     int linkfd;
-    DYNAMIC_ARRAY_DECLARE(struct work_keep, keep);
+    DYNAMIC_ARRAY_DECLARE(char const*, keep);
 };
 
 #define WORK_DIRECTORY_INIT_ASSIGN .datafd = -1, .linkfd = -1
@@ -1005,11 +1005,12 @@ void lazy_alloc_string_free(
     free_if_allocated(string->heap);
 }
 
-int dynamic_array_add(
+int dynamic_array_add_by(
     void **const restrict array,
     size_t const size, // Size of an array member
     unsigned long *const restrict count,
-    unsigned long *const restrict alloc
+    unsigned long *const restrict alloc,
+    unsigned long const diff
 ) {
     void *array_new;
     if (array && count && alloc);
@@ -1023,7 +1024,7 @@ int dynamic_array_add(
             return -1;
         }
     }
-    if (++*count <= *alloc) return 0;
+    if ((*count += diff) <= *alloc) return 0;
     while (*count > *alloc) {
         if (*alloc == ULONG_MAX) {
             pr_error("Impossible to allocate more memory, allocate count"
@@ -1043,9 +1044,16 @@ int dynamic_array_add(
     return 0;
 }
 
+#define dynamic_array_add(array, size, count, alloc) \
+    dynamic_array_add_by(array, size, count, alloc, 1)
+
+#define dynamic_array_add_to_by(name, diff) \
+    dynamic_array_add_by((void **)&name, sizeof *name, \
+        &name##_count, &name##_allocated, diff)
+
 #define dynamic_array_add_to(name) \
-    dynamic_array_add((void **)&name, sizeof *name, \
-        &name##_count, &name##_allocated)
+    dynamic_array_add_to_by(name, 1)
+
 
 int dynamic_array_partial_free(
     void **const restrict array,
@@ -7707,7 +7715,7 @@ int work_handle_export_all_repos(
         goto free_pairs;
     }
     if (!pairs_count) {
-        pr_info("No commit need be exported\n");
+        pr_info("No commit need to be exported\n");
         r = 0;
         goto free_pairs;
     }
@@ -8004,6 +8012,208 @@ free_pairs:
 //     return -1;
 // }
 
+
+static inline
+void keeps_swap_item(
+    char const **const restrict keeps,
+    unsigned long const i,
+    unsigned long const j
+) {
+    if (i ==j) return;
+    char const *const temp = keeps[i];
+    keeps[i] = keeps[j];
+    keeps[j] = temp;
+}
+
+static inline
+unsigned long keeps_partition(
+    char const **const restrict keeps,
+    unsigned long const low,
+    unsigned long const high,
+    unsigned short const len
+) {
+    char const *const pivot = keeps[high];
+    unsigned long i = low - 1;
+    for (unsigned long j = low; j < high; ++j) {
+        if (memcmp(keeps[j], pivot, len) < 0) {
+            keeps_swap_item(keeps, ++i, j);
+        }
+    }
+    keeps_swap_item(keeps, ++i, high);
+    return i;
+}
+
+// In our data storage, file names always share the same constant length
+// So we can use memcmp to improve performance
+void keeps_quick_sort(
+    char const **const restrict keeps,
+    unsigned long const low,
+    unsigned long const high,
+    unsigned short const len
+) {
+    if (low >= high) return;
+    unsigned long const pivot = keeps_partition(keeps, low, high, len);
+    if (pivot) keeps_quick_sort(keeps, low, pivot - 1, len);
+    keeps_quick_sort(keeps, pivot + 1, high, len);
+}
+
+int keeps_dedup(
+    char const **const restrict keeps,
+    unsigned long *const restrict count,
+    unsigned short const len
+) {
+    unsigned long id_unique = 0;
+    char const *keep_unique = keeps[0];
+    for (unsigned long id_duplicatable = 1;
+        id_duplicatable < *count; 
+        ++id_duplicatable
+    ) {
+        char const *keep_duplicatable = keeps[id_duplicatable];
+        int diff = memcmp(keep_duplicatable, keep_unique, len);
+        if (diff > 0) {
+            ++id_unique;
+            if (id_unique < id_duplicatable) {
+                keeps[id_unique] = keeps[id_duplicatable];
+            } else if (id_unique > id_duplicatable) {
+                pr_error("Deduped keeps ID pre-stepped\n");
+                return -1;
+            } // else, do nothing (self)
+            keep_unique = keeps[id_unique];
+        } else if (diff < 0) {
+            pr_error("Keeps wrongly sorted\n");
+            return -1;
+        }
+    }
+    *count = id_unique + 1;
+    return 0;
+}
+
+int keeps_sort_and_dedup(
+    char const **const restrict keeps,
+    unsigned long *const restrict count,
+    unsigned short const len
+) {
+    keeps_quick_sort(keeps, 0, *count - 1, len);
+    if (keeps_dedup(keeps, count, len)) {
+        pr_error("Failed to dedup keep list\n");
+        return -1;
+    }
+    return 0;
+}
+
+int work_directory_clean(
+    struct work_directory *const restrict dir,
+    unsigned short const len
+) {
+    if (keeps_sort_and_dedup(dir->keeps, &dir->keeps_count, len)) {
+        pr_error("Failed to sort and dedup keep list\n");
+        return -1;
+    }
+    int dupfd = dup(dir->datafd);
+    if (dupfd < 0) {
+        pr_error_with_errno("Failed to dup datafd");
+        return -1;
+    }
+    DIR *dir_p = fdopendir(dupfd);
+    if (!dir_p) {
+        pr_error_with_errno("Failed to open DIR from dupped fd");
+        if (close(dupfd)) {
+            pr_error_with_errno("Failed to close duped datafd");
+        }
+        return -1;
+    }
+    struct dirent *entry;
+    int r = 0;
+    errno = 0;
+    while ((entry = readdir(dir_p)) != NULL) {
+        if (entry->d_name[0] == '.') {
+            switch (entry->d_name[1]) {
+            case '\0':
+                continue;
+            case '.':
+                if (entry->d_name[2] == '\0') continue;
+                break;
+            }
+        }
+        // Longer entries always return len + 1, save more scanning
+        unsigned short len_entry = strnlen(entry->d_name, len + 1);
+        bool keep = false;
+        if (len_entry == len) {
+            unsigned long low = 0;
+            unsigned long high = dir->keeps_count - 1;
+            while (low <= high) {
+                unsigned long middle = (low + high) / 2;
+                int diff = memcmp(dir->keeps[middle], entry->d_name, len);
+                if (diff > 0) {
+                    high = middle - 1;
+                } else if (diff < 0) {
+                    low = middle + 1;
+                } else {
+                    keep = true;
+                    break;
+                }
+            }
+        }
+        if (keep) continue;
+        pr_info("Removing '%s' not in keep list...\n", entry->d_name);
+        if (remove_at(dir->datafd, entry->d_name)) {
+            pr_error_with_errno("Failed to remove non-keep entry '%s'",
+                entry->d_name);
+            r = -1;
+            errno = 0;
+        }
+    }
+    if (errno) {
+        pr_error_with_errno("Failed to read dir\n");
+        r = -1;
+    }
+    if (closedir(dir_p)) {
+        pr_error_with_errno("Failed to close dir");
+        r = -1;
+    }
+    return r;
+}
+
+static inline
+int work_handle_clean_repos(
+    struct work_handle *const restrict work_handle
+) {
+    dynamic_array_free(work_handle->dir_repos.keeps);
+    if (dynamic_array_add_to_by(work_handle->dir_repos.keeps, 
+                                work_handle->repos_count)) 
+    {
+        pr_error("Failed to add repo keeps to array\n");
+        return -1;
+    }
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        struct repo_work const *const restrict repo = work_handle->repos + i;
+        work_handle->dir_repos.keeps[i] = repo->hash_url_string;
+    }
+    return work_directory_clean(&work_handle->dir_repos, HASH_STRING_LEN);
+}
+
+static inline
+int work_handle_clean(
+    struct work_handle *const restrict work_handle
+) {
+    if (work_handle->clean_repos) {
+        pr_info("Cleaning repos\n");
+        work_handle_clean_repos(work_handle);
+    }
+    if (work_handle->clean_archives) {
+        pr_info("Cleaning archives\n");
+    }
+    if (work_handle->clean_checkouts) {
+        pr_info("Cleaning checkouts\n");
+    }
+    if (work_handle->clean_links_pass) {
+        pr_info("Cleaning links, pass %hu\n", work_handle->clean_links_pass);
+    }
+    return 0;
+    // work_handle->dir_archives.keeps_count = 0;
+
+}
+
 static inline
 int gmr_set_timeout(int const timeout) {
     if (timeout && git_libgit2_opts(
@@ -8058,7 +8268,8 @@ int gmr_work(char const *const restrict config_path) {
         work_handle_update_all_repos(&work_handle) ||
         work_handle_parse_all_repos(&work_handle) ||
         work_handle_export_all_repos(&work_handle) ||
-        work_handle_link_all_repos(&work_handle)) {
+        work_handle_link_all_repos(&work_handle) ||
+        work_handle_clean(&work_handle)) {
         r = -1;
         goto shutdown;
     }
