@@ -1,7 +1,5 @@
-**WARNING: MAJOR REWORK WIP, DEAMON AND EXPORTING ARE NOT IMPLEMENTED IN THE CURRENT TREE, USE TAG [v0.2](https://github.com/7Ji/git-mirrorer/tree/v0.2) (COMMIT 9750bfd0826030bf7b7a2b3a432729f9488c3be5) IF YOU WANT TO USE THAT**
-
 # git-mirrorer
-To **mirror**, **archive** and **checkout** git repos **even across submodules**.
+To **mirror** git repos, and **archive** and **checkout** them with submodules included implicitly.
 
 # Usage
 ## Basic
@@ -10,57 +8,98 @@ To let `git-mirrorer` mirror a list of repos, simply define them in a `.yaml` co
 You can start from a simple config file like the following:
 ```
 repos:
-  - https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
-  - https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+  - https://github.com/yuzu-emu/yuzu
 ```
 After `./git-mirrorer --config config.yaml`, you will have the following directory structure:
 ```
 repos
-├── 2c7adc93616e76cd/
-├── 672b80351731823c/
+├── data
+│   ├── 207453df7ad0862c
+│   ├── 23ebb7fc06308e86
+│   ├── 2c251c035f9cad01
+│   ├── 37192ff591219eb8
+│   ├── 3af9c204e8e472ca
+│   ├── 3b751f23ac239671
+│   ├── 3db66e36cd9d329c
+│   ├── 4f5d1267939148d1
+│   ├── 67f763e658bca3c7
+│   ├── 706cc75c68042f9e
+│   ├── 899f84800b55451a
+│   ├── 8dbac069a5094020
+│   ├── 969ac173416c0008
+│   ├── 9a0c678726caecc0
+│   ├── 9d229421bcd5dac9
+│   ├── 9e57cbc12dbad75b
+│   ├── b57e0f2784d3b943
+│   ├── b693c4422be4000f
+│   ├── c39f2cfc27b16fac
+│   ├── c483e6ab7741f51b
+│   ├── c8f9f0009912835e
+│   ├── d955bd8fbfab8532
+│   ├── e0daf456084f46c5
+│   ├── eb478c30d4abecc8
+│   └── f15c7e135413006f
 └── links
-    └── git.kernel.org
-        └── pub
-            └── scm
-                └── linux
-                    └── kernel
-                        └── git
-                            ├── stable
-                            │   └── linux.git-> ../../../../../../../../672b80351731823c
-                            └── torvalds
-                                └── linux.git-> ../../../../../../../../2c7adc93616e76cd
+    └── github.com
+        ├── arsenm
+        │   └── sanitizers-cmake.git -> ../../../data/e0daf456084f46c5
+        ├── arun11299
+        │   └── cpp-jwt.git -> ../../../data/4f5d1267939148d1
+        ├── benhoyt
+        │   └── inih.git -> ../../../data/37192ff591219eb8
+        ├── bylaws
+        │   ├── libadrenotools.git -> ../../../data/9e57cbc12dbad75b
+        │   └── liblinkernsbypass.git -> ../../../data/969ac173416c0008
+        ├── eggert
+        │   └── tz.git -> ../../../data/3db66e36cd9d329c
+        ├── FFmpeg
+        │   └── FFmpeg.git -> ../../../data/899f84800b55451a
+        ├── google
+        │   └── googletest.git -> ../../../data/67f763e658bca3c7
+        ├── GPUOpen-LibrariesAndSDKs
+        │   └── VulkanMemoryAllocator.git -> ../../../data/d955bd8fbfab8532
+        ├── herumi
+        │   └── xbyak.git -> ../../../data/9a0c678726caecc0
+        ├── KhronosGroup
+        │   ├── SPIRV-Headers.git -> ../../../data/2c251c035f9cad01
+        │   └── Vulkan-Headers.git -> ../../../data/8dbac069a5094020
+        ├── lat9nq
+        │   └── tzdb_to_nx.git -> ../../../data/f15c7e135413006f
+        ├── libsdl-org
+        │   └── SDL.git -> ../../../data/b693c4422be4000f
+        ├── libusb
+        │   └── libusb.git -> ../../../data/706cc75c68042f9e
+        ├── lsalzman
+        │   └── enet.git -> ../../../data/9d229421bcd5dac9
+        ├── merryhime
+        │   └── dynarmic.git -> ../../../data/c483e6ab7741f51b
+        ├── microsoft
+        │   └── vcpkg.git -> ../../../data/207453df7ad0862c
+        ├── mozilla
+        │   └── cubeb.git -> ../../../data/c39f2cfc27b16fac
+        ├── xiph
+        │   └── opus.git -> ../../../data/3af9c204e8e472ca
+        ├── yhirose
+        │   └── cpp-httplib.git -> ../../../data/c8f9f0009912835e
+        └── yuzu-emu
+            ├── discord-rpc.git -> ../../../data/eb478c30d4abecc8
+            ├── mbedtls.git -> ../../../data/b57e0f2784d3b943
+            ├── sirit.git -> ../../../data/23ebb7fc06308e86
+            └── yuzu.git -> ../../../data/3b751f23ac239671
 ```
-_`git-mirrorer` uses 64-bit XXHash 3 to generate local repo names from the url, the above `2c7adc93616e76cd` and `672b80351731823c` are such examples. There will also be symlinks created under `repos/links` which is easier to lookup for humans._
 
-You can then clone/fetch from your local copies under `repos/`. You can also expose either `repos/` or `repos/links/` as the root of your git deamon and then clone/fetch from the local mirror across your lan/Internet.
-
-## Daemon
-By default, `git-mirrorer` will only run once before quiting. However, it also has a built-in daemon mode that will run forever until error encountered. You can config it like the following:
-```
-daemon: yes
-daemon_interval: 10
-repos:
-  ...... #(omitted)
-```
-#### `daemon`
-Controls whether `git-mirrorer` runs in **daemon mode** (if set to `yes`) or **oneshot mode** (default, if set to `no`).
-
-#### `daemon_interval`
-The interval (in second) `git-mirrorer` should sleep between each work cycle, default is 60 (i.e. 1 min).
-
-#### Config watch
-Exclusive to daemon mode, if you define the config on command-line with `--config [file]` argument, `git-mirrorer` will watch on any update on the config file, and re-read the config if needed at the end of each work cycle. 
-
-You don't need to worry about a bad config update breaking the program, as `git-mirrorer` will only switch to the new config if it is valid.
-
-Additionally, updating `daemon` to `no` while `git-mirrorer` is running in daemon mode will not make `git-mirrorer` switch to oneshot mode, and a restart is needed if you really want to do that.
+The structure is populated with the following logic for any remote repo that needs to be mirrored:
+ 1. `git-mirrorer` would mirror it into `repos/data/[HASH]`, where the `[HASH]` is unique for any given URL. This automatically avoids the problem where multiple remote repos share the same name.
+ 2. `git-mirrorer` would mirror any other repos that are referenced in the defined repos as submodules, so a complete repo tree could be constructed using only own local repos. By default only the HEAD commit of your defined repos are parsed like this.
+ 3. `git-mirrorer` would create symlinks under `repos/links` with paths composed of their URL segments pointing to the actual repos, so you can easily clone from `git-mirrorer`'s storage via human-friendly URLs (e.g. `git://gmr.lan/github.com/yuzu-emu/yuzu.git`)
 
 ## Wanted objects
 If you run `git-mirrorer` with only a simple repos list, you might read the following log:
 ```
-[WARN] Repo 'https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git' does not have wanted objects defined, adding global wanted objects (when empty) to it as wanted
+[WARN] Global wanted objects (when empty) not defined, adding 'HEAD' as default
+[INFO] Repo 'https://github.com/yuzu-emu/yuzu' does not have wanted objects defined, adding global wanted objects (when empty) to it as wanted
 ```
-A wanted object is what you can define for repos that can be parsed into commits that should be **robust** _(at least existing, in `git-mirrorer` **robust** means more than existing, read the [following section](#submodules) for more info)_. They can either be defined for a repo, or globally.
+A wanted object is what you can define for repos that can be parsed into commits that should be **robust** . They can either be defined for a repo, or globally.
 
 A list of wanted object for repo can be defined like this:
 ```
@@ -70,7 +109,6 @@ repos:
         - v6.4.10
         - v6.4.9
 ```
-_Here `v6.4.10` and `v6.4.9` will be parsed automatically as wanted tags, and during mirroring, `git-mirrorer` will ensure they can be parsed into commits, and the commits are **robust**_
 
 Two lists of wanted object can also be defined globally:
 ```
@@ -108,141 +146,60 @@ v6.1.y:
 
 Note that `git-mirrorer` updates repos **lazily**, that is, unless there's any wanted object that is not directly a commit, or any commit that does not exist locally, `git-mirrorer` won't update the repo. Adding any wanted object that's not a commit will cause `git-mirrorer` update the repo. The default global `empty` wanted object `HEAD` is one such example.
 
-## Submodules
-For any wanted object, if it can be parsed into a commit, `git-mirrorer` will ensure its **robustness** across all of its submodules recursively. That is, every repo configured recursively as a submodule will be added virtually to the repo list, then **lazily** updated to ensure the commit wanted by the parent is also **robust**, until a complete tree can be created from pure local repos.
-
-_Such **robustness** is what makes the function in [next section](#exporting) possible_
-
-An example run with the following repo list:
-```
-repos:
-  - https://github.com/yuzu-emu/yuzu.git
-```
-Will result in the following directory structure:
-```
-repos
-├── 002536ab13f83fe4/
-├── 00d56e0167c0a9c5/
-├── 18a62faab712628e/
-├── 197d5690289065db/
-├── 2c251c035f9cad01/
-├── 3448bd3db493b60d/
-├── 3b06bd242afbf04e/
-├── 4da79a9d01fb6196/
-├── 61741072ad91123c/
-├── 62a854c56c1b2a8e/
-├── 67f763e658bca3c7/
-├── 7d09248f4ea2b698/
-├── 8b8ab2277ad56010/
-├── 8ba2d45bd2a8eb11/
-├── 8c027578b52a1287/
-├── 97ac52e9ede5597d/
-├── a8a25d8b3fbd3705/
-├── ac530d68aae02987/
-├── bbb3f3e343238340/
-├── ccce874087ac136b/
-├── dcad775dbe0c7583/
-├── e0daf456084f46c5/
-├── e93e58c63a6ee116/
-├── ee4cd45ed2537880/
-├── f66a7e73ec174822/
-└── links
-    └── github.com
-        ├── arsenm
-        │   └── sanitizers-cmake -> ../../../e0daf456084f46c5
-        ├── arun11299
-        │   └── cpp-jwt.git -> ../../../8c027578b52a1287
-        ├── benhoyt
-        │   └── inih.git -> ../../../97ac52e9ede5597d
-        ├── bylaws
-        │   ├── libadrenotools.git -> ../../../8b8ab2277ad56010
-        │   └── liblinkernsbypass -> ../../../3b06bd242afbf04e
-        ├── eggert
-        │   └── tz.git -> ../../../ee4cd45ed2537880
-        ├── FFmpeg
-        │   └── FFmpeg.git -> ../../../8ba2d45bd2a8eb11
-        ├── google
-        │   └── googletest -> ../../../67f763e658bca3c7
-        ├── GPUOpen-LibrariesAndSDKs
-        │   └── VulkanMemoryAllocator.git -> ../../../ccce874087ac136b
-        ├── herumi
-        │   └── xbyak.git -> ../../../18a62faab712628e
-        ├── KhronosGroup
-        │   ├── SPIRV-Headers -> ../../../2c251c035f9cad01
-        │   └── Vulkan-Headers.git -> ../../../7d09248f4ea2b698
-        ├── lat9nq
-        │   └── tzdb_to_nx.git -> ../../../61741072ad91123c
-        ├── libsdl-org
-        │   └── SDL.git -> ../../../002536ab13f83fe4
-        ├── libusb
-        │   └── libusb.git -> ../../../197d5690289065db
-        ├── lsalzman
-        │   └── enet.git -> ../../../e93e58c63a6ee116
-        ├── merryhime
-        │   └── dynarmic.git -> ../../../00d56e0167c0a9c5
-        ├── microsoft
-        │   └── vcpkg.git -> ../../../dcad775dbe0c7583
-        ├── mozilla
-        │   └── cubeb.git -> ../../../3448bd3db493b60d
-        ├── xiph
-        │   └── opus.git -> ../../../a8a25d8b3fbd3705
-        ├── yhirose
-        │   └── cpp-httplib.git -> ../../../f66a7e73ec174822
-        └── yuzu-emu
-            ├── discord-rpc.git -> ../../../ac530d68aae02987
-            ├── mbedtls.git -> ../../../62a854c56c1b2a8e
-            ├── sirit.git -> ../../../4da79a9d01fb6196
-            └── yuzu.git -> ../../../bbb3f3e343238340
-```
-All of the additional repos are cloned as they're either directly referenced as submodules in `yuzu.git`, or indirectly as recursive submodules as `yuzu.git`'s submodule. And the **robustness** of both `yuzu.git`'s `HEAD` commit and all other repos' commit referenced by any submodule are ensured. It is with this **robustness** that the [following section](#exporting) is possible.
-
 ## Exporting
 For every wanted object, you can export it as either `archive` or `checkout`, in both case they will contain all recursively submodules:
 ```
+archive:
+  pipe_through: zstd -22 --ultra
+  suffix: .tar.zst
+wanted:
+  always:
+    - all_branches:
+        archive: yes
+        checkout: yes
+    - all_tags:
+        archive: yes
+        checkout: yes
 repos:
-  - https://github.com/yuzu-emu/yuzu.git:
-      wanted:
-        - all_tags:
-            archive: yes
-            checkout: yes
-        - all_branches:
-            archive: yes
-            checkout: yes
+  - https://github.com/yuzu-emu/yuzu
 ```
 After a run with the above config, you will have a tree structure like the following:
 ```
-archives/
-├── 26ff2147197352b571c394404de2be1a65d0cf9b.tar
-└── links
-    └── github.com
-        └── yuzu-emu
-            └── yuzu.git
-                ├── 26ff2147197352b571c394404de2be1a65d0cf9b.tar -> ../../../../26ff2147197352b571c394404de2be1a65d0cf9b.tar
-                ├── branches -> refs/heads
-                └── refs
-                    └── heads
-                        └── master.tar -> ../../../../../../26ff2147197352b571c394404de2be1a65d0cf9b.tar
-```
-The file `archives/26ff2147197352b571c394404de2be1a65d0cf9b.tar` would contain all of the content existing at `yuzu.git`'s that commit, **including submodules**; 
-```
-checkouts/
-├── 26ff2147197352b571c394404de2be1a65d0cf9b/
-└── links
-    └── github.com
-        └── yuzu-emu
-            └── yuzu.git
-                ├── 26ff2147197352b571c394404de2be1a65d0cf9b -> ../../../../26ff2147197352b571c394404de2be1a65d0cf9b
-                ├── branches -> refs/heads
-                └── refs
-                    └── heads
-                        └── master -> ../../../../../../26ff2147197352b571c394404de2be1a65d0cf9b
-```
 
-Likewise, the folder `checkouts/26ff2147197352b571c394404de2be1a65d0cf9b` would also contain all of the content existing at `yuzu.git`'s that commit, **including submodules**. 
+archives/
+├── data
+│   ├── 42f4c8f28b8763631d5989543de99def528a93fc.tar.zst
+│   └── db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst
+└── links
+    ├── github.com
+    │   └── yuzu-emu
+    │       └── yuzu
+    │           ├── 42f4c8f28b8763631d5989543de99def528a93fc.tar.zst -> ../../../../data/42f4c8f28b8763631d5989543de99def528a93fc.tar.zst
+    │           ├── branches -> refs/heads
+    │           ├── db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst -> ../../../../data/db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst
+    │           └── refs
+    │               └── heads
+    │                   ├── master.tar.zst -> ../../../../../../data/db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst
+    │                   └── revert-11534-IFREMOVED.tar.zst -> ../../../../../../data/42f4c8f28b8763631d5989543de99def528a93fc.tar.zst
+    └── gmr.lan
+        └── github.com
+            └── yuzu-emu
+                └── yuzu
+                    ├── 42f4c8f28b8763631d5989543de99def528a93fc.tar.zst -> ../../../../../data/42f4c8f28b8763631d5989543de99def528a93fc.tar.zst
+                    ├── branches -> refs/heads
+                    ├── db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst -> ../../../../../data/db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst
+                    └── refs
+                        └── heads
+                            ├── master.tar.zst -> ../../../../../../../data/db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst
+                            └── revert-11534-IFREMOVED.tar.zst -> ../../../../../../../data/42f4c8f28b8763631d5989543de99def528a93fc.tar.zst
+```
+The file `archives/db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst` would contain all of the content existing at `yuzu.git`'s that commit, **including submodules**;
+
+Likewise, the folder `checkouts/db37e583ffea39a4d25a8eb3eeea0cf825ec6661` would also contain all of the content existing at `yuzu.git`'s that commit, **including submodules**. 
 
 In both cases the submodules are stored as if they're plain folders in the parent git tree, e.g.
 ```
-> ls checkouts/26ff2147197352b571c394404de2be1a65d0cf9b/externals/cubeb/cmake/sanitizers-cmake/
+> ls checkouts/db37e583ffea39a4d25a8eb3eeea0cf825ec6661/externals/cubeb/cmake/sanitizers-cmake/
 cmake/  CMakeLists.txt  LICENSE  README.md  tests/
 ```
 You can see that the submodule `externals/cubeb` 's submodule `cmake/sanitizers-cmake` exists with all of its content under the super project as `externals/cubeb/cmake/sanitizers-cmake`, which also applies to archives.
@@ -264,7 +221,7 @@ Like in the above example:
 Controls the suffix to be appended to the archives' names, the default value is `.tar`.  
 Note it **does not affect the actual format**, the actual format that `git-mirrorer` natively generates is always **GNU tar stream**.   
 I.e. setting this to `.tar.zst` **only changes the suffix** but **does not** automatically make the output stream a `zstd compressed data` stream.
-#### `github_like_prefix`
+#### ~~`github_like_prefix`~~ (removed after v0.2)
 When configured to `yes`, every entry in the archive will have a `[repo short name]-[commit hash]/` prefix.   
 By default this is set to `no` and every entry is directly in the archive's root, e.g. `README.md` in that `yuzu.git` archive is stored as `README.md` in the archive. If set to `yes` then it is stored as `yuzu-26ff2147197352b571c394404de2be1a65d0cf9b/README.md`.  
 Setting this to `yes` might be helpful for your existing building routine if it expects such prefix.
@@ -280,9 +237,6 @@ Alternatively `pipe-through` can be set as a list, this is especially useful if 
   ```
   _Piping a lot of different compressors does not result in better compression and it is very stupid. Plz don't really do it like this : )_
 
-#### Conclusion
-You might find it strange at first that `git-mirrorer` does not outputs `.tar.gz` compressed archives directly, but only `.tar` archives. But now you should understand that, with the freedom to combine any archive suffix and any piper, `git-mirrorer` can essentially create archives that's compressed in **any format**.
-
 
 ## Cleaning
 As `git-mirrorer` ensures the **robustness** of the wanted objects it fetches all of the repos that're referenced either directly or indirectly in the commits resolved from those wanted objects, **for every run**. Your `repos` folder might become larger and larger as you run `git-mirrorer` again and again to keep the repos up-to-date. The same applies to `archives` and `checkouts` if the wanted objects are dynamic and they point to new commits as you update the repos. 
@@ -294,10 +248,11 @@ cleanup:
   repos: yes
   archives: yes
   checkouts: yes
+  links_pass: 0
 ```
 After repos are mirrored and needed archives/checkouts are created, `git-mirrorer` will delete any entry that's not needed under the corresponding folder to release the space.
 
-Note: turning on cleanup would eat extra performance as an in-memory keeps list would need to be maintained and it must be sorted before the actual cleaning. You might also want those repos/archives/checkouts for data hoarding purposes.
+The links can be cleaned for multiple passes during one execution, in case a single one does not clean those newly broken ones caused by other links being cleaned. You should only need that to be 1 if you're not touching the links folder by yourself.
 
 ## Threading
 `git-mirrorer` does multi-threading in the following stages:
