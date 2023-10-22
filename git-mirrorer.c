@@ -893,16 +893,16 @@ void lazy_alloc_string_init(
     string->alloc = 0;
 }
 
-// static inline
-// void lazy_alloc_string_init_maxed(
-//     struct lazy_alloc_string *const restrict string
-// ) {
-//     string->stack[0] = '\0';
-//     string->heap = NULL;
-//     string->string = string->stack;
-//     string->len = LAZY_ALLOC_STRING_STACK_SIZE - 1;
-//     string->alloc = 0;
-// }
+static inline
+void lazy_alloc_string_init_full_stack(
+    struct lazy_alloc_string *const restrict string
+) {
+    string->stack[sizeof string->stack - 1] = '\0';
+    string->heap = NULL;
+    string->string = string->stack;
+    string->len = sizeof string->stack - 1;
+    string->alloc = 0;
+}
 
 static inline
 int lazy_alloc_string_init_len(
@@ -5743,130 +5743,6 @@ int work_handle_parse_all_repos(
     return -1;
 }
 
-// // 1 dir empty (now), 0 dir non empty, -1 error
-// int remove_dead_symlinks_recursively_at(
-//     int const dir_fd,
-//     unsigned short const pass
-// ) {
-//     if (pass == 0) return 0;
-//     int dirfd_dup = dup(dir_fd);
-//     if (dirfd_dup < 0) {
-//         pr_error_with_errno("Failed to duplicate fd");
-//         return -1;
-//     }
-//     DIR *dir_p = fdopendir(dirfd_dup);
-//     if (dir_p == NULL) {
-//         if (close(dirfd_dup)) {
-//             pr_error_with_errno("Failed to close uplicated fd");
-//         }
-//         return -1;
-//     }
-//     struct dirent *entry;
-//     errno = 0;
-//     int r = -1;
-//     for (unsigned short i = 0; i < pass; ++i) {
-//         while ((entry = readdir(dir_p)) != NULL) {
-//             switch (entry->d_name[0]) {
-//             case '\0':
-//                 continue;
-//             case '.':
-//                 switch (entry->d_name[1]) {
-//                 case '\0':
-//                     continue;
-//                 case '.':
-//                     if (entry->d_name[2] == '\0')
-//                         continue;
-//                     break;
-//                 }
-//                 break;
-//             }
-//             switch (entry->d_type) {
-//             case DT_DIR: {
-//                 int const link_fd = openat(
-//                     dir_fd, entry->d_name, O_RDONLY | O_DIRECTORY);
-//                 if (link_fd < 0) {
-//                     pr_error_with_errno("Failed to open subdir '%s'",
-//                                         entry->d_name);
-//                     r = -1;
-//                     goto close_dir;
-//                 }
-//                 r = remove_dead_symlinks_recursively_at(link_fd, pass);
-//                 if (close(link_fd)) {
-//                     pr_error_with_errno("Failed to close subdir '%s'",
-//                         entry->d_name);
-//                     r = -1;
-//                 }
-//                 if (r < 0) {
-//                     pr_error(
-//                         "Failed to remove dead symlinks recursively at '%s'\n",
-//                                 entry->d_name);
-//                     r = -1;
-//                     goto close_dir;
-//                 }
-//                 if (r > 0) {
-//                     if (unlinkat(dir_fd, entry->d_name, AT_REMOVEDIR)) {
-//                         pr_error_with_errno(
-//                             "Failed to remove empty folder '%s'",
-//                                 entry->d_name);
-//                         r = -1;
-//                         goto close_dir;
-//                     }
-//                 }
-//                 break;
-//             }
-//             case DT_LNK: {
-//                 char path[PATH_MAX];
-//                 ssize_t len_path = readlinkat(
-//                         dir_fd, entry->d_name, path, PATH_MAX);
-//                 if (len_path < 0) {
-//                     pr_error_with_errno(
-//                         "Failed to readlink '%s'", entry->d_name);
-//                     r = -1;
-//                     goto close_dir;
-//                 }
-//                 path[len_path] = '\0';
-//                 struct stat stat_buffer;
-//                 if (fstatat(dir_fd, path, &stat_buffer,
-//                     AT_SYMLINK_NOFOLLOW) == 0) break;
-//                 errno = 0;
-//                 if (unlinkat(dir_fd, entry->d_name, 0)) {
-//                     pr_error_with_errno(
-//                         "Failed to remove dead link '%s'", path);
-//                     r = -1;
-//                     goto close_dir;
-//                 }
-//                 pr_debug("Removed dead link '%s'\n", path);
-//                 break;
-//             }
-//             default: continue;
-//             }
-//         }
-//         if (errno) {
-//             pr_error_with_errno("Failed to read dir");
-//             r = -1;
-//             goto close_dir;
-//         }
-//         rewinddir(dir_p);
-//     }
-//     errno = 0;
-//     unsigned short entries_count = 0;
-//     while ((entry = readdir(dir_p)) != NULL) {
-//         if (++entries_count > 2) break;
-//     }
-//     if (entries_count < 2) {
-//         pr_error("Directory entry count smaller than 2, which is impossible\n");
-//         r = -1;
-//         goto close_dir;
-//     }
-//     if (entries_count == 2) r = 1;
-//     else r = 0;
-// close_dir:
-//     if (closedir(dir_p)) {
-//         pr_error_with_errno("Failed to close dir");
-//     }
-//     return r;
-// }
-
 static inline unsigned int
     tar_header_checksum(struct tar_header *header) {
     unsigned int checksum = 0;
@@ -7867,12 +7743,149 @@ free_alloc:
     return r;
 }
 
+// 1 > 0 dir non empty, 0 dir is empty, -1 error
+int remove_dead_symlinks_recursively_at(
+    int const atfd,
+    struct lazy_alloc_string *const restrict link_target
+) {
+    int dupfd = dup(atfd);
+    if (dupfd < 0) {
+        pr_error_with_errno("Failed to duplicate fd");
+        return -1;
+    }
+    DIR *dir_p = fdopendir(dupfd);
+    if (dir_p == NULL) {
+        if (close(dupfd)) {
+            pr_error_with_errno("Failed to close uplicated fd");
+        }
+        return -1;
+    }
+    struct dirent *entry;
+    int r = 0;
+    bool has_entry = false;
+    errno = 0;
+    while ((entry = readdir(dir_p)) != NULL) {
+        if (entry->d_name[0] == '.') {
+            switch (entry->d_name[1]) {
+            case '\0':
+                continue;
+            case '.':
+                if (entry->d_name[2] == '\0') continue;
+                break;
+            }
+        }
+        switch (entry->d_type) {
+        case DT_DIR:
+            int const subfd = openat(
+                atfd, entry->d_name, O_RDONLY | O_DIRECTORY);
+            if (subfd < 0) {
+                pr_error_with_errno("Failed to open subdir '%s'",
+                                    entry->d_name);
+                r = -1;
+                goto close_dir;
+            }
+            r = remove_dead_symlinks_recursively_at(subfd, link_target);
+            if (close(subfd)) {
+                pr_error_with_errno("Failed to close subdir '%s'",
+                    entry->d_name);
+                r = -1;
+                goto close_dir;
+            }
+            if (r < 0) {
+                pr_error(
+                    "Failed to remove dead symlinks recursively at '%s'\n",
+                            entry->d_name);
+                r = -1;
+                goto close_dir;
+            } else if (r > 0) {
+                has_entry = true;
+            } else if (unlinkat(atfd, entry->d_name, AT_REMOVEDIR)) {
+                pr_error_with_errno(
+                    "Failed to remove empty folder '%s'",
+                        entry->d_name);
+                r = -1;
+                goto close_dir;
+            }
+            break;
+        case DT_LNK:
+            for (;;) {
+                size_t const bufsize = link_target->len + 1;
+                ssize_t len = readlinkat(atfd, entry->d_name, 
+                    link_target->string, bufsize);
+                if (len < 0) {
+                    pr_error_with_errno("Failed to readlink");
+                    r = -1;
+                    goto close_dir;
+                }
+                if ((size_t)len >= bufsize) {
+                    if (lazy_alloc_string_setlen_discard(link_target, 
+                        bufsize * ALLOC_MULTIPLIER - 1)) 
+                    {
+                        pr_error("Failed to allocate more memory for link\n");
+                        r = -1;
+                        goto close_dir;
+                    }
+                } else {
+                    link_target->string[len] = '\0';
+                    break;
+                }
+            }
+            struct stat stat_buffer;
+            if (fstatat(atfd, link_target->string, &stat_buffer,
+                    AT_SYMLINK_NOFOLLOW) == 0) 
+            {
+                has_entry = true;
+                break;
+            }
+            errno = 0;
+            if (unlinkat(atfd, entry->d_name, 0)) {
+                pr_error_with_errno("Failed to remove dead link '%s' => '%s'",
+                    entry->d_name, link_target->string);
+                r = -1;
+                goto close_dir;
+            }
+            pr_info("Removed dead link '%s' => '%s'\n", entry->d_name,
+                        link_target->string);
+            break;
+        default:
+            has_entry = true;
+            break;
+        }
+    }
+    if (errno) {
+        pr_error_with_errno("Failed to read dir");
+        r = -1;
+        goto close_dir;
+    }
+close_dir:
+    if (closedir(dir_p)) {
+        pr_error_with_errno("Failed to close dir");
+        r = -1;
+    }
+    if (r < 0) return -1;
+    if (has_entry) return 1;
+    return 0;
+}
+
 static inline
 int work_handle_clean_links(
     struct work_handle *const restrict work_handle
 ) {
-    pr_info("Cleaning links, pass %hu\n", work_handle->clean_links_pass);
-    return 0;
+    struct lazy_alloc_string link_target;
+    lazy_alloc_string_init_full_stack(&link_target);
+    int r = 0;
+    for (unsigned short i = 0; i < work_handle->clean_links_pass; ++i) {
+        pr_info("Cleaning links, pass %hu\n", i + 1);
+        r = 0;
+        if (remove_dead_symlinks_recursively_at(work_handle->dir_repos.linkfd,
+            &link_target) < 0) r = -1;
+        if (remove_dead_symlinks_recursively_at(
+            work_handle->dir_archives.linkfd, &link_target) < 0) r = -1;
+        if (remove_dead_symlinks_recursively_at(
+            work_handle->dir_checkouts.linkfd, &link_target) < 0) r = -1;
+    }
+    lazy_alloc_string_free(&link_target);
+    return r;
 }
 
 
