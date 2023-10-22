@@ -193,20 +193,18 @@ archives/
                             ├── master.tar.zst -> ../../../../../../../data/db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst
                             └── revert-11534-IFREMOVED.tar.zst -> ../../../../../../../data/42f4c8f28b8763631d5989543de99def528a93fc.tar.zst
 ```
-The file `archives/db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst` would contain all of the content existing at `yuzu.git`'s that commit, **including submodules**;
+The file `archives/data/db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst` would contain all of the content existing at `yuzu.git`'s that commit, **including submodules**;
 
-Likewise, the folder `checkouts/db37e583ffea39a4d25a8eb3eeea0cf825ec6661` would also contain all of the content existing at `yuzu.git`'s that commit, **including submodules**. 
+Likewise, the folder `checkouts/data/db37e583ffea39a4d25a8eb3eeea0cf825ec6661` would also contain all of the content existing at `yuzu.git`'s that commit, **including submodules**. 
 
 In both cases the submodules are stored as if they're plain folders in the parent git tree, e.g.
 ```
-> ls checkouts/db37e583ffea39a4d25a8eb3eeea0cf825ec6661/externals/cubeb/cmake/sanitizers-cmake/
+> ls checkouts/links/github.com/yuzu-emu/yuzu/branches/master/externals/cubeb/cmake/sanitizers-cmake/
 cmake/  CMakeLists.txt  LICENSE  README.md  tests/
 ```
 You can see that the submodule `externals/cubeb` 's submodule `cmake/sanitizers-cmake` exists with all of its content under the super project as `externals/cubeb/cmake/sanitizers-cmake`, which also applies to archives.
 
 Do note that the `checkout`s here are really just `checkout`s, they're not `clone`s as there's no existing `.git` folder or file under the tree.
-
-You can then export either `archives`, `archives/links`, `checkouts`, `checkouts/links` to network to serve them.
 
 ### Archive advanced config
 There're some global configs for archives that can be set, a quick example:
