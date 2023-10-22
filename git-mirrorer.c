@@ -6637,7 +6637,6 @@ int remove_at_with_format(
     char const *const restrict path,
     mode_t fmt
 ) {
-    
     if (fmt == S_IFDIR) {
         int fd = openat(atfd, path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
         if (fd < 0) {
@@ -8178,6 +8177,7 @@ static inline
 int work_handle_clean_repos(
     struct work_handle *const restrict work_handle
 ) {
+    pr_info("Cleaning repos\n");
     dynamic_array_free(work_handle->dir_repos.keeps);
     if (dynamic_array_add_to_by(work_handle->dir_repos.keeps, 
                                 work_handle->repos_count)) 
@@ -8193,25 +8193,45 @@ int work_handle_clean_repos(
 }
 
 static inline
+int work_handle_clean_archives(
+    struct work_handle *const restrict work_handle
+) {
+    pr_info("Cleaning archives\n");
+    return 0;
+}
+
+static inline
+int work_handle_clean_checkouts(
+    struct work_handle *const restrict work_handle
+) {
+    pr_info("Cleaning checkouts\n");
+
+    return 0;
+}
+
+static inline
+int work_handle_clean_links(
+    struct work_handle *const restrict work_handle
+) {
+    pr_info("Cleaning links, pass %hu\n", work_handle->clean_links_pass);
+    return 0;
+}
+
+
+static inline
 int work_handle_clean(
     struct work_handle *const restrict work_handle
 ) {
-    if (work_handle->clean_repos) {
-        pr_info("Cleaning repos\n");
-        work_handle_clean_repos(work_handle);
-    }
-    if (work_handle->clean_archives) {
-        pr_info("Cleaning archives\n");
-    }
-    if (work_handle->clean_checkouts) {
-        pr_info("Cleaning checkouts\n");
-    }
-    if (work_handle->clean_links_pass) {
-        pr_info("Cleaning links, pass %hu\n", work_handle->clean_links_pass);
-    }
-    return 0;
-    // work_handle->dir_archives.keeps_count = 0;
-
+    int r = 0;
+    if (work_handle->clean_repos && work_handle_clean_repos(work_handle)) 
+        r = -1;
+    if (work_handle->clean_archives && work_handle_clean_archives(work_handle))
+        r = -1;
+    if (work_handle->clean_checkouts && work_handle_clean_checkouts(work_handle)
+    )   r = -1;
+    if (work_handle->clean_links_pass && work_handle_clean_links(work_handle)) 
+        r = -1;
+    return r;
 }
 
 static inline
