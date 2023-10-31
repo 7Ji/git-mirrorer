@@ -4475,10 +4475,11 @@ int repo_domain_map_update(
     void *chunks_actual = chunks;
     struct repo_domain_group* groups_actual = map->groups;
     unsigned short active_threads_last = 0;
+    unsigned long remaining_groups_count = map->groups_count;
     for (;;) {
         time_t time_current = time(NULL);
         unsigned short active_threads = 0;
-        for (unsigned long i = 0; i < map->groups_count; ++i) {
+        for (unsigned long i = 0; i < remaining_groups_count; ++i) {
             void *const chunk = chunks_actual + chunk_size * i;
             threads_count = chunk;
             thread_helpers = chunk + sizeof *threads_count;
@@ -4576,11 +4577,11 @@ int repo_domain_map_update(
                 // Group exhausted at head
                 chunks_actual += chunk_size;
                 groups_actual += 1;
-                --map->groups_count;
+                --remaining_groups_count;
                 --i;
-            } else if (i == map->groups_count - 1) {
+            } else if (i == remaining_groups_count - 1) {
                 // Group exhausted at end
-                --map->groups_count;
+                --remaining_groups_count;
             } else {
                 // Group exhuasted in the middle
             }
@@ -4610,7 +4611,7 @@ wait_threads:
     if (active_threads_last) {
         pr_info("Waiting for %hu remaining updaters...\n", active_threads_last);
     }
-    for (unsigned long i = 0; i < map->groups_count; ++i) {
+    for (unsigned long i = 0; i < remaining_groups_count; ++i) {
         void *const chunk = chunks + chunk_size * i;
         if (!*(unsigned short *)chunk) continue;
         thread_helpers = chunk + sizeof *threads_count;
