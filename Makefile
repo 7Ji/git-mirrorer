@@ -4,7 +4,7 @@ LDFLAGS = -lxxhash -lgit2 -lyaml
 STRIP ?= strip
 
 ifdef DEBUGGING
-CFLAGS += -DDEBUGGING -g
+CFLAGS += -O1 -DDEBUGGING -g -fsanitize=address
 else
 CFLAGS += -O3
 endif
