@@ -4808,6 +4808,9 @@ int repo_work_parse_wanted_all_branches(
     struct wanted_base *const restrict wanted_all_branches,
     struct string_buffer *const restrict sbuffer
 ) {
+    // These two might change during repo_work_add_wanted_branch()
+    bool const archive = wanted_all_branches->archive;
+    bool const checkout = wanted_all_branches->checkout;
     char const *const restrict url = buffer_get_string(sbuffer, repo->url);
     git_branch_iterator *branch_iterator;
     int r = git_branch_iterator_new(
@@ -4841,7 +4844,7 @@ int repo_work_parse_wanted_all_branches(
         size_t const len_name = strlen(reference_name);
         if (repo_work_add_wanted_branch(
             repo, sbuffer, reference_name, len_name,
-            wanted_all_branches->archive, wanted_all_branches->checkout)) 
+            archive, checkout)) 
         {
             pr_error("Failed to add branch '%s' as wannted to "
                     "repo '%s'\n", reference_name, url);
@@ -4876,6 +4879,9 @@ int repo_work_parse_wanted_all_tags(
     struct wanted_base *const restrict wanted_all_tags,
     struct string_buffer *const restrict sbuffer
 ) {
+    // These two might change during repo_work_add_wanted_tag()
+    bool const archive = wanted_all_tags->archive;
+    bool const checkout = wanted_all_tags->checkout;
     char const *const restrict url = buffer_get_string(sbuffer, repo->url);
     git_strarray tag_names;
     int r = git_tag_list(&tag_names, repo->git_repository);
@@ -4892,7 +4898,7 @@ int repo_work_parse_wanted_all_tags(
         char const *const restrict tag_name  = tag_names.strings[j];
         if (repo_work_add_wanted_tag(
             repo, sbuffer, tag_name, strlen(tag_name),
-            wanted_all_tags->archive, wanted_all_tags->checkout)) 
+            archive, checkout)) 
         {
             pr_error("Failed to add tag '%s' as wannted to "
                     "repo '%s'\n", tag_name, url);
