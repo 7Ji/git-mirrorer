@@ -7057,8 +7057,11 @@ close:
                         child_pipe);
                 r = -1;
             }
-            if (status) {
-                pr_error("Piper child bad return %i\n", status);
+            if (!WIFEXITED(status)) {
+                pr_error("Piper child did not exit normally\n");
+                r = -1;
+            } else if ((status = WEXITSTATUS(status))) {
+                pr_error("Piper child bad exit code %i\n", status);
                 r = -1;
             }
         }
