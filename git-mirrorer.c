@@ -7395,31 +7395,6 @@ free_pairs:
     return r;
 }
 
-// int raise_nofile_limit() {
-//     struct rlimit rlimit;
-//     if (getrlimit(RLIMIT_NOFILE, &rlimit)) {
-//         pr_error_with_errno("Failed to get limit of opened files");
-//         return -1;
-//     }
-//     if (rlimit.rlim_cur <= 1024) {
-//         pr_warn(
-//             "Current nofile limit too small (%lu), this may result in "
-//             "unexpeceted behaviours as git-mirrorer caches all repos "
-//             "with all of their fds kept open during the whole run. "
-//             "~10 fds are needed per repo.\n",
-//             rlimit.rlim_cur);
-//     }
-//     if (rlimit.rlim_cur == rlimit.rlim_max) return 0;
-//     rlimit.rlim_cur = rlimit.rlim_max > 16384 ? 16384 : rlimit.rlim_max;
-//     if (setrlimit(RLIMIT_NOFILE, &rlimit)) {
-//         pr_error_with_errno("Failed to raise limit of opened files");
-//         return -1;
-//     }
-//     pr_info("Raised limit of opened file descriptors to %lu\n",
-//             rlimit.rlim_cur);
-//     return 0;
-// }
-
 static inline
 void keeps_swap_item(
     char const **const restrict keeps,
@@ -7927,12 +7902,41 @@ int gmr_set_timeout(int const timeout) {
     return 0;
 }
 
+int raise_nofile_limit() {
+    struct rlimit rlimit;
+    if (getrlimit(RLIMIT_NOFILE, &rlimit)) {
+        pr_error_with_errno("Failed to get limit of opened files");
+        return -1;
+    }
+    if (rlimit.rlim_cur <= 1024) {
+        pr_warn(
+            "Current nofile limit too small (%lu), this may result in "
+            "unexpeceted behaviours as git-mirrorer caches all repos "
+            "with all of their fds kept open during the whole run. "
+            "~10 fds are needed per repo.\n",
+            rlimit.rlim_cur);
+    }
+    if (rlimit.rlim_cur == rlimit.rlim_max) return 0;
+    rlimit.rlim_cur = rlimit.rlim_max > 16384 ? 16384 : rlimit.rlim_max;
+    if (setrlimit(RLIMIT_NOFILE, &rlimit)) {
+        pr_error_with_errno("Failed to raise limit of opened files");
+        return -1;
+    }
+    pr_info("Raised limit of opened file descriptors to %lu\n",
+            rlimit.rlim_cur);
+    return 0;
+}
+
 static inline
 int gmr_work(char const *const restrict config_path) {
     int r = setvbuf(stdout, NULL, _IOLBF, 0);
     if (r) {
         pr_error_with_errno(
             "Failed to set stdout to line-buffered, return %d", r);
+        return -1;
+    }
+    if ((r = raise_nofile_limit())) {
+        pr_error("Failed to raise nofile limit\n");
         return -1;
     }
     struct config config;
