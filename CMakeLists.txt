@@ -22,3 +22,7 @@ target_link_libraries(git-mirrorer
 
 target_compile_definitions(git-mirrorer PRIVATE
     VERSION="${VERSION}")
+
+target_compile_options(git-mirrorer PRIVATE
+    -Wall
+    -Wextra)
