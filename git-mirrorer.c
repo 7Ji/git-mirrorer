@@ -32,12 +32,10 @@ but that comes with great compilation time penalty.
 #include <stdbool.h>
 #include <string.h>
 #include <errno.h>
-#include <assert.h>
 
 /* POSIX */
 #include <unistd.h>
 #include <pthread.h>
-#include <signal.h>
 #include <getopt.h>
 #include <dirent.h>
 
@@ -53,6 +51,10 @@ but that comes with great compilation time penalty.
 #include <xxh3.h>
 #include <git2.h>
 #include <yaml.h>
+
+/* No operation */
+#define __noop
+#define __maybe__unused __attribute__((unused))
 
 /* Print formatters */
 #define pr_with_prefix_and_source(prefix, format, arg...) \
@@ -694,7 +696,7 @@ char const *yamlconf_parsing_status_strings[] = {
     "clean checkouts",
     "clean links pass",
     "export threads",
-    "connections per server"
+    "connections per server",
     "wanted",
     "wanted section",
     "wanted section start",
@@ -970,6 +972,7 @@ int lazy_alloc_string_setlen_discard(
     return 0;
 }
 
+__maybe__unused
 static inline
 int lazy_alloc_string_setlen_keep(
     struct lazy_alloc_string *const restrict string,
@@ -1052,7 +1055,7 @@ int dynamic_array_add_by(
         &name##_count, &name##_allocated, diff)
 
 #define dynamic_array_add_to(name) \
-    dynamic_array_add_to_by(name, 1)
+    dynamic_array_add_to_by(name, 1) // NOLINT(bugprone-sizeof-expression)
 
 
 int dynamic_array_partial_free(
@@ -1092,7 +1095,7 @@ int dynamic_array_partial_free(
 
 #define dynamic_array_partial_free_to(name) \
     dynamic_array_partial_free((void **)&name, sizeof *name, \
-        name##_count, &name##_allocated)
+        name##_count, &name##_allocated) 
 
 /* Return -1 for error */
 size_t buffer_read_from_fd(
@@ -1187,7 +1190,6 @@ on_error:
 
 #define YAMLCONF_PARSE_SECTION_VALUE_TO_STATUS_TWO( \
             value1, status1, value2, status2) \
-static_assert(sizeof value1 == sizeof value2, "length different"); \
         YAMLCONF_PARSE_SECTION_LENGTH_VALUE_TO_STATUS_TWO( \
             sizeof value1 - 1, value1, status1, value2, status2)
 
@@ -1594,6 +1596,7 @@ int yamlconf_parse_wanted_list_add_object(
         YAMLCONF_PARSE_WANTED_LIST_ASSIGN(config->always_);
         break;
     case YAMLCONF_WANTED_REPO:
+        __noop;
         struct repo_config *repo = get_last(config->repos);
         wanted_objects = &repo->wanted_objects;
         count = &repo->wanted_objects_count;
@@ -1667,6 +1670,7 @@ struct wanted_base *yamlconf_get_last_wanted_object(
     case YAMLCONF_WANTED_GLOBAL_ALWAYS:
         return get_last(config->always_wanted_objects);
     case YAMLCONF_WANTED_REPO:
+        __noop;
         struct repo_config const *const restrict repo
             = get_last(config->repos);
         return get_last(repo->wanted_objects);
@@ -3070,7 +3074,7 @@ free_workdir_repos:
     return -1;
 }
 
-
+__maybe__unused
 static inline
 void work_handle_work_directories_free(
     struct work_handle *const restrict work_handle
@@ -3263,6 +3267,7 @@ int work_handle_cwd_open_or_dup(
     return 0;
 }
 
+__maybe__unused
 static inline
 bool console_trylock() { // true locked, false not
     int pr = pthread_mutex_trylock(&console_mutex);
@@ -3279,6 +3284,7 @@ bool console_trylock() { // true locked, false not
     return false;
 }
 
+__maybe__unused
 static inline
 bool console_lock() { // true locked, false not
     int pr = pthread_mutex_lock(&console_mutex);
@@ -3293,6 +3299,7 @@ bool console_lock() { // true locked, false not
     return false;
 }
 
+__maybe__unused
 static inline
 void console_unlock() {
     pthread_mutex_unlock(&console_mutex);
@@ -3332,6 +3339,7 @@ TYPE size_to_human_readable_##SUFFIX(TYPE size, char *const suffix) { \
     return size; \
 }
 
+__maybe__unused
 declare_func_size_to_human_readable_type(size_t, size_t)
 declare_func_size_to_human_readable_type(unsigned int, uint)
 declare_func_size_to_human_readable_type(double, double)
@@ -3360,7 +3368,8 @@ static inline void gcb_print_progress(
         time_t time_elasped = time(NULL) - payload->first_transfer;
         if (time_elasped > 0) {
             speed_human_readable = size_to_human_readable_double(
-                stats->received_bytes / time_elasped, &suffix_speed);
+                (double) stats->received_bytes / time_elasped, 
+                &suffix_speed);
         } else {
             speed_human_readable = 0;
             suffix_speed = 'B';
@@ -4399,7 +4408,7 @@ int repo_domain_map_init(
     }
     for (unsigned long i = 0; i < map->groups_count; ++i) {
         struct repo_domain_group *group = map->groups + i;
-        if (dynamic_array_partial_free_to(group->repos)) {
+        if (dynamic_array_partial_free_to(group->repos)) { // NOLINT(bugprone-sizeof-expression)
             pr_error("Failed to partially free group repos\n");
             goto free_map;
         }
@@ -4762,6 +4771,7 @@ int repo_work_add_wanted_reference_common(
     return 0;
 }
 
+__maybe__unused
 static inline
 int repo_work_add_wanted_reference(
     struct repo_work *const restrict repo,
@@ -4964,6 +4974,7 @@ int repo_work_parse_wanted_commit(
     }
     wanted_commit->parsed_commit_id = repo->commits_count - 1;
 sync_export_setting:
+    __noop;
     struct commit *commit =
         repo->commits + wanted_commit->parsed_commit_id;
     if (wanted_commit->archive) commit->archive = true;
@@ -5408,6 +5419,7 @@ int work_handle_parse_repo_commit_blob_gitmodules(
             }
             break;
         case '\t':
+            __noop;
             char const *parsing_value = NULL;
             struct lazy_alloc_string *value = NULL;
             if (!strncmp(line + 1, "path = ", 7)) {
@@ -5632,6 +5644,7 @@ void work_handle_unset_need_update_all_repos(
     }
 }
 
+__maybe__unused
 static inline
 void repo_work_deparse(
     struct repo_work *const restrict repo
@@ -6692,6 +6705,7 @@ int tree_export_archive(
             export_path_handle_finish_tree;
             break;
         case GIT_OBJECT_COMMIT:
+            __noop;
             tree_export_submodule_prepeare;
             export_path_handle_prepare_commit;
             r = tree_export_archive(target_tree, target_commit, target_repo, 
@@ -7762,6 +7776,7 @@ int remove_dead_symlinks_recursively_at(
         }
         switch (entry->d_type) {
         case DT_DIR:
+            __noop;
             int const subfd = openat(
                 atfd, entry->d_name, O_RDONLY | O_DIRECTORY);
             if (subfd < 0) {
