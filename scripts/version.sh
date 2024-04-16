@@ -15,4 +15,4 @@ else
     COMMIT_INFO="-unknown"
 fi
 
-echo "v${MAJOR}.${MINOR}.${FIX}${COMMIT_INFO}"
+printf '%s' "v${MAJOR}.${MINOR}.${FIX}${COMMIT_INFO}"
