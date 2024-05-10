@@ -16,9 +16,13 @@ endif()
 add_executable(git-mirrorer
     git-mirrorer.c)
 
+find_library(LIBGIT2 git2)
+
+find_library(LIBYAML yaml)
+
 target_link_libraries(git-mirrorer
-    git2
-    yaml)
+    "${LIBGIT2}"
+    "${LIBYAML}")
 
 target_compile_definitions(git-mirrorer PRIVATE
     VERSION="${VERSION}")
