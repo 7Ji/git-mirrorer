@@ -2368,6 +2368,10 @@ unexpected_event_type:
     return -1;
 }
 
+void config_print(
+    struct config const *const restrict config
+);
+
 int config_from_yaml(
     struct config *const restrict config,
     unsigned char const *const restrict buffer,
@@ -5239,6 +5243,7 @@ reduce_count:
 
 int work_handle_parse_repo_commit(
     struct work_handle *const restrict work_handle,
+    unsigned long const parsing_repo_id,
     unsigned long const repo_id,
     unsigned long const commit_id
 );
@@ -5246,6 +5251,7 @@ int work_handle_parse_repo_commit(
 // // May re-allocate config->repos
 int work_handle_parse_repo_commit_submodule_in_tree(
     struct work_handle *const restrict work_handle,
+    unsigned long const parsing_repo_id,
     unsigned long const repo_id,
     unsigned long const commit_id,
     git_tree const *const restrict tree,
@@ -5316,15 +5322,18 @@ int work_handle_parse_repo_commit_submodule_in_tree(
         goto reduce_count;
     }
     submodule->target_commit_id = repo_target->commits_count - 1;
-    if (submodule->target_repo_id >= repo_id) {
+    pr_debug("Target repo %lu / %lu, target commit %lu / %lu\n", 
+        submodule->target_repo_id + 1, work_handle->repos_count,
+        submodule->target_commit_id + 1, repo_target->commits_count);
+    if (submodule->target_repo_id >= parsing_repo_id) {
         return 0;
     }
     pr_warn("Added commit %s as wanted to parsaed repo '%s', need to go back "
             "to handle that specific commit\n",
             work_handle_get_string(submodule->oid_hex),
             work_handle_get_string(repo_target->url));
-    if (work_handle_parse_repo_commit(work_handle, submodule->target_repo_id, 
-        submodule->target_commit_id)) 
+    if (work_handle_parse_repo_commit(work_handle, parsing_repo_id,
+        submodule->target_repo_id, submodule->target_commit_id)) 
     {
         pr_error("Failed to go back to parse commit in a parsed repo\n");
         r = -1;
@@ -5342,13 +5351,14 @@ reduce_count:
 // May re-allocate the config->repos array, must re-assign repo after calling
 int work_handle_parse_repo_commit_blob_gitmodules(
     struct work_handle *const restrict work_handle,
+    unsigned long const parsing_repo_id,
     unsigned long const repo_id,
     unsigned long const commit_id,
     git_tree const *const restrict tree,
     git_blob *const restrict blob
 ) {
-    struct repo_work const *const restrict repo = work_handle->repos + repo_id;
-    struct commit const *const restrict commit = repo->commits + commit_id;
+    struct repo_work const *restrict repo = work_handle->repos + repo_id;
+    struct commit const *restrict commit = repo->commits + commit_id;
     pr_info("Parsing submodule of repo '%s' commit %s\n", 
             work_handle_get_string(repo->url), 
             work_handle_get_string(commit->oid_hex));
@@ -5359,8 +5369,8 @@ int work_handle_parse_repo_commit_blob_gitmodules(
     }
     git_object_size_t len_all = git_blob_rawsize(blob);
     if (!len_all) {
-        pr_error("Tree entry .gitmodules blob size is 0\n");
-        return -1;
+        pr_warn("Tree entry .gitmodules blob size is 0\n");
+        return 0;
     }
     struct lazy_alloc_string name, path, url;
     lazy_alloc_string_init(&name);
@@ -5393,21 +5403,19 @@ int work_handle_parse_repo_commit_blob_gitmodules(
             start = end + 1;
             continue;
         }
-        char const *line = buffer_all + start;
-        char const *line_end = buffer_all + end;
         switch (buffer_all[start]) {
         case '[':
-            if (!strncmp(line + 1, "submodule \"", 11)) {
+            if (!strncmp(buffer_all + start + 1, "submodule \"", 11)) {
                 if (name.string[0]) {
                     pr_error("Incomplete submodule definition for '%s'\n",
                             name.string);
                     r = -1;
                     goto free_string;
                 }
-                char const *name_start = line + 12;
+                char const *name_start = buffer_all + start + 12;
                 char const *right_quote = name_start;
                 for (;
-                    *right_quote != '"' && right_quote < line_end;
+                    *right_quote != '"' && right_quote < buffer_all + end;
                     ++right_quote);
                 if (lazy_alloc_string_replace(&name, name_start, 
                     right_quote - name_start)) 
@@ -5418,15 +5426,27 @@ int work_handle_parse_repo_commit_blob_gitmodules(
                 }
             }
             break;
+        case ' ':
         case '\t':
+            for (;;) {
+                switch (buffer_all[++start]) {
+                case ' ':
+                case '\t':
+                    break;
+                default:
+                    goto end_indent;
+                }
+            }
+end_indent:
             __noop;
             char const *parsing_value = NULL;
+            char const *content_start = buffer_all + start;
             struct lazy_alloc_string *value = NULL;
-            if (!strncmp(line + 1, "path = ", 7)) {
-                parsing_value = line + 8;
+            if (!strncmp(content_start, "path = ", 7)) {
+                parsing_value = content_start + 7;
                 value = &path;
-            } else if (!strncmp(line + 1, "url = ", 6)) {
-                parsing_value = line + 7;
+            } else if (!strncmp(buffer_all + start, "url = ", 6)) {
+                parsing_value = content_start + 6;
                 value = &url;
             }
             if (!value) {
@@ -5445,7 +5465,7 @@ int work_handle_parse_repo_commit_blob_gitmodules(
                 goto free_string;
             }
             if (lazy_alloc_string_replace(value, parsing_value, 
-                    line_end - parsing_value)) 
+                    buffer_all + end - parsing_value)) 
             {
                 pr_error("Failed to copy parsed value\n");
                 r = -1;
@@ -5456,13 +5476,15 @@ int work_handle_parse_repo_commit_blob_gitmodules(
                 url.string[url.len -= 4] = '\0';
             }
             if (work_handle_parse_repo_commit_submodule_in_tree(work_handle, 
-                repo_id, commit_id, tree, path.string, path.len, 
-                url.string, url.len)) 
+                parsing_repo_id, repo_id, commit_id, tree, path.string,
+                path.len, url.string, url.len)) 
             {
                 pr_error("Failed to add parse commit submodule in tree");
                 r = -1;
                 goto free_string;
             }
+            repo = work_handle->repos + repo_id;
+            commit = repo->commits + commit_id;
             name.string[0] = '\0';
             path.string[0] = '\0';
             url.string[0] = '\0';
@@ -5569,11 +5591,15 @@ int work_repo_parse_wanted_objects(
 
 int work_handle_parse_repo_commit(
     struct work_handle *const restrict work_handle,
+    unsigned long const parsing_repo_id,
     unsigned long const repo_id,
     unsigned long const commit_id
 ) {
     struct repo_work *restrict repo = work_handle->repos + repo_id;
     struct commit *restrict commit = repo->commits + commit_id;
+    pr_debug("Parsing repo %lu / %lu commit %lu / %lu\n", 
+        repo_id + 1, work_handle->repos_count, 
+        commit_id + 1, repo->commits_count);
     char const *restrict oid_hex = work_handle_get_string(commit->oid_hex);
     char const *restrict url = work_handle_get_string(repo->url);
     if (commit->git_commit) return 0; // Already looked up, skip
@@ -5612,10 +5638,10 @@ int work_handle_parse_repo_commit(
         r = -1;
         goto free_object;
     }
-    r = work_handle_parse_repo_commit_blob_gitmodules(
-        work_handle, repo_id, commit_id, tree, (git_blob *)object);
+    r = work_handle_parse_repo_commit_blob_gitmodules(work_handle, 
+        parsing_repo_id, repo_id, commit_id, tree, (git_blob *)object);
     if (r) {
-        pr_error("Failed to parse .gitmodules blob in tree");
+        pr_error("Failed to parse .gitmodules blob in tree\n");
     }
 free_object:
     git_object_free(object);
@@ -5698,9 +5724,12 @@ int work_handle_parse_all_repos_simple(
         if (work_repo_parse_wanted_objects(work_handle->repos + i, 
                             &work_handle->string_buffer)) 
             r = -1;
-    for (unsigned long i = 0; i < work_handle->repos_count; ++i)
-        for (unsigned long j = 0; j < work_handle->repos[i].commits_count; ++j)
-            if (work_handle_parse_repo_commit(work_handle, i, j)) r = 1;
+    for (unsigned long i = 0; i < work_handle->repos_count; ++i) {
+        for (unsigned long j = 0; j < work_handle->repos[i].commits_count; ++j){
+            if (work_handle_parse_repo_commit(
+                work_handle, i, i, j)) r = 1;
+        }
+    }
     return r;
 }
 
@@ -6088,6 +6117,9 @@ bool work_handle_all_looked_up(
             looked_up = false;
         }
         for (unsigned long j = 0; j < repo->commits_count; ++j) {
+            pr_debug("Checking repo %lu / %lu, commit %lu / %lu\n",
+                i + 1, work_handle->repos_count,
+                j + 1, repo->commits_count);
             struct commit *commit = repo->commits + j;
             if (!commit->git_commit) {
                 pr_error("Repo '%s' commit %s not looked up yet\n",
