@@ -5172,8 +5172,8 @@ int commit_add_submodule_in_tree(
     git_tree_entry *entry;
     int r;
     if (git_tree_entry_bypath(&entry, tree, path)) {
-        pr_error("Path '%s' of submodule does not exist in tree\n", path);
-        r = -1;
+        pr_warn("Path '%s' of submodule does not exist in tree\n", path);
+        r = 0;
         goto reduce_count;
     }
     if (git_tree_entry_type(entry) != GIT_OBJECT_COMMIT) {
@@ -5479,7 +5479,7 @@ end_indent:
                 parsing_repo_id, repo_id, commit_id, tree, path.string,
                 path.len, url.string, url.len)) 
             {
-                pr_error("Failed to add parse commit submodule in tree");
+                pr_error("Failed to add parse commit submodule in tree\n");
                 r = -1;
                 goto free_string;
             }
