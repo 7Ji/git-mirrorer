@@ -1,7 +1,7 @@
 #!/bin/sh
 MAJOR=1
 MINOR=1
-FIX=0
+FIX=1
 # Use test for posix shell compatability
 if [ -e ".git" ]; then
     COMMIT_DATE=$(TZ=UTC git show -s --pretty=%cd --date=format-local:%Y%m%d HEAD 2>/dev/null)
