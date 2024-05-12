@@ -7975,6 +7975,18 @@ int raise_nofile_limit() {
 }
 
 static inline
+int gmr_ignore_sigpipe() {
+    struct sigaction const action = {
+        .sa_handler = SIG_IGN,
+    };
+    if (sigaction(SIGPIPE, &action, NULL)) {
+        pr_error_with_errno("Failed to ignore SIGPIPE");
+        return -1;
+    }
+    return 0;
+}
+
+static inline
 int gmr_work(char const *const restrict config_path) {
     int r = setvbuf(stdout, NULL, _IOLBF, 0);
     if (r) {
@@ -8017,6 +8029,7 @@ int gmr_work(char const *const restrict config_path) {
         goto free_work_handle;
     }
     if (gmr_set_timeout(config.timeout_connect) ||
+        gmr_ignore_sigpipe() ||
         work_handle_open_all_repos(&work_handle) || 
         work_handle_update_all_repos(&work_handle) ||
         work_handle_parse_all_repos(&work_handle) ||
