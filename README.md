@@ -295,7 +295,101 @@ proxy_after: 3
 
 It is also possible to set this to a very large number so `git-mirrorer` will retry forever and never bail out due to failed connection.
 
-## stdin advanced usage
+## Advanced usage: as a daemon
+Create a dedicated user for the job:
+```
+sudo useradd -d /srv/gmr -m -s /usr/bin/nologin gmr
+```
+Install the following systemd.service unit as `/etc/systemd/system/git-mirrorer.service`:
+```
+[Unit]
+Description=git mirroring
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gmr
+WorkingDirectory=/srv/gmr
+ExecStart=/usr/bin/git-mirrorer --config config.yaml
+
+[Install]
+WantedBy=multi-user.target
+```
+Install the following systemd.timer unit as `/etc/systemd/system/git-mirrorer.timer`:
+```
+[Unit]
+Description=Update mirrors per 10-minute
+
+[Timer]
+OnCalendar=*-*-* *:00,10,20,30,40,50:00
+
+[Install]
+WantedBy=timers.target
+```
+Configure the gmr instance:
+```
+sudo vi /srv/gmr/config.yaml
+```
+Enable the timer unit so it would update repos per 10-minute:
+```
+sudo systemctl enable --now git-mirrorer.timer
+```
+From now on, you can use it locally like following:
+```
+git clone /srv/gmr/repos/links/github.com/7Ji/git-mirrorer.git
+```
+However, you'll need to either by pass the ownership check of all these repos (`git config --global --add safe.directory '*'`) or change the service user to yourself, both of which would introduce safety concerns. For safety, it's recommended to follow the next step to set up a web service.
+
+It should also be remembered that you should never push to such repo even if you can, as your commit would be replaced by remote commits as soon as git-mirrorer updates the local repo.
+
+## Advanced usage: with nginx
+Set up a locally serving daemon that updates the repo following the above steps.
+
+Install both `nginx` and `fcgiwrap` and enable their units:
+
+```
+sudo pacman -Syu nginx fcgiwrap
+sudo systemctl enable --now nginx.servie fcgiwrap.socket
+```
+
+Disable safe directory checking for `http` user:
+```
+printf '[safe]\n\tdirectory= *\n' | sudo install --owner http --group http --mode 644 /dev/stdin /srv/http/.gitconfig
+```
+
+Add the following nginx server config, with `server_name` switched out if you need:
+```
+server {
+    listen       80;
+    listen       [::]:80;
+    server_name  gmr.lan;
+    access_log   /var/log/nginx/gmr.lan.access.log;
+
+    location ~ (/.*) {
+        fastcgi_pass  unix:/run/fcgiwrap.sock;
+        include       fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME     /usr/lib/git-core/git-http-backend;
+        fastcgi_param GIT_HTTP_EXPORT_ALL "";
+        fastcgi_param GIT_PROJECT_ROOT    /srv/gmr/repos/links;
+        fastcgi_param PATH_INFO           $1;
+        fastcgi_read_timeout            3600;
+    }
+    client_max_body_size 50m;
+}
+```
+Reload `nginx` config:
+```
+sudo systemctl reload nginx.service
+```
+
+You should now be able to use it in the local web or global Internal like following:
+```
+git clone http://gmr.lan/github.com/7Ji/git-mirrorer.git
+```
+Note, altough it's possible to configure `git-http-backend` to allow pushing, it's not configured to do so here. As even if you can push, your commit would be replaced by remote commits as soon as git-mirrorer updates the local repo.
+
+## Advanced usage: oneshot with stdin input
 `git-mirrorer` can also read config from stdin, this makes it ideal to be embedded into a build system to handle the .git source, especially those with submodules.
 
 You can keep a system-wide config template like following:
