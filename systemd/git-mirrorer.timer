@@ -1,0 +1,9 @@
+[Unit]
+Description=Update Git mirrors per 10-minute
+
+[Timer]
+OnCalendar=*-*-* *:00,10,20,30,40,50:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

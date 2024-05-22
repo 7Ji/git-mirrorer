@@ -91,8 +91,13 @@ ifndef DEBUGGING
 	$(STRIP) $@
 endif
 
+install:
+	install -DTm755 ${BINARY} ${DESTDIR}/usr/bin/${BINARY}
+	install -DTm644 systemd/${BINARY}.service ${DESTDIR}/usr/lib/systemd/system/${BINARY}.service
+	install -DTm644 systemd/${BINARY}.timer ${DESTDIR}/usr/lib/systemd/system/${BINARY}.timer
+	install -DTm644 systemd/${BINARY}.sysusers ${DESTDIR}/usr/lib/sysusers.d/${BINARY}.conf
 
-.PHONY: clean all prepare_deps mkdirs
+.PHONY: clean all prepare_deps mkdirs install
 
 clean:
 	rm -f ${BINARY}

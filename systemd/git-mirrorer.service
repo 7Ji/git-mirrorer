@@ -1,0 +1,13 @@
+[Unit]
+Description=Git mirroring
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=git-mirrorer
+WorkingDirectory=/srv/git-mirrorer
+ExecStart=/usr/bin/git-mirrorer --config config.yaml
+
+[Install]
+WantedBy=multi-user.target
