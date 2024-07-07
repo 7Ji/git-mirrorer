@@ -8,96 +8,62 @@ To let `git-mirrorer` mirror a list of repos, simply define them in a `.yaml` co
 You can start from a simple config file like the following:
 ```
 repos:
-  - https://github.com/yuzu-emu/yuzu
+  - https://github.com/protocolbuffers/protobuf
 ```
 After `./git-mirrorer --config config.yaml`, you will have the following directory structure:
 ```
 repos
 ├── data
-│   ├── 207453df7ad0862c
-│   ├── 23ebb7fc06308e86
-│   ├── 2c251c035f9cad01
-│   ├── 37192ff591219eb8
-│   ├── 3af9c204e8e472ca
-│   ├── 3b751f23ac239671
-│   ├── 3db66e36cd9d329c
-│   ├── 4f5d1267939148d1
-│   ├── 67f763e658bca3c7
-│   ├── 706cc75c68042f9e
-│   ├── 899f84800b55451a
-│   ├── 8dbac069a5094020
-│   ├── 969ac173416c0008
-│   ├── 9a0c678726caecc0
-│   ├── 9d229421bcd5dac9
-│   ├── 9e57cbc12dbad75b
-│   ├── b57e0f2784d3b943
-│   ├── b693c4422be4000f
-│   ├── c39f2cfc27b16fac
-│   ├── c483e6ab7741f51b
-│   ├── c8f9f0009912835e
-│   ├── d955bd8fbfab8532
-│   ├── e0daf456084f46c5
-│   ├── eb478c30d4abecc8
-│   └── f15c7e135413006f
+│   ├── 0744d8eaf6ede48e
+│   │   ├── config
+│   │   ├── description
+│   │   ├── FETCH_HEAD
+│   │   ├── HEAD
+│   │   ├── hooks
+│   │   │   └── README.sample
+│   │   ├── info
+│   │   │   └── exclude
+│   │   ├── objects
+│   │   │   ├── info
+│   │   │   └── pack
+│   │   │       ├── pack-7779f5aac69e69c3c1422fcc1394e5ead56f4b17.idx
+│   │   │       └── pack-7779f5aac69e69c3c1422fcc1394e5ead56f4b17.pack
+│   │   └── refs
+│   │       ├── heads
+│   │       │   ├── 00.11.z
+│   │       │   └── ...
+│   │       ├── pull
+│   │       │   ├── 1
+│   │       │   │   └── head
+│   │       │   └── ...
+│   │       └── tags
+│   │           ├── 00.11.0
+│   │           └── ...
+│   ├── 23b62ae1298275e0/
+│   ├── 64796b2d763671d0/
+│   └── 67f763e658bca3c7/
 └── links
     └── github.com
-        ├── arsenm
-        │   └── sanitizers-cmake.git -> ../../../data/e0daf456084f46c5
-        ├── arun11299
-        │   └── cpp-jwt.git -> ../../../data/4f5d1267939148d1
-        ├── benhoyt
-        │   └── inih.git -> ../../../data/37192ff591219eb8
-        ├── bylaws
-        │   ├── libadrenotools.git -> ../../../data/9e57cbc12dbad75b
-        │   └── liblinkernsbypass.git -> ../../../data/969ac173416c0008
-        ├── eggert
-        │   └── tz.git -> ../../../data/3db66e36cd9d329c
-        ├── FFmpeg
-        │   └── FFmpeg.git -> ../../../data/899f84800b55451a
+        ├── abseil
+        │   └── abseil-cpp.git -> ../../../data/64796b2d763671d0
         ├── google
         │   └── googletest.git -> ../../../data/67f763e658bca3c7
-        ├── GPUOpen-LibrariesAndSDKs
-        │   └── VulkanMemoryAllocator.git -> ../../../data/d955bd8fbfab8532
-        ├── herumi
-        │   └── xbyak.git -> ../../../data/9a0c678726caecc0
-        ├── KhronosGroup
-        │   ├── SPIRV-Headers.git -> ../../../data/2c251c035f9cad01
-        │   └── Vulkan-Headers.git -> ../../../data/8dbac069a5094020
-        ├── lat9nq
-        │   └── tzdb_to_nx.git -> ../../../data/f15c7e135413006f
-        ├── libsdl-org
-        │   └── SDL.git -> ../../../data/b693c4422be4000f
-        ├── libusb
-        │   └── libusb.git -> ../../../data/706cc75c68042f9e
-        ├── lsalzman
-        │   └── enet.git -> ../../../data/9d229421bcd5dac9
-        ├── merryhime
-        │   └── dynarmic.git -> ../../../data/c483e6ab7741f51b
-        ├── microsoft
-        │   └── vcpkg.git -> ../../../data/207453df7ad0862c
-        ├── mozilla
-        │   └── cubeb.git -> ../../../data/c39f2cfc27b16fac
-        ├── xiph
-        │   └── opus.git -> ../../../data/3af9c204e8e472ca
-        ├── yhirose
-        │   └── cpp-httplib.git -> ../../../data/c8f9f0009912835e
-        └── yuzu-emu
-            ├── discord-rpc.git -> ../../../data/eb478c30d4abecc8
-            ├── mbedtls.git -> ../../../data/b57e0f2784d3b943
-            ├── sirit.git -> ../../../data/23ebb7fc06308e86
-            └── yuzu.git -> ../../../data/3b751f23ac239671
+        ├── open-source-parsers
+        │   └── jsoncpp.git -> ../../../data/0744d8eaf6ede48e
+        └── protocolbuffers
+            └── protobuf.git -> ../../../data/23b62ae1298275e0
 ```
 
 The structure is populated with the following logic for any remote repo that needs to be mirrored:
  1. `git-mirrorer` would mirror it into `repos/data/[HASH]`, where the `[HASH]` is unique for any given URL. This automatically avoids the problem where multiple remote repos share the same name.
  2. `git-mirrorer` would mirror any other repos that are referenced in the defined repos as submodules, so a complete repo tree could be constructed using only own local repos. By default only the HEAD commit of your defined repos are parsed like this.
- 3. `git-mirrorer` would create symlinks under `repos/links` with paths composed of their URL segments pointing to the actual repos, so you can easily clone from `git-mirrorer`'s storage via human-friendly URLs (e.g. `git://gmr.lan/github.com/yuzu-emu/yuzu.git`)
+ 3. `git-mirrorer` would create symlinks under `repos/links` with paths composed of their URL segments pointing to the actual repos, so you can easily clone from `git-mirrorer`'s storage via human-friendly URLs (e.g. `git://gmr.lan/github.com/protocolbuffers/protobuf.git`)
 
 ## Wanted objects
 If you run `git-mirrorer` with only a simple repos list, you might read the following log:
 ```
 [WARN] Global wanted objects (when empty) not defined, adding 'HEAD' as default
-[INFO] Repo 'https://github.com/yuzu-emu/yuzu' does not have wanted objects defined, adding global wanted objects (when empty) to it as wanted
+[INFO] Repo 'https://github.com/protocolbuffers/protobuf' does not have wanted objects defined, adding global wanted objects (when empty) to it as wanted
 ```
 A wanted object is what you can define for repos that can be parsed into commits that should be **robust** . They can either be defined for a repo, or globally.
 
@@ -161,48 +127,59 @@ wanted:
         archive: yes
         checkout: yes
 repos:
-  - https://github.com/yuzu-emu/yuzu
+  - https://github.com/protocolbuffers/protobuf
 ```
 After a run with the above config, you will have a tree structure like the following:
 ```
-
-archives/
+archives
 ├── data
-│   ├── 42f4c8f28b8763631d5989543de99def528a93fc.tar.zst
-│   └── db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst
+│   ├── 0091250e2f1de84ddd40d65ee1529fd9cbb7b2ec.tar.zst
+│   ├── 011c685e9457c1723cdeef7d01cf06775edc8eea.tar.zst
+│   ├── ...
+│   └── fee2e00ce29bbb8cf35cafdea820e56a7fc34bc8.tar.zst
 └── links
-    ├── github.com
-    │   └── yuzu-emu
-    │       └── yuzu
-    │           ├── 42f4c8f28b8763631d5989543de99def528a93fc.tar.zst -> ../../../../data/42f4c8f28b8763631d5989543de99def528a93fc.tar.zst
-    │           ├── branches -> refs/heads
-    │           ├── db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst -> ../../../../data/db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst
-    │           └── refs
-    │               └── heads
-    │                   ├── master.tar.zst -> ../../../../../../data/db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst
-    │                   └── revert-11534-IFREMOVED.tar.zst -> ../../../../../../data/42f4c8f28b8763631d5989543de99def528a93fc.tar.zst
-    └── gmr.lan
-        └── github.com
-            └── yuzu-emu
-                └── yuzu
-                    ├── 42f4c8f28b8763631d5989543de99def528a93fc.tar.zst -> ../../../../../data/42f4c8f28b8763631d5989543de99def528a93fc.tar.zst
-                    ├── branches -> refs/heads
-                    ├── db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst -> ../../../../../data/db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst
-                    └── refs
-                        └── heads
-                            ├── master.tar.zst -> ../../../../../../../data/db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst
-                            └── revert-11534-IFREMOVED.tar.zst -> ../../../../../../../data/42f4c8f28b8763631d5989543de99def528a93fc.tar.zst
+    └── github.com
+        └── protocolbuffers
+            └── protobuf
+                ├── 0091250e2f1de84ddd40d65ee1529fd9cbb7b2ec.tar.zst -> ../../../../data/0091250e2f1de84ddd40d65ee1529fd9cbb7b2ec.tar.zst
+                ├── 011c685e9457c1723cdeef7d01cf06775edc8eea.tar.zst -> ../../../../data/011c685e9457c1723cdeef7d01cf06775edc8eea.tar.zst
+                ├── ...
+                ├── fee2e00ce29bbb8cf35cafdea820e56a7fc34bc8.tar.zst -> ../../../../data/fee2e00ce29bbb8cf35cafdea820e56a7fc34bc8.tar.zst
+                ├── refs
+                │   ├── heads
+                │   │   ├── 21.x.tar.zst -> ../../../../../../data/2798a968c330de223b711e4fe504800280f333fb.tar.zst
+                │   │   ├── 22.x-202303072154.tar.zst -> ../../../../../../data/9c02d4c0de5b32225716483332c892692b19a483.tar.zst
+                │   │   ├── 22.x-202304122338.tar.zst -> ../../../../../../data/5bc5cd29c98f3229db23ca6ce449b887662ed50d.tar.zst
+                │   │   ├── ...
+                │   │   ├── deannagarcia-patch-9.tar.zst -> ../../../../../../data/9fc2b889eab2fb174eb3f9221b3cd845859a6ec7.tar.zst
+                │   │   ├── dependabot
+                │   │   │   ├── github_actions
+                │   │   │   │   ├── actions
+                │   │   │   │   │   ├── cache-4.0.2.tar.zst -> ../../../../../../../../../data/424dea87613e38e60f154a38bc83f0b910eca257.tar.zst
+                │   │   │   │   │   └── checkout-4.1.7.tar.zst -> ../../../../../../../../../data/7e83a736cc4087fe2f11efb74d103ee558a2080d.tar.zst
+                │   │   │   │   └── ilammy
+                │   │   │   │       └── msvc-dev-cmd-1.13.0.tar.zst -> ../../../../../../../../../data/18a0a9d88fa380e165aa9095e44b65f46c97eb62.tar.zst
+                │   │   │   └── pip
+                │   │   │       └── python
+                │   │   │           └── docs
+                │   │   │               └── jinja2-3.1.4.tar.zst -> ../../../../../../../../../../data/4b86de33e6b8b16c0549df373e4fd9c9ec4f7f4b.tar.zst
+                │   │   ├── disable-upload-artifacts-action.tar.zst -> ../../../../../../data/87c458388d10d15b7090bcce1b17491cf4f47fba.tar.zst
+                │   │   ├── ...
+                │   │   └── win2019-23.x.tar.zst -> ../../../../../../data/1be47896d437e23c6632d8b7969ed4bebd3d7831.tar.zst
+                │   └── tags
+                │       ├── 3.15.0-rc1.tar.zst -> ../../../../../../data/66e5185780129ea749e8ee8183586b4355c64db0.tar.zst
+                │       ├── conformance-build-tag.tar.zst -> ../../../../../../data/6dec8cf96e32fd7fb0121a75ca72acf10863ecc9.tar.zst
+                │       ├── v16.2.tar.zst -> ../../../../../../data/c18f5e71d86063fd6cea2c47cd7ab4131db5c9e2.tar.zst
+                │       ├── ...
+                │       └── v5.27.2.tar.zst -> ../../../../../../data/63def39e881afa496502d9c410f4ea948e59490d.tar.zst
+                └── tags -> refs/tags
+checkouts/
 ```
-The file `archives/data/db37e583ffea39a4d25a8eb3eeea0cf825ec6661.tar.zst` would contain all of the content existing at `yuzu.git`'s that commit, **including submodules**;
+The file `archives/data/03dac701f55bb08f622f9ee6f0a3cfe882caba65.tar.zst` would contain all of the content existing at `protobuf.git`'s that commit, **including submodules**;
 
-Likewise, the folder `checkouts/data/db37e583ffea39a4d25a8eb3eeea0cf825ec6661` would also contain all of the content existing at `yuzu.git`'s that commit, **including submodules**. 
+Likewise, the folder `checkouts/data/03dac701f55bb08f622f9ee6f0a3cfe882caba65` would also contain all of the content existing at `protobuf.git`'s that commit, **including submodules**. 
 
-In both cases the submodules are stored as if they're plain folders in the parent git tree, e.g.
-```
-> ls checkouts/links/github.com/yuzu-emu/yuzu/branches/master/externals/cubeb/cmake/sanitizers-cmake/
-cmake/  CMakeLists.txt  LICENSE  README.md  tests/
-```
-You can see that the submodule `externals/cubeb` 's submodule `cmake/sanitizers-cmake` exists with all of its content under the super project as `externals/cubeb/cmake/sanitizers-cmake`, which also applies to archives.
+In both cases the submodules are stored as if they're plain folders in the parent git tree
 
 Do note that the `checkout`s here are really just `checkout`s, they're not `clone`s as there's no existing `.git` folder or file under the tree.
 
@@ -221,7 +198,7 @@ Note it **does not affect the actual format**, the actual format that `git-mirro
 I.e. setting this to `.tar.zst` **only changes the suffix** but **does not** automatically make the output stream a `zstd compressed data` stream.
 #### ~~`github_like_prefix`~~ (removed after v0.2)
 When configured to `yes`, every entry in the archive will have a `[repo short name]-[commit hash]/` prefix.   
-By default this is set to `no` and every entry is directly in the archive's root, e.g. `README.md` in that `yuzu.git` archive is stored as `README.md` in the archive. If set to `yes` then it is stored as `yuzu-26ff2147197352b571c394404de2be1a65d0cf9b/README.md`.  
+By default this is set to `no` and every entry is directly in the archive's root, e.g. `README.md` in that `protobuf.git` archive is stored as `README.md` in the archive. If set to `yes` then it is stored as `protobuf-03dac701f55bb08f622f9ee6f0a3cfe882caba65/README.md`.  
 Setting this to `yes` might be helpful for your existing building routine if it expects such prefix.
 #### `pipe_through`
 Defines a program and its argument which the original **GNU tar** stream would go through, and that program would now control the **actual output format**. By default this is empty so the archive format is `tar`.  
