@@ -366,6 +366,60 @@ git clone http://gmr.lan/github.com/7Ji/git-mirrorer.git
 ```
 Note, altough it's possible to configure `git-http-backend` to allow pushing, it's not configured to do so here. As even if you can push, your commit would be replaced by remote commits as soon as git-mirrorer updates the local repo.
 
+## Advanced usage: with cgit
+If you want to browse the mirrored repos, it's recommended to serve `repos/link` with a read-only git service, and I'd recommend cgit as it's pretty lightweight.
+
+Take my config for example:
+
+`/etc/cgitrc`:
+```
+enable-http-clone=0
+cache-size=10000
+cache-root=/var/cache/cgit/$HTTP_HOST
+robots=noindex, nofollow
+source-filter=/usr/lib/cgit/filters/syntax-highlighting.py
+virtual-root=/
+include=/etc/cgitrc.d/$HTTP_HOST
+```
+`/etc/cgitrc.d/gmr.7ji.lan`:
+```
+scan-path=/srv/git-mirrorer/repos/links
+cache-root=/var/cache/cgit/gmr.7ji.lan
+```
+`/etc/nginx/sited-enabled/gmr.conf`:
+```
+server {
+    listen       80;
+    listen       [::]:80;
+    server_name  gmr.7ji.lan;
+    root         /usr/share/webapps/cgit;
+    try_files    $uri @cgit;
+    access_log /var/log/nginx/gmr.7ji.lan.access.log;
+
+    location ~ /.+\.git/(info/refs|git-upload-pack).* {
+        include             fastcgi_params;
+        fastcgi_param       SCRIPT_FILENAME     /usr/lib/git-core/git-http-backend;
+        fastcgi_param       PATH_INFO           $uri;
+        fastcgi_param       GIT_HTTP_EXPORT_ALL "";
+        fastcgi_param       GIT_PROJECT_ROOT    /srv/git-mirrorer/repos/links;
+        fastcgi_pass        unix:/run/fcgiwrap.sock;
+        fastcgi_read_timeout 3600;
+        client_max_body_size 50m;
+    }
+
+    location @cgit {
+        include             fastcgi_params;
+        fastcgi_param       SCRIPT_FILENAME /usr/lib/cgit/cgit.cgi;
+        fastcgi_param       PATH_INFO       $uri;
+        fastcgi_param       QUERY_STRING    $args;
+        fastcgi_param       HTTP_HOST       $server_name;
+        fastcgi_pass        unix:/run/fcgiwrap.sock;
+    }
+}
+```
+
+With this config, you can browse the cloned repos, their commit infos, trees, etc at `http://gmr.7ji.lan`, and can clone from `.git` url just like in the previous example.
+
 ## Advanced usage: oneshot with stdin input
 `git-mirrorer` can also read config from stdin, this makes it ideal to be embedded into a build system to handle the .git source, especially those with submodules.
 
